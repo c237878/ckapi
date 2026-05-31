@@ -554,6 +554,11 @@
             修改时间
             </summary>
         </member>
+        <member name="P:ckapi.Models.VideoSeries.VideoCount">
+            <summary>
+            关联影片数量
+            </summary>
+        </member>
         <member name="T:ckapi.Services.IDataService">
             <summary>
             数据服务接口

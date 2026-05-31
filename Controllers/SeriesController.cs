@@ -43,9 +43,10 @@ public class SeriesController : ControllerBase
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT * FROM VideoSeries 
+                SELECT s.*, (SELECT COUNT(*) FROM Video v WHERE v.seriesid = s.id) as video_count
+                FROM VideoSeries s
                 {whereClause}
-                ORDER BY name ASC
+                ORDER BY s.name ASC
                 LIMIT @pageSize OFFSET @offset";
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
@@ -62,7 +63,8 @@ public class SeriesController : ControllerBase
                     Link = row["link"]?.ToString(),
                     Country = row["country"]?.ToString(),
                     CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString()
+                    UTime = row["utime"]?.ToString(),
+                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
                 });
             }
 

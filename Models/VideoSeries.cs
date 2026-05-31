@@ -39,4 +39,9 @@ public class VideoSeries
     /// 修改时间
     /// </summary>
     public string? UTime { get; set; }
+
+    /// <summary>
+    /// 关联影片数量
+    /// </summary>
+    public int VideoCount { get; set; }
 }
