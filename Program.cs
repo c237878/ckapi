@@ -52,8 +52,8 @@ if (isDev)
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
 app.UseCors("AllowAll");
+app.UseHttpsRedirection();
 app.UseRouting();
 app.MapControllers();
 
