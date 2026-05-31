@@ -37,18 +37,8 @@ public class LikeController : ControllerBase
                 return Ok(new { success = false, message = "视频不存在" });
             }
 
-            // 如果有userToken，检查是否已经点赞过
-            if (!string.IsNullOrEmpty(userToken))
-            {
-                var checkSql = "SELECT id FROM LikeRecord WHERE videoid = @videoid AND usertoken = @usertoken";
-                var existResult = _db.ExecuteScalar(checkSql,
-                    new SqliteParameter("@videoid", videoId),
-                    new SqliteParameter("@usertoken", userToken));
-                if (existResult != null)
-                {
-                    return Ok(new { success = false, message = "已经点赞过了" });
-                }
-            }
+            // 不再检查是否已点赞，每次点击都新增记录
+            // 如果有userToken，可用于追踪（保留字段）
 
             var likeRecord = new LikeRecord
             {
