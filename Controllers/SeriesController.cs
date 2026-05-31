@@ -138,7 +138,7 @@ public class SeriesController : ControllerBase
             var videos = new List<Video>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
-                videos.Add(new Video
+                var video = new Video
                 {
                     Id = row["id"]?.ToString(),
                     Code = row["code"]?.ToString(),
@@ -151,8 +151,24 @@ public class SeriesController : ControllerBase
                     SeriesId = row["seriesid"]?.ToString(),
                     SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
                     CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString()
-                });
+                    UTime = row["utime"]?.ToString(),
+                    Actors = new List<Actor>()
+                };
+
+                // 获取该视频的演员列表
+                var actorSql = @"SELECT a.* FROM Actor a INNER JOIN VideoActor va ON a.id = va.actorid WHERE va.videoid = @videoId";
+                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
+                foreach (System.Data.DataRow actorRow in actorDt.Rows)
+                {
+                    video.Actors.Add(new Actor
+                    {
+                        Id = actorRow["id"]?.ToString(),
+                        Name = actorRow["name"]?.ToString(),
+                        Country = actorRow["country"]?.ToString()
+                    });
+                }
+
+                videos.Add(video);
             }
 
             return Ok(new { success = true, data = videos, total, page, pageSize });

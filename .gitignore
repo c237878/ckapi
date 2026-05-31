@@ -1,0 +1,24 @@
+# .NET Core build outputs
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+
+# Database files
+*.db
+*.sqlite
+
+# macOS system files  
+.DS_Store
+
+# Visual Studio / IDE files
+.vscode/
+*.suo  
+*.user  
+
+# Log files  
+*.log  
+
+# Runtime configs  
+appsettings.*.json

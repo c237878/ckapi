@@ -313,6 +313,24 @@ public class VideoController : ControllerBase
                     UTime = row["utime"]?.ToString(),
                     Actors = new List<Actor>()
                 };
+
+                // 获取该视频的演员列表
+                var actorSql = @"
+                    SELECT a.* FROM Actor a 
+                    INNER JOIN VideoActor va ON a.id = va.actorid 
+                    WHERE va.videoid = @videoId
+                    ORDER BY a.name";
+                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
+                foreach (System.Data.DataRow actorRow in actorDt.Rows)
+                {
+                    video.Actors.Add(new Actor
+                    {
+                        Id = actorRow["id"]?.ToString(),
+                        Name = actorRow["name"]?.ToString(),
+                        Country = actorRow["country"]?.ToString()
+                    });
+                }
+
                 videos.Add(video);
             }
 

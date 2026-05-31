@@ -9,24 +9,33 @@ namespace ckapi.Utils;
 public class SQLiteHelper
 {
     private readonly string _connectionString;
+    private readonly string _dbPath;
+    private readonly string? _backupPath;
     private readonly ILogger<SQLiteHelper> _logger;
 
     public SQLiteHelper(IConfiguration configuration, ILogger<SQLiteHelper> logger)
     {
         _logger = logger;
-        var dbPath = configuration.GetConnectionString("DefaultConnection")
-            ?? "Data Source=ckweb.db";
-        _connectionString = dbPath;
-        _logger.LogInformation("SQLite数据库连接字符串: {ConnectionString}", dbPath);
+        var connStr = configuration.GetConnectionString("DefaultConnection") ?? "Data Source=ckweb.db";
+        _dbPath = connStr.Replace("Data Source=", "").Trim();
+        _backupPath = configuration["ConnectionStrings:BackupPath"];
+
+        // 确保数据库所在目录存在
+        var dir = Path.GetDirectoryName(_dbPath);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+
+        // Microsoft.Data.Sqlite 连接时会自动创建空数据库文件（带正确 header）
+        // 不要手动 File.WriteAllBytes 创建 0 字节空文件！
+
+        _connectionString = connStr;
+        _logger.LogInformation("SQLite数据库连接字符串: {ConnectionString}", connStr);
     }
 
     /// <summary>
     /// 获取数据库路径
     /// </summary>
-    public string GetDbPath()
-    {
-        return _connectionString.Replace("Data Source=", "");
-    }
+    public string GetDbPath() => _dbPath;
 
     /// <summary>
     /// 创建数据库连接
@@ -48,7 +57,31 @@ public class SQLiteHelper
         {
             command.Parameters.AddRange(parameters);
         }
-        return command.ExecuteNonQuery();
+        int rows = command.ExecuteNonQuery();
+
+        // 数据修改后自动备份
+        if (rows > 0 && !string.IsNullOrEmpty(_backupPath))
+        {
+            try
+            {
+                // 目录不存在时跳过备份（不创建目录）
+                if (!Directory.Exists(_backupPath))
+                    return rows;
+
+                // 按当天日期生成备份文件名：log_yyyy-MM-dd.db
+                var dbFileName = Path.GetFileName(_dbPath);
+                var nameWithoutExt = Path.GetFileNameWithoutExtension(dbFileName);
+                var ext = Path.GetExtension(dbFileName);
+                var today = DateTime.Now.ToString("yyyy-MM-dd");
+                var backupFileName = $"{nameWithoutExt}_{today}{ext}";
+                var backupFilePath = Path.Combine(_backupPath, backupFileName);
+
+                File.Copy(_dbPath, backupFilePath, true);
+            }
+            catch { /* 备份失败不影响主操作 */ }
+        }
+
+        return rows;
     }
 
     /// <summary>
