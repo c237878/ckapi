@@ -166,7 +166,24 @@ public class VideoController : ControllerBase
                 });
             }
 
-            return Ok(new { success = true, data = video, actors });
+            // 获取所属系列
+            object seriesData = null;
+            if (!string.IsNullOrEmpty(video.SeriesId))
+            {
+                var seriesSql = "SELECT * FROM VideoSeries WHERE id = @seriesId";
+                var seriesDt = _db.ExecuteDataTable(seriesSql, new SqliteParameter("@seriesId", video.SeriesId));
+                if (seriesDt.Rows.Count > 0)
+                {
+                    var sRow = seriesDt.Rows[0];
+                    seriesData = new
+                    {
+                        id = sRow["id"]?.ToString(),
+                        name = sRow["name"]?.ToString()
+                    };
+                }
+            }
+
+            return Ok(new { success = true, data = video, actors, series = seriesData });
         }
         catch (Exception ex)
         {
@@ -179,16 +196,103 @@ public class VideoController : ControllerBase
     /// 获取今日推荐
     /// </summary>
     [HttpGet("recommend")]
-    public IActionResult GetRecommend([FromQuery] int limit = 10)
+    public IActionResult GetRecommend([FromQuery] string videoId = "", [FromQuery] int limit = 10)
     {
         try
         {
-            var sql = @"
-                SELECT * FROM Video 
-                ORDER BY sortorder ASC, ctime DESC
-                LIMIT @limit";
+            // 确保limit为偶数且至少8
+            if (limit < 8) limit = 8;
+            if (limit % 2 != 0) limit++;
 
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@limit", limit));
+            List<string> videoIds = new List<string>();
+
+            if (!string.IsNullOrEmpty(videoId))
+            {
+                // 获取当前视频所属系列ID
+                var seriesSql = "SELECT seriesid FROM Video WHERE id = @id";
+                var seriesDt = _db.ExecuteDataTable(seriesSql, new SqliteParameter("@id", videoId));
+                string seriesId = seriesDt.Rows.Count > 0 ? seriesDt.Rows[0]["seriesid"]?.ToString() : null;
+
+                // 优先推荐同系列影片
+                if (!string.IsNullOrEmpty(seriesId))
+                {
+                    var sameSeriesSql = "SELECT id FROM Video WHERE seriesid = @seriesId AND id != @id ORDER BY ctime DESC";
+                    var sameSeriesDt = _db.ExecuteDataTable(sameSeriesSql,
+                        new SqliteParameter("@seriesId", seriesId),
+                        new SqliteParameter("@id", videoId));
+                    foreach (System.Data.DataRow r in sameSeriesDt.Rows)
+                    {
+                        videoIds.Add(r["id"].ToString());
+                    }
+                }
+
+                // 其次推荐同演员影片
+                var sameActorSql = @"
+                    SELECT v.id FROM Video v
+                    INNER JOIN VideoActor va ON v.id = va.videoid
+                    INNER JOIN VideoActor va2 ON va.actorid = va2.actorid
+                    WHERE va2.videoid = @id AND v.id != @id
+                    ORDER BY v.ctime DESC";
+                var sameActorDt = _db.ExecuteDataTable(sameActorSql, new SqliteParameter("@id", videoId));
+                foreach (System.Data.DataRow r in sameActorDt.Rows)
+                {
+                    var vid = r["id"].ToString();
+                    if (!videoIds.Contains(vid)) videoIds.Add(vid);
+                }
+
+                // 如果不够，随机推荐
+                if (videoIds.Count < limit)
+                {
+                    var idList = string.Join(",", videoIds.Select((_, i) => $"@eid{i}"));
+                    var excludeSql = string.IsNullOrEmpty(idList)
+                        ? "SELECT id FROM Video WHERE id != @id ORDER BY RANDOM()"
+                        : $"SELECT id FROM Video WHERE id != @id AND id NOT IN ({idList}) ORDER BY RANDOM()";
+                    var excludeParams = new List<SqliteParameter>
+                    {
+                        new SqliteParameter("@id", videoId)
+                    };
+                    for (int i = 0; i < videoIds.Count; i++)
+                    {
+                        excludeParams.Add(new SqliteParameter($"@eid{i}", videoIds[i]));
+                    }
+                    var remain = limit - videoIds.Count;
+                    var randomDt = _db.ExecuteDataTable(excludeSql, excludeParams.ToArray());
+                    foreach (System.Data.DataRow r in randomDt.Rows)
+                    {
+                        videoIds.Add(r["id"].ToString());
+                        remain--;
+                        if (remain <= 0) break;
+                    }
+                }
+
+                // 限制数量并取前limit个
+                videoIds = videoIds.Take(limit).ToList();
+            }
+            else
+            {
+                // 无videoId时随机推荐
+                var randomSql = "SELECT id FROM Video ORDER BY RANDOM() LIMIT @limit";
+                var randomDt = _db.ExecuteDataTable(randomSql, new SqliteParameter("@limit", limit));
+                foreach (System.Data.DataRow r in randomDt.Rows)
+                {
+                    videoIds.Add(r["id"].ToString());
+                }
+            }
+
+            if (videoIds.Count == 0)
+            {
+                return Ok(new { success = true, data = new List<Video>() });
+            }
+
+            // 批量查询视频详情
+            var idsStr = string.Join(",", videoIds.Select((_, i) => $"@vid{i}"));
+            var fetchSql = $"SELECT * FROM Video WHERE id IN ({idsStr})";
+            var fetchParams = new List<SqliteParameter>();
+            for (int i = 0; i < videoIds.Count; i++)
+            {
+                fetchParams.Add(new SqliteParameter($"@vid{i}", videoIds[i]));
+            }
+            var dt = _db.ExecuteDataTable(fetchSql, fetchParams.ToArray());
 
             var videos = new List<Video>();
             foreach (System.Data.DataRow row in dt.Rows)
@@ -209,30 +313,11 @@ public class VideoController : ControllerBase
                     UTime = row["utime"]?.ToString(),
                     Actors = new List<Actor>()
                 };
-                
-                // 获取该视频的演员列表
-                var actorSql = @"
-                    SELECT a.* FROM Actor a 
-                    INNER JOIN VideoActor va ON a.id = va.actorid 
-                    WHERE va.videoid = @videoId
-                    ORDER BY a.name";
-                var actorDt = _db.ExecuteDataTable(actorSql, 
-                    new SqliteParameter("@videoId", video.Id));
-                
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
-                {
-                    video.Actors.Add(new Actor
-                    {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
-                    });
-                }
-                
                 videos.Add(video);
             }
 
-            return Ok(new { success = true, data = videos });
+            // 保持推荐顺序
+            return Ok(new { success = true, data = videos.OrderBy(v => videoIds.IndexOf(v.Id)).ToList() });
         }
         catch (Exception ex)
         {

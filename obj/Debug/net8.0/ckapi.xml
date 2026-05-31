@@ -199,7 +199,7 @@
             获取视频详情
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetRecommend(System.Int32)">
+        <member name="M:ckapi.Controllers.VideoController.GetRecommend(System.String,System.Int32)">
             <summary>
             获取今日推荐
             </summary>
