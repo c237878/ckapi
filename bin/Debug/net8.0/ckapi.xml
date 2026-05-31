@@ -254,6 +254,11 @@
             修改时间
             </summary>
         </member>
+        <member name="P:ckapi.Models.Actor.VideoCount">
+            <summary>
+            参演影片数量
+            </summary>
+        </member>
         <member name="T:ckapi.Models.FriendLink">
             <summary>
             友情链接模型

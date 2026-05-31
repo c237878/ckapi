@@ -43,9 +43,9 @@ public class ActorController : ControllerBase
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT * FROM Actor 
+                SELECT a.*, (SELECT COUNT(*) FROM VideoActor va WHERE va.actorid = a.id) as video_count FROM Actor a 
                 {whereClause}
-                ORDER BY name ASC
+                ORDER BY a.name ASC
                 LIMIT @pageSize OFFSET @offset";
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
@@ -61,7 +61,8 @@ public class ActorController : ControllerBase
                     Alias = row["alias"]?.ToString(),
                     Country = row["country"]?.ToString(),
                     CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString()
+                    UTime = row["utime"]?.ToString(),
+                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
                 });
             }
 

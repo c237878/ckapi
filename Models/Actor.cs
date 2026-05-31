@@ -34,4 +34,9 @@ public class Actor
     /// 修改时间
     /// </summary>
     public string? UTime { get; set; }
+
+    /// <summary>
+    /// 参演影片数量
+    /// </summary>
+    public int VideoCount { get; set; }
 }
