@@ -189,7 +189,7 @@
             影片控制器
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32)">
+        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String)">
             <summary>
             获取视频列表
             </summary>

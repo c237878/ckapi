@@ -25,25 +25,40 @@ public class VideoController : ControllerBase
     /// 获取视频列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public IActionResult GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? seriesId = null)
     {
         try
         {
             var offset = (page - 1) * pageSize;
-            
+            var whereClause = "WHERE 1=1";
+            var parameters = new List<SqliteParameter>();
+
+            if (!string.IsNullOrEmpty(country))
+            {
+                whereClause += " AND v.country = @country";
+                parameters.Add(new SqliteParameter("@country", country));
+            }
+
+            if (!string.IsNullOrEmpty(seriesId))
+            {
+                whereClause += " AND v.seriesid = @seriesId";
+                parameters.Add(new SqliteParameter("@seriesId", seriesId));
+            }
+
             // 获取总数
-            var countSql = "SELECT COUNT(*) FROM Video";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql));
+            var countSql = $"SELECT COUNT(*) FROM Video v {whereClause}";
+            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             // 获取列表
-            var sql = @"
+            var sql = $@"
                 SELECT v.* FROM Video v
+                {whereClause}
                 ORDER BY v.sortorder ASC, v.ctime DESC
                 LIMIT @pageSize OFFSET @offset";
+            parameters.Add(new SqliteParameter("@pageSize", pageSize));
+            parameters.Add(new SqliteParameter("@offset", offset));
 
-            var dt = _db.ExecuteDataTable(sql,
-                new SqliteParameter("@pageSize", pageSize),
-                new SqliteParameter("@offset", offset));
+            var dt = _db.ExecuteDataTable(sql, parameters.ToArray());
 
             var videos = new List<Video>();
             foreach (System.Data.DataRow row in dt.Rows)
