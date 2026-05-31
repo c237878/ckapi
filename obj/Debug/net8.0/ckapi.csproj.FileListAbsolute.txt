@@ -58,3 +58,4 @@
 /Volumes/disk1/Code/ckapi/obj/Debug/net8.0/ckapi.pdb
 /Volumes/disk1/Code/ckapi/obj/Debug/net8.0/ckapi.genruntimeconfig.cache
 /Volumes/disk1/Code/ckapi/obj/Debug/net8.0/ref/ckapi.dll
+/Volumes/disk1/Code/ckapi/obj/Debug/net8.0/ckapi.sourcelink.json

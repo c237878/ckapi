@@ -68,8 +68,8 @@ public class VideoController : ControllerBase
                 // 获取该视频的演员列表
                 var actorSql = @"
                     SELECT a.* FROM Actor a 
-                    INNER JOIN VideoActor va ON a.id = va.actor_id 
-                    WHERE va.video_id = @videoId
+                    INNER JOIN VideoActor va ON a.id = va.actorid 
+                    WHERE va.videoid = @videoId
                     ORDER BY a.name";
                 var actorDt = _db.ExecuteDataTable(actorSql, 
                     new SqliteParameter("@videoId", video.Id));
@@ -132,8 +132,8 @@ public class VideoController : ControllerBase
             // 获取关联的演员列表
             var actorSql = @"
                 SELECT a.* FROM Actor a
-                INNER JOIN VideoActor va ON a.id = va.actor_id
-                WHERE va.video_id = @videoId
+                INNER JOIN VideoActor va ON a.id = va.actorid
+                WHERE va.videoid = @videoId
                 ORDER BY a.name";
             var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", id));
 
@@ -198,8 +198,8 @@ public class VideoController : ControllerBase
                 // 获取该视频的演员列表
                 var actorSql = @"
                     SELECT a.* FROM Actor a 
-                    INNER JOIN VideoActor va ON a.id = va.actor_id 
-                    WHERE va.video_id = @videoId
+                    INNER JOIN VideoActor va ON a.id = va.actorid 
+                    WHERE va.videoid = @videoId
                     ORDER BY a.name";
                 var actorDt = _db.ExecuteDataTable(actorSql, 
                     new SqliteParameter("@videoId", video.Id));
