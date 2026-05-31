@@ -1,0 +1,693 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>ckapi</name>
+    </assembly>
+    <members>
+        <member name="T:ckapi.Controllers.ActorController">
+            <summary>
+            演员相关接口
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.GetActors(System.Int32,System.Int32,System.String)">
+            <summary>
+            获取演员列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.GetActor(System.String)">
+            <summary>
+            获取演员详情
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.AddActor(ckapi.Models.Actor)">
+            <summary>
+            添加演员
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.UpdateActor(System.String,ckapi.Models.Actor)">
+            <summary>
+            更新演员
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.DeleteActor(System.String)">
+            <summary>
+            删除演员
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.GetActorVideos(System.String,System.Int32,System.Int32)">
+            <summary>
+            获取演员的影片列表
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.FriendLinkController">
+            <summary>
+            友情链接控制器
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.FriendLinkController.GetList">
+            <summary>
+            获取友情链接列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.FriendLinkController.Add(ckapi.Models.FriendLink)">
+            <summary>
+            添加友情链接
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.FriendLinkController.Update(System.String,ckapi.Models.FriendLink)">
+            <summary>
+            更新友情链接
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.FriendLinkController.Delete(System.String)">
+            <summary>
+            删除友情链接
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.LikeController">
+            <summary>
+            点赞相关接口
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.LikeController.LikeVideo(System.String,System.String)">
+            <summary>
+            点赞视频
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.LikeController.UnlikeVideo(System.String,System.String)">
+            <summary>
+            取消点赞
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.LikeController.GetLikeCount(System.String)">
+            <summary>
+            获取视频的点赞数
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.LikeController.CheckLiked(System.String,System.String)">
+            <summary>
+            检查是否已点赞
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.SeriesController">
+            <summary>
+            影视系列相关接口
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.GetSeriesList(System.Int32,System.Int32,System.String)">
+            <summary>
+            获取系列列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.GetSeries(System.String)">
+            <summary>
+            获取系列详情
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.GetSeriesVideos(System.String,System.Int32,System.Int32)">
+            <summary>
+            获取系列下的影片
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.AddSeries(ckapi.Models.VideoSeries)">
+            <summary>
+            添加系列
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.UpdateSeries(System.String,ckapi.Models.VideoSeries)">
+            <summary>
+            更新系列
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.DeleteSeries(System.String)">
+            <summary>
+            删除系列
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.SystemSettingController">
+            <summary>
+            系统设置控制器
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SystemSettingController.GetList">
+            <summary>
+            获取所有设置
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SystemSettingController.Get(System.String)">
+            <summary>
+            获取单个设置
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SystemSettingController.Save(System.Collections.Generic.Dictionary{System.String,System.Object})">
+            <summary>
+            添加或更新设置
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SystemSettingController.Delete(System.String)">
+            <summary>
+            删除设置
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.VideoActorController">
+            <summary>
+            视频-演员关联控制器
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.GetActorsByVideo(System.String)">
+            <summary>
+            获取视频关联的演员列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.GetVideosByActor(System.String)">
+            <summary>
+            获取演员关联的视频列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.AddRelation(ckapi.Models.VideoActor)">
+            <summary>
+            添加视频-演员关联
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.DeleteRelation(System.String)">
+            <summary>
+            删除视频-演员关联
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.DeleteByVideo(System.String)">
+            <summary>
+            删除视频的所有演员关联
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoActorController.SetVideoActors(System.String,System.Collections.Generic.List{System.String})">
+            <summary>
+            批量设置视频的演员（先删除旧的，再添加新的）
+            </summary>
+        </member>
+        <member name="T:ckapi.Controllers.VideoController">
+            <summary>
+            影片控制器
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32)">
+            <summary>
+            获取视频列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetVideo(System.String)">
+            <summary>
+            获取视频详情
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetRecommend(System.Int32)">
+            <summary>
+            获取今日推荐
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.AddVideo(ckapi.Models.Video)">
+            <summary>
+            添加视频
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.UpdateVideo(System.String,ckapi.Models.Video)">
+            <summary>
+            更新视频
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.DeleteVideo(System.String)">
+            <summary>
+            删除视频
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.Actor">
+            <summary>
+            演员模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.Name">
+            <summary>
+            姓名
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.Alias">
+            <summary>
+            别名
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.Country">
+            <summary>
+            所属国家
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Actor.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.FriendLink">
+            <summary>
+            友情链接模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.Name">
+            <summary>
+            网站名称
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.Link">
+            <summary>
+            网站链接
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.Logo">
+            <summary>
+            Logo（Base64或URL）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.Description">
+            <summary>
+            描述
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.SortOrder">
+            <summary>
+            排序序号
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.FriendLink.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.Highlight">
+            <summary>
+            精彩集锦模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.Image">
+            <summary>
+            图片（Base64）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.ActorId">
+            <summary>
+            对应演员ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.VideoId">
+            <summary>
+            对应影片ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.Title">
+            <summary>
+            标题
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.Description">
+            <summary>
+            描述
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Highlight.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.LikeRecord">
+            <summary>
+            点赞记录模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.VideoId">
+            <summary>
+            视频ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.LikeTime">
+            <summary>
+            点赞时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.UserToken">
+            <summary>
+            用户标识（可选，用于防重复点赞）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.LikeRecord.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.SystemSetting">
+            <summary>
+            系统设置模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SystemSetting.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SystemSetting.Name">
+            <summary>
+            设置名称
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SystemSetting.Content">
+            <summary>
+            设置内容
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SystemSetting.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SystemSetting.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.Video">
+            <summary>
+            影片模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Code">
+            <summary>
+            番号
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Name">
+            <summary>
+            名称
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Country">
+            <summary>
+            所属国家
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.CoverUrl">
+            <summary>
+            封面图片地址
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.VideoUrl">
+            <summary>
+            主机地址
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.VideoSize">
+            <summary>
+            视频大小（字节）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Quality">
+            <summary>
+            视频质量标记（如：4K, 1080P, 720P等）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.SeriesId">
+            <summary>
+            所属系列ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.SortOrder">
+            <summary>
+            排序序号
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.Video.Actors">
+            <summary>
+            关联演员列表
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.VideoActor">
+            <summary>
+            视频-演员关联模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoActor.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoActor.VideoId">
+            <summary>
+            视频ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoActor.ActorId">
+            <summary>
+            演员ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoActor.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoActor.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.VideoSeries">
+            <summary>
+            影视系列模型
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.Id">
+            <summary>
+            主键ID
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.Name">
+            <summary>
+            名称
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.Alias">
+            <summary>
+            别名
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.Link">
+            <summary>
+            链接
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.Country">
+            <summary>
+            所属国家
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.CTime">
+            <summary>
+            创建时间
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.VideoSeries.UTime">
+            <summary>
+            修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.IDataService">
+            <summary>
+            数据服务接口
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.IDataService.Initialize">
+            <summary>
+            初始化数据库和表结构
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.DataService">
+            <summary>
+            数据服务实现 - 负责项目启动时的数据库初始化
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.Initialize">
+            <summary>
+            初始化数据库和表结构
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateVideoTable">
+            <summary>
+            创建影片表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.MigrateVideoTable">
+            <summary>
+            迁移Video表结构
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateVideoSeriesTable">
+            <summary>
+            创建影视系列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateActorTable">
+            <summary>
+            创建演员表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateVideoActorTable">
+            <summary>
+            创建影片-演员关联表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateHighlightTable">
+            <summary>
+            创建精彩集锦表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateLikeRecordTable">
+            <summary>
+            创建点赞记录表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateSystemSettingTable">
+            <summary>
+            创建系统设置表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateFriendLinkTable">
+            <summary>
+            创建友情链接表
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.IActorService">
+            <summary>
+            演员服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.IFriendLinkService">
+            <summary>
+            友情链接服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.IHighlightService">
+            <summary>
+            精彩集锦服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.ILikeService">
+            <summary>
+            点赞服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.ISeriesService">
+            <summary>
+            系列服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.ISystemSettingService">
+            <summary>
+            系统设置服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.IVideoService">
+            <summary>
+            视频服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Utils.SQLiteHelper">
+            <summary>
+            SQLite数据库帮助类
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.GetDbPath">
+            <summary>
+            获取数据库路径
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.GetConnection">
+            <summary>
+            创建数据库连接
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.ExecuteNonQuery(System.String,Microsoft.Data.Sqlite.SqliteParameter[])">
+            <summary>
+            执行非查询SQL语句
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.ExecuteDataTable(System.String,Microsoft.Data.Sqlite.SqliteParameter[])">
+            <summary>
+            执行查询并返回DataTable
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.ExecuteScalar(System.String,Microsoft.Data.Sqlite.SqliteParameter[])">
+            <summary>
+            执行查询并返回第一行第一列
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.TableExists(System.String)">
+            <summary>
+            检查表是否存在
+            </summary>
+        </member>
+        <member name="M:ckapi.Utils.SQLiteHelper.CreateTable(System.String,System.String)">
+            <summary>
+            创建表
+            </summary>
+        </member>
+    </members>
+</doc>
