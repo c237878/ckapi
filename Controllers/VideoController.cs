@@ -77,15 +77,17 @@ public class VideoController : ControllerBase
                 videos.Add(new
                 {
                     id = reader["id"].ToString(),
+                    name = reader["title"].ToString(),
                     title = reader["title"].ToString(),
+                    code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
                     year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                     category = reader["category"].ToString(),
-                    file_path = reader["file_path"].ToString(),
-                    file_size = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                    cover_path = reader["cover_path"]?.ToString(),
-                    added_at = reader["added_at"].ToString(),
-                    play_count = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
-                    note = reader["note"]?.ToString()
+                    filePath = reader["file_path"].ToString(),
+                    fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                    coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                    addedAt = reader["added_at"].ToString(),
+                    playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
+                    note = reader["note"] == DBNull.Value ? null : reader["note"].ToString()
                 });
             }
 
@@ -130,16 +132,18 @@ public class VideoController : ControllerBase
             var video = new
             {
                 id = reader["id"].ToString(),
+                name = reader["title"].ToString(),
                 title = reader["title"].ToString(),
+                code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
                 year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                 category = reader["category"].ToString(),
-                file_path = reader["file_path"].ToString(),
-                file_size = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                cover_path = reader["cover_path"]?.ToString(),
-                added_at = reader["added_at"].ToString(),
-                play_count = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
-                last_played_at = reader["last_played_at"]?.ToString(),
-                note = reader["note"]?.ToString()
+                filePath = reader["file_path"].ToString(),
+                fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                addedAt = reader["added_at"].ToString(),
+                playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
+                lastPlayedAt = reader["last_played_at"] == DBNull.Value ? null : reader["last_played_at"].ToString(),
+                note = reader["note"] == DBNull.Value ? null : reader["note"].ToString()
             };
 
             // 获取演员列表
@@ -190,8 +194,8 @@ public class VideoController : ControllerBase
         {
             var id = Guid.NewGuid().ToString();
             var sql = @"
-                INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, added_at, note)
-                VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @addedAt, @note)";
+                INSERT INTO videos (id, title, code, year, category, file_path, file_size, cover_path, added_at, note)
+                VALUES (@id, @title, @code, @year, @category, @filePath, @fileSize, @coverPath, @addedAt, @note)";
             
             using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
             conn.Open();
@@ -199,6 +203,7 @@ public class VideoController : ControllerBase
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
+            cmd.Parameters.Add(new SqliteParameter("@code", req.Code ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
@@ -227,6 +232,104 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "AddVideo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 更新视频
+    /// </summary>
+    [HttpPut("{id}")]
+    public IActionResult UpdateVideo(string id, [FromBody] UpdateVideoRequest req)
+    {
+        try
+        {
+            var sql = @"
+                UPDATE videos SET 
+                    title = @title, 
+                    code = @code,
+                    year = @year, 
+                    category = @category, 
+                    file_path = @filePath, 
+                    note = @note
+                WHERE id = @id";
+
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            // 检查是否存在
+            using var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM videos WHERE id = @id", conn);
+            checkCmd.Parameters.Add(new SqliteParameter("@id", id));
+            if (Convert.ToInt32(checkCmd.ExecuteScalar()) == 0)
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
+            cmd.Parameters.Add(new SqliteParameter("@code", req.Code ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
+            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
+            cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
+            cmd.ExecuteNonQuery();
+
+            // 更新演员关联
+            if (req.ActorIds != null)
+            {
+                // 先删除所有旧关联
+                using var delCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn);
+                delCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                delCmd.ExecuteNonQuery();
+
+                // 重新添加
+                foreach (var actorId in req.ActorIds)
+                {
+                    var relSql = "INSERT INTO video_actors (video_id, actor_id) VALUES (@videoId, @actorId)";
+                    using var relCmd = new SqliteCommand(relSql, conn);
+                    relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                    relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
+                    relCmd.ExecuteNonQuery();
+                }
+            }
+
+            return Ok(new { success = true, message = "更新成功" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateVideo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 删除视频
+    /// </summary>
+    [HttpDelete("{id}")]
+    public IActionResult DeleteVideo(string id)
+    {
+        try
+        {
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            // 删除演员关联
+            using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn);
+            delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+            delRelCmd.ExecuteNonQuery();
+
+            // 删除视频
+            using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn);
+            delCmd.Parameters.Add(new SqliteParameter("@id", id));
+            var rows = delCmd.ExecuteNonQuery();
+
+            if (rows == 0)
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            return Ok(new { success = true, message = "删除成功" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DeleteVideo failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
@@ -532,11 +635,23 @@ public class VideoController : ControllerBase
 public class AddVideoRequest
 {
     public string Title { get; set; } = "";
+    public string? Code { get; set; }
     public int? Year { get; set; }
     public string Category { get; set; } = "";
     public string FilePath { get; set; } = "";
     public long? FileSize { get; set; }
     public string? CoverPath { get; set; }
+    public string? Note { get; set; }
+    public List<string>? ActorIds { get; set; }
+}
+
+public class UpdateVideoRequest
+{
+    public string Title { get; set; } = "";
+    public string? Code { get; set; }
+    public int? Year { get; set; }
+    public string Category { get; set; } = "";
+    public string FilePath { get; set; } = "";
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
 }
