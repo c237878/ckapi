@@ -79,7 +79,6 @@ public class VideoController : ControllerBase
                     id = reader["id"].ToString(),
                     name = reader["title"].ToString(),
                     title = reader["title"].ToString(),
-                    code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
                     year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                     category = reader["category"].ToString(),
                     filePath = reader["file_path"].ToString(),
@@ -194,8 +193,8 @@ public class VideoController : ControllerBase
         {
             var id = Guid.NewGuid().ToString();
             var sql = @"
-                INSERT INTO videos (id, title, code, year, category, file_path, file_size, cover_path, added_at, note)
-                VALUES (@id, @title, @code, @year, @category, @filePath, @fileSize, @coverPath, @addedAt, @note)";
+                INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, added_at, note)
+                VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @addedAt, @note)";
             
             using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
             conn.Open();
@@ -203,7 +202,6 @@ public class VideoController : ControllerBase
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
-            cmd.Parameters.Add(new SqliteParameter("@code", req.Code ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
@@ -247,7 +245,6 @@ public class VideoController : ControllerBase
             var sql = @"
                 UPDATE videos SET 
                     title = @title, 
-                    code = @code,
                     year = @year, 
                     category = @category, 
                     file_path = @filePath, 
@@ -266,7 +263,6 @@ public class VideoController : ControllerBase
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
-            cmd.Parameters.Add(new SqliteParameter("@code", req.Code ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
@@ -517,6 +513,9 @@ public class VideoController : ControllerBase
 
             foreach (var filePath in mp4Files)
             {
+                // 跳过 macOS 元数据文件（._ 开头）
+                if (Path.GetFileName(filePath).StartsWith("._")) continue;
+
                 try
                 {
                     var fileName = Path.GetFileNameWithoutExtension(filePath);
@@ -635,7 +634,6 @@ public class VideoController : ControllerBase
 public class AddVideoRequest
 {
     public string Title { get; set; } = "";
-    public string? Code { get; set; }
     public int? Year { get; set; }
     public string Category { get; set; } = "";
     public string FilePath { get; set; } = "";
@@ -648,7 +646,6 @@ public class AddVideoRequest
 public class UpdateVideoRequest
 {
     public string Title { get; set; } = "";
-    public string? Code { get; set; }
     public int? Year { get; set; }
     public string Category { get; set; } = "";
     public string FilePath { get; set; } = "";
