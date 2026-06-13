@@ -19,12 +19,12 @@
             获取演员详情
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.ActorController.AddActor(ckapi.Models.Actor)">
+        <member name="M:ckapi.Controllers.ActorController.AddActor(ckapi.Controllers.AddActorRequest)">
             <summary>
             添加演员
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.ActorController.UpdateActor(System.String,ckapi.Models.Actor)">
+        <member name="M:ckapi.Controllers.ActorController.UpdateActor(System.String,ckapi.Controllers.UpdateActorRequest)">
             <summary>
             更新演员
             </summary>
@@ -186,7 +186,7 @@
         </member>
         <member name="T:ckapi.Controllers.VideoController">
             <summary>
-            影片控制器
+            影片控制器（新版 - Samba影城系统）
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String)">
@@ -194,32 +194,17 @@
             获取视频列表
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetVideo(System.String)">
+        <member name="M:ckapi.Controllers.VideoController.GetById(System.String)">
             <summary>
             获取视频详情
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetRecommend(System.String,System.Int32)">
+        <member name="M:ckapi.Controllers.VideoController.AddVideo(ckapi.Controllers.AddVideoRequest)">
             <summary>
-            获取今日推荐
+            手动添加视频
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetLatest(System.Int32)">
-            <summary>
-            获取最新上映
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.VideoController.GetMostLiked(System.Int32)">
-            <summary>
-            获取最受喜爱
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.VideoController.AddVideo(ckapi.Models.Video)">
-            <summary>
-            添加视频
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.VideoController.UpdateVideo(System.String,ckapi.Models.Video)">
+        <member name="M:ckapi.Controllers.VideoController.UpdateVideo(System.String,ckapi.Controllers.UpdateVideoRequest)">
             <summary>
             更新视频
             </summary>
@@ -229,31 +214,24 @@
             删除视频
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetVideoStream(System.String)">
+        <member name="M:ckapi.Controllers.VideoController.ScanDirectory(ckapi.Controllers.ScanRequest)">
             <summary>
-            视频流接口 - 从 Samba 读取视频文件并流式返回
-            支持 HTTP Range 请求（视频拖拽）
+            扫描目录
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetCoverImage(System.String)">
+        <member name="M:ckapi.Controllers.VideoController.GetScanStatus(System.Int32)">
             <summary>
-            封面图接口 - 从 Samba 读取封面文件
+            获取扫描任务状态
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetContentType(System.String)">
+        <member name="M:ckapi.Controllers.VideoController.StreamVideo(System.String)">
             <summary>
-            根据文件扩展名获取 Content-Type
+            视频流代理（支持 Range 请求）
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.ProxyHttpFile(System.String,System.String)">
+        <member name="M:ckapi.Controllers.VideoController.GetCover(System.String)">
             <summary>
-            代理读取 HTTP 文件并返回 FileStreamResult（避免 Redirect 非 ASCII 字符崩溃）
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.VideoController.EncodeNonAsciiUrl(System.String)">
-            <summary>
-            对 URL 路径中的非 ASCII 字符进行 percent-encoding，保留斜杠不编码
-            避免使用 UriBuilder.Uri / new Uri(...) 避免重编码导致双重编码
+            封面代理
             </summary>
         </member>
         <member name="T:ckapi.Models.Actor">

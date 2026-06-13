@@ -1,5 +1,3 @@
-using ckapi.Models;
-using ckapi.Utils;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 
@@ -13,19 +11,24 @@ namespace ckapi.Controllers;
 public class ActorController : ControllerBase
 {
     private readonly ILogger<ActorController> _logger;
-    private readonly SQLiteHelper _db;
+    private readonly IConfiguration _config;
 
-    public ActorController(ILogger<ActorController> logger, SQLiteHelper db)
+    public ActorController(ILogger<ActorController> logger, IConfiguration config)
     {
         _logger = logger;
-        _db = db;
+        _config = config;
+    }
+
+    private SqliteConnection GetConnection()
+    {
+        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
     /// <summary>
     /// 获取演员列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null)
+    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null)
     {
         try
         {
@@ -33,45 +36,58 @@ public class ActorController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            if (!string.IsNullOrEmpty(country))
+            if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND country = @country";
-                parameters.Add(new SqliteParameter("@country", country));
+                whereClause += " AND name LIKE @keyword";
+                parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
-            var countSql = $"SELECT COUNT(*) FROM Actor {whereClause}";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
+            using var conn = GetConnection();
+            conn.Open();
 
-            var sql = $@"
-                SELECT a.*, (SELECT COUNT(*) FROM VideoActor va WHERE va.actorid = a.id) as video_count FROM Actor a 
-                {whereClause}
-                ORDER BY a.name ASC
-                LIMIT @pageSize OFFSET @offset";
-            parameters.Add(new SqliteParameter("@pageSize", pageSize));
-            parameters.Add(new SqliteParameter("@offset", offset));
-
-            var dt = _db.ExecuteDataTable(sql, parameters.ToArray());
-            var actors = new List<Actor>();
-            foreach (System.Data.DataRow row in dt.Rows)
+            // 总数
+            var countSql = $"SELECT COUNT(*) FROM actors {whereClause}";
+            using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                actors.Add(new Actor
+                foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
+                var total = Convert.ToInt32(countCmd.ExecuteScalar());
+
+                // 列表 + video_count 子查询
+                var sql = $@"
+                    SELECT a.*, 
+                        (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count
+                    FROM actors a
+                    {whereClause}
+                    ORDER BY a.name ASC
+                    LIMIT @pageSize OFFSET @offset";
+
+                using var cmd = new SqliteCommand(sql, conn);
+                foreach (var p in parameters) cmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
+                cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
+                cmd.Parameters.Add(new SqliteParameter("@offset", offset));
+
+                using var reader = cmd.ExecuteReader();
+                var actors = new List<object>();
+                while (reader.Read())
                 {
-                    Id = row["id"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Alias = row["alias"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
-                });
-            }
+                    actors.Add(new
+                    {
+                        id = reader["id"].ToString(),
+                        name = reader["name"].ToString(),
+                        avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
+                        bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
+                        videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
+                        addedAt = reader["added_at"]?.ToString()
+                    });
+                }
 
-            return Ok(new { success = true, data = actors, total, page, pageSize });
+                return Ok(new { success = true, data = actors, total, page, pageSize });
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员列表失败");
-            return Ok(new { success = false, message = "获取演员列表失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -83,22 +99,24 @@ public class ActorController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM Actor WHERE id = @id";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
-            if (dt.Rows.Count == 0)
-            {
-                return Ok(new { success = false, message = "演员不存在" });
-            }
+            using var conn = GetConnection();
+            conn.Open();
 
-            var row = dt.Rows[0];
-            var actor = new Actor
+            var sql = "SELECT * FROM actors WHERE id = @id";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            using var reader = cmd.ExecuteReader();
+
+            if (!reader.Read())
+                return NotFound(new { success = false, message = "演员不存在" });
+
+            var actor = new
             {
-                Id = row["id"]?.ToString(),
-                Name = row["name"]?.ToString(),
-                Alias = row["alias"]?.ToString(),
-                Country = row["country"]?.ToString(),
-                CTime = row["ctime"]?.ToString(),
-                UTime = row["utime"]?.ToString()
+                id = reader["id"].ToString(),
+                name = reader["name"].ToString(),
+                avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
+                bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
+                addedAt = reader["added_at"]?.ToString()
             };
 
             return Ok(new { success = true, data = actor });
@@ -106,7 +124,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员详情失败");
-            return Ok(new { success = false, message = "获取演员详情失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -114,38 +132,42 @@ public class ActorController : ControllerBase
     /// 添加演员
     /// </summary>
     [HttpPost]
-    public IActionResult AddActor([FromBody] Actor actor)
+    public IActionResult AddActor([FromBody] AddActorRequest request)
     {
         try
         {
-            if (string.IsNullOrEmpty(actor.Name))
-            {
+            if (string.IsNullOrEmpty(request.Name))
                 return Ok(new { success = false, message = "演员姓名不能为空" });
+
+            var id = Guid.NewGuid().ToString();
+            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 检查重名
+            using (var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM actors WHERE name = @name", conn))
+            {
+                checkCmd.Parameters.Add(new SqliteParameter("@name", request.Name));
+                if (Convert.ToInt32(checkCmd.ExecuteScalar()) > 0)
+                    return Ok(new { success = false, message = "演员已存在" });
             }
 
-            actor.Id = Guid.NewGuid().ToString();
-            actor.CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            actor.UTime = actor.CTime;
+            var sql = @"INSERT INTO actors (id, name, avatar_path, bio, added_at) VALUES (@id, @name, @avatarPath, @bio, @addedAt)";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
+            cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
+            cmd.ExecuteNonQuery();
 
-            var sql = @"
-                INSERT INTO Actor (id, name, alias, country, ctime, utime)
-                VALUES (@id, @name, @alias, @country, @ctime, @utime)";
-
-            _db.ExecuteNonQuery(sql,
-                new SqliteParameter("@id", actor.Id),
-                new SqliteParameter("@name", actor.Name),
-                new SqliteParameter("@alias", actor.Alias ?? ""),
-                new SqliteParameter("@country", actor.Country ?? ""),
-                new SqliteParameter("@ctime", actor.CTime),
-                new SqliteParameter("@utime", actor.UTime)
-            );
-
-            return Ok(new { success = true, data = actor, message = "添加成功" });
+            return Ok(new { success = true, data = new { id, name = request.Name }, message = "添加成功" });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "添加演员失败");
-            return Ok(new { success = false, message = "添加演员失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -153,41 +175,29 @@ public class ActorController : ControllerBase
     /// 更新演员
     /// </summary>
     [HttpPut("{id}")]
-    public IActionResult UpdateActor(string id, [FromBody] Actor actor)
+    public IActionResult UpdateActor(string id, [FromBody] UpdateActorRequest request)
     {
         try
         {
-            actor.UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            using var conn = GetConnection();
+            conn.Open();
 
-            var sql = @"
-                UPDATE Actor SET 
-                    name = @name,
-                    alias = @alias,
-                    country = @country,
-                    utime = @utime
-                WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, avatar_path = @avatarPath, bio = @bio WHERE id = @id";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
+            cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
 
-            var result = _db.ExecuteNonQuery(sql,
-                new SqliteParameter("@id", id),
-                new SqliteParameter("@name", actor.Name ?? ""),
-                new SqliteParameter("@alias", actor.Alias ?? ""),
-                new SqliteParameter("@country", actor.Country ?? ""),
-                new SqliteParameter("@utime", actor.UTime)
-            );
-
-            if (result > 0)
-            {
+            if (cmd.ExecuteNonQuery() > 0)
                 return Ok(new { success = true, message = "更新成功" });
-            }
             else
-            {
                 return Ok(new { success = false, message = "演员不存在" });
-            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "更新演员失败");
-            return Ok(new { success = false, message = "更新演员失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -199,27 +209,30 @@ public class ActorController : ControllerBase
     {
         try
         {
-            // 先删除演员-影片关联
-            _db.ExecuteNonQuery("DELETE FROM VideoActor WHERE actorid = @actorid", 
-                new SqliteParameter("@actorid", id));
+            using var conn = GetConnection();
+            conn.Open();
 
-            // 再删除演员
-            var sql = "DELETE FROM Actor WHERE id = @id";
-            var result = _db.ExecuteNonQuery(sql, new SqliteParameter("@id", id));
-
-            if (result > 0)
+            // 删除关联
+            using (var relCmd = new SqliteCommand("DELETE FROM video_actors WHERE actor_id = @actorId", conn))
             {
-                return Ok(new { success = true, message = "删除成功" });
+                relCmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                relCmd.ExecuteNonQuery();
             }
-            else
+
+            // 删除演员
+            using (var cmd = new SqliteCommand("DELETE FROM actors WHERE id = @id", conn))
             {
-                return Ok(new { success = false, message = "演员不存在" });
+                cmd.Parameters.Add(new SqliteParameter("@id", id));
+                if (cmd.ExecuteNonQuery() > 0)
+                    return Ok(new { success = true, message = "删除成功" });
+                else
+                    return Ok(new { success = false, message = "演员不存在" });
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "删除演员失败");
-            return Ok(new { success = false, message = "删除演员失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -232,65 +245,65 @@ public class ActorController : ControllerBase
         try
         {
             var offset = (page - 1) * pageSize;
-            var countSql = @"
-                SELECT COUNT(*) FROM Video v
-                INNER JOIN VideoActor va ON v.id = va.videoid
-                WHERE va.actorid = @actorid";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@actorid", id)));
+            using var conn = GetConnection();
+            conn.Open();
 
-            var sql = @"
-                SELECT v.* FROM Video v
-                INNER JOIN VideoActor va ON v.id = va.videoid
-                WHERE va.actorid = @actorid
-                ORDER BY v.ctime DESC
-                LIMIT @pageSize OFFSET @offset";
-            var dt = _db.ExecuteDataTable(sql,
-                new SqliteParameter("@actorid", id),
-                new SqliteParameter("@pageSize", pageSize),
-                new SqliteParameter("@offset", offset));
-
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
+            var countSql = @"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id WHERE va.actor_id = @actorId";
+            using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                var video = new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                };
+                countCmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                // 获取该视频的演员列表
-                var actorSql = @"SELECT a.* FROM Actor a INNER JOIN VideoActor va ON a.id = va.actorid WHERE va.videoid = @videoId";
-                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
+                var sql = @"
+                    SELECT v.* FROM videos v
+                    INNER JOIN video_actors va ON v.id = va.video_id
+                    WHERE va.actor_id = @actorId
+                    ORDER BY v.added_at DESC
+                    LIMIT @pageSize OFFSET @offset";
+                using var cmd = new SqliteCommand(sql, conn);
+                cmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
+                cmd.Parameters.Add(new SqliteParameter("@offset", offset));
+
+                using var reader = cmd.ExecuteReader();
+                var videos = new List<object>();
+                while (reader.Read())
                 {
-                    video.Actors.Add(new Actor
+                    videos.Add(new
                     {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
+                        id = reader["id"].ToString(),
+                        name = reader["title"].ToString(),
+                        code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
+                        category = reader["category"]?.ToString(),
+                        year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
+                        filePath = reader["file_path"]?.ToString(),
+                        fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                        addedAt = reader["added_at"]?.ToString()
                     });
                 }
 
-                videos.Add(video);
+                return Ok(new { success = true, data = videos, total, page, pageSize });
             }
-
-            return Ok(new { success = true, data = videos, total, page, pageSize });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员影片失败");
-            return Ok(new { success = false, message = "获取演员影片失败" });
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
+}
+
+public class AddActorRequest
+{
+    public string Name { get; set; } = "";
+    public string? AvatarPath { get; set; }
+    public string? Bio { get; set; }
+}
+
+public class UpdateActorRequest
+{
+    public string? Name { get; set; }
+    public string? AvatarPath { get; set; }
+    public string? Bio { get; set; }
 }
