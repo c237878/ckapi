@@ -133,7 +133,6 @@ public class VideoController : ControllerBase
                 id = reader["id"].ToString(),
                 name = reader["title"].ToString(),
                 title = reader["title"].ToString(),
-                code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
                 year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                 category = reader["category"].ToString(),
                 filePath = reader["file_path"].ToString(),
