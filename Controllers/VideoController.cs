@@ -1,28 +1,24 @@
 using Microsoft.AspNetCore.Mvc;
-using ckapi.Models;
-using ckapi.Services;
-using ckapi.Utils;
-using ckapi.Results;
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using System.IO;
 
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 影片控制器
+/// 影片控制器（新版 - Samba影城系统）
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 public class VideoController : ControllerBase
 {
-    private readonly SQLiteHelper _db;
+    private readonly IConfiguration _config;
     private readonly ILogger<VideoController> _logger;
-    private readonly Services.SambaService _sambaService;
 
-    public VideoController(SQLiteHelper db, ILogger<VideoController> logger, Services.SambaService sambaService)
+    public VideoController(IConfiguration config, ILogger<VideoController> logger)
     {
-        _db = db;
+        _config = config;
         _logger = logger;
-        _sambaService = sambaService;
     }
 
     /// <summary>
@@ -32,91 +28,83 @@ public class VideoController : ControllerBase
     public IActionResult GetList(
         [FromQuery] int pageIndex = 1,
         [FromQuery] int pageSize = 20,
-        [FromQuery] string? country = null,
-        [FromQuery] string? seriesId = null)
+        [FromQuery] string? category = null,
+        [FromQuery] string? keyword = null)
     {
         try
         {
-            var page = pageIndex;
-            var offset = (page - 1) * pageSize;
+            var offset = (pageIndex - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            if (!string.IsNullOrEmpty(country))
+            if (!string.IsNullOrEmpty(category))
             {
-                whereClause += " AND v.country = @country";
-                parameters.Add(new SqliteParameter("@country", country));
+                whereClause += " AND category = @category";
+                parameters.Add(new SqliteParameter("@category", category));
             }
 
-            if (!string.IsNullOrEmpty(seriesId))
+            if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND v.seriesid = @seriesId";
-                parameters.Add(new SqliteParameter("@seriesId", seriesId));
+                whereClause += " AND title LIKE @keyword";
+                parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
             // 获取总数
-            var countSql = $"SELECT COUNT(*) FROM Video v {whereClause}";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
+            var countSql = $"SELECT COUNT(*) FROM videos {whereClause}";
+            var total = Convert.ToInt32(ExecuteScalar(countSql, parameters.ToArray()));
 
             // 获取列表
             var sql = $@"
-                SELECT v.* FROM Video v
+                SELECT * FROM videos
                 {whereClause}
-                ORDER BY v.sortorder ASC, v.ctime DESC
+                ORDER BY added_at DESC
                 LIMIT @pageSize OFFSET @offset";
+            
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
 
-            var dt = _db.ExecuteDataTable(sql, parameters.ToArray());
-
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.AddRange(parameters.ToArray());
+            
+            using var reader = cmd.ExecuteReader();
+            
+            var videos = new List<object>();
+            while (reader.Read())
             {
-                var video = new Video
+                videos.Add(new
                 {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                };
-                
-                // 获取该视频的演员列表
-                var actorSql = @"
-                    SELECT a.* FROM Actor a 
-                    INNER JOIN VideoActor va ON a.id = va.actorid 
-                    WHERE va.videoid = @videoId
-                    ORDER BY a.name";
-                var actorDt = _db.ExecuteDataTable(actorSql, 
-                    new SqliteParameter("@videoId", video.Id));
-                
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
-                {
-                    video.Actors.Add(new Actor
-                    {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
-                    });
-                }
-                
-                videos.Add(video);
+                    id = reader["id"].ToString(),
+                    title = reader["title"].ToString(),
+                    year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
+                    category = reader["category"].ToString(),
+                    file_path = reader["file_path"].ToString(),
+                    file_size = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                    cover_path = reader["cover_path"]?.ToString(),
+                    added_at = reader["added_at"].ToString(),
+                    play_count = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
+                    note = reader["note"]?.ToString()
+                });
             }
 
-            return Ok(new { success = true, data = new { list = videos, total, page, pageSize } });
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    list = videos,
+                    total = total,
+                    page = pageIndex,
+                    pageSize = pageSize
+                }
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "获取视频列表失败");
-            return Ok(new { success = false, message = "获取视频列表失败" });
+            _logger.LogError(ex, "GetList failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
@@ -124,627 +112,439 @@ public class VideoController : ControllerBase
     /// 获取视频详情
     /// </summary>
     [HttpGet("{id}")]
-    public IActionResult GetVideo(string id)
+    public IActionResult GetById(string id)
     {
         try
         {
-            var sql = "SELECT * FROM Video WHERE id = @id";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
-            if (dt.Rows.Count == 0)
-            {
-                return Ok(new { success = false, message = "视频不存在" });
-            }
-
-            var row = dt.Rows[0];
-            var video = new Video
-            {
-                Id = row["id"]?.ToString(),
-                Code = row["code"]?.ToString(),
-                Name = row["name"]?.ToString(),
-                Country = row["country"]?.ToString(),
-                CoverUrl = row["coverurl"]?.ToString(),
-                VideoUrl = row["videourl"]?.ToString(),
-                VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                Quality = row["quality"]?.ToString(),
-                SeriesId = row["seriesid"]?.ToString(),
-                SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                CTime = row["ctime"]?.ToString(),
-                UTime = row["utime"]?.ToString(),
-                Actors = new List<Actor>()
-            };
-
-            // 获取关联的演员列表
-            var actorSql = @"
-                SELECT a.* FROM Actor a
-                INNER JOIN VideoActor va ON a.id = va.actorid
-                WHERE va.videoid = @videoId
-                ORDER BY a.name";
-            var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", id));
-
-            var actors = new List<Actor>();
-            foreach (System.Data.DataRow actorRow in actorDt.Rows)
-            {
-                actors.Add(new Actor
-                {
-                    Id = actorRow["id"]?.ToString(),
-                    Name = actorRow["name"]?.ToString(),
-                    Alias = actorRow["alias"]?.ToString(),
-                    Country = actorRow["country"]?.ToString(),
-                    CTime = actorRow["ctime"]?.ToString(),
-                    UTime = actorRow["utime"]?.ToString()
-                });
-            }
-
-            // 获取所属系列
-            object seriesData = null;
-            if (!string.IsNullOrEmpty(video.SeriesId))
-            {
-                var seriesSql = "SELECT * FROM VideoSeries WHERE id = @seriesId";
-                var seriesDt = _db.ExecuteDataTable(seriesSql, new SqliteParameter("@seriesId", video.SeriesId));
-                if (seriesDt.Rows.Count > 0)
-                {
-                    var sRow = seriesDt.Rows[0];
-                    seriesData = new
-                    {
-                        id = sRow["id"]?.ToString(),
-                        name = sRow["name"]?.ToString()
-                    };
-                }
-            }
-
-            return Ok(new { success = true, data = video, actors, series = seriesData });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "获取视频详情失败");
-            return Ok(new { success = false, message = "获取视频详情失败" });
-        }
-    }
-
-    /// <summary>
-    /// 获取今日推荐
-    /// </summary>
-    [HttpGet("recommend")]
-    public IActionResult GetRecommend([FromQuery] string videoId = "", [FromQuery] int limit = 10)
-    {
-        try
-        {
-            // 确保limit为偶数且至少8
-            if (limit < 8) limit = 8;
-            if (limit % 2 != 0) limit++;
-
-            List<string> videoIds = new List<string>();
-
-            if (!string.IsNullOrEmpty(videoId))
-            {
-                // 获取当前视频所属系列ID
-                var seriesSql = "SELECT seriesid FROM Video WHERE id = @id";
-                var seriesDt = _db.ExecuteDataTable(seriesSql, new SqliteParameter("@id", videoId));
-                string seriesId = seriesDt.Rows.Count > 0 ? seriesDt.Rows[0]["seriesid"]?.ToString() : null;
-
-                // 优先推荐同系列影片
-                if (!string.IsNullOrEmpty(seriesId))
-                {
-                    var sameSeriesSql = "SELECT id FROM Video WHERE seriesid = @seriesId AND id != @id ORDER BY ctime DESC";
-                    var sameSeriesDt = _db.ExecuteDataTable(sameSeriesSql,
-                        new SqliteParameter("@seriesId", seriesId),
-                        new SqliteParameter("@id", videoId));
-                    foreach (System.Data.DataRow r in sameSeriesDt.Rows)
-                    {
-                        videoIds.Add(r["id"].ToString());
-                    }
-                }
-
-                // 其次推荐同演员影片
-                var sameActorSql = @"
-                    SELECT v.id FROM Video v
-                    INNER JOIN VideoActor va ON v.id = va.videoid
-                    INNER JOIN VideoActor va2 ON va.actorid = va2.actorid
-                    WHERE va2.videoid = @id AND v.id != @id
-                    ORDER BY v.ctime DESC";
-                var sameActorDt = _db.ExecuteDataTable(sameActorSql, new SqliteParameter("@id", videoId));
-                foreach (System.Data.DataRow r in sameActorDt.Rows)
-                {
-                    var vid = r["id"].ToString();
-                    if (!videoIds.Contains(vid)) videoIds.Add(vid);
-                }
-
-                // 如果不够，随机推荐
-                if (videoIds.Count < limit)
-                {
-                    var idList = string.Join(",", videoIds.Select((_, i) => $"@eid{i}"));
-                    var excludeSql = string.IsNullOrEmpty(idList)
-                        ? "SELECT id FROM Video WHERE id != @id ORDER BY RANDOM()"
-                        : $"SELECT id FROM Video WHERE id != @id AND id NOT IN ({idList}) ORDER BY RANDOM()";
-                    var excludeParams = new List<SqliteParameter>
-                    {
-                        new SqliteParameter("@id", videoId)
-                    };
-                    for (int i = 0; i < videoIds.Count; i++)
-                    {
-                        excludeParams.Add(new SqliteParameter($"@eid{i}", videoIds[i]));
-                    }
-                    var remain = limit - videoIds.Count;
-                    var randomDt = _db.ExecuteDataTable(excludeSql, excludeParams.ToArray());
-                    foreach (System.Data.DataRow r in randomDt.Rows)
-                    {
-                        videoIds.Add(r["id"].ToString());
-                        remain--;
-                        if (remain <= 0) break;
-                    }
-                }
-
-                // 限制数量并取前limit个
-                videoIds = videoIds.Take(limit).ToList();
-            }
-            else
-            {
-                // 无videoId时随机推荐
-                var randomSql = "SELECT id FROM Video ORDER BY RANDOM() LIMIT @limit";
-                var randomDt = _db.ExecuteDataTable(randomSql, new SqliteParameter("@limit", limit));
-                foreach (System.Data.DataRow r in randomDt.Rows)
-                {
-                    videoIds.Add(r["id"].ToString());
-                }
-            }
-
-            if (videoIds.Count == 0)
-            {
-                return Ok(new { success = true, data = new List<Video>() });
-            }
-
-            // 批量查询视频详情
-            var idsStr = string.Join(",", videoIds.Select((_, i) => $"@vid{i}"));
-            var fetchSql = $"SELECT * FROM Video WHERE id IN ({idsStr})";
-            var fetchParams = new List<SqliteParameter>();
-            for (int i = 0; i < videoIds.Count; i++)
-            {
-                fetchParams.Add(new SqliteParameter($"@vid{i}", videoIds[i]));
-            }
-            var dt = _db.ExecuteDataTable(fetchSql, fetchParams.ToArray());
-
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
-            {
-                var video = new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                };
-
-                // 获取该视频的演员列表
-                var actorSql = @"
-                    SELECT a.* FROM Actor a 
-                    INNER JOIN VideoActor va ON a.id = va.actorid 
-                    WHERE va.videoid = @videoId
-                    ORDER BY a.name";
-                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
-                {
-                    video.Actors.Add(new Actor
-                    {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
-                    });
-                }
-
-                videos.Add(video);
-            }
-
-            // 保持推荐顺序
-            return Ok(new { success = true, data = videos.OrderBy(v => videoIds.IndexOf(v.Id)).ToList() });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "获取推荐视频失败");
-            return Ok(new { success = false, message = "获取推荐视频失败" });
-        }
-    }
-
-
-    /// <summary>
-    /// 获取最新上映
-    /// </summary>
-    [HttpGet("latest")]
-    public IActionResult GetLatest([FromQuery] int limit = 10)
-    {
-        try
-        {
-            if (limit <= 0) limit = 10;
-            var sql = @"
-                SELECT v.* FROM Video v
-                ORDER BY v.ctime DESC
-                LIMIT @limit";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@limit", limit));
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
-            {
-                videos.Add(new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                });
-            }
-            return Ok(new { success = true, data = videos });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "获取最新视频失败");
-            return Ok(new { success = false, message = "获取最新视频失败" });
-        }
-    }
-
-
-    /// <summary>
-    /// 获取最受喜爱
-    /// </summary>
-    [HttpGet("most-liked")]
-    public IActionResult GetMostLiked([FromQuery] int limit = 10)
-    {
-        try
-        {
-            if (limit <= 0) limit = 10;
-            var sql = @"
-                SELECT v.* FROM Video v
-                INNER JOIN LikeRecord lr ON v.id = lr.videoid
-                GROUP BY v.id
-                ORDER BY COUNT(lr.id) DESC
-                LIMIT @limit";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@limit", limit));
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
-            {
-                videos.Add(new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                });
-            }
-            return Ok(new { success = true, data = videos });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "获取最受喜爱视频失败");
-            return Ok(new { success = false, message = "获取最受喜爱视频失败" });
-        }
-    }
-
-    /// <summary>
-    /// 添加视频
-    /// </summary>
-    [HttpPost]
-    public IActionResult AddVideo([FromBody] Video video)
-    {
-        try
-        {
-            if (string.IsNullOrEmpty(video.Name))
-            {
-                return Ok(new { success = false, message = "视频名称不能为空" });
-            }
-
-            video.Id = Guid.NewGuid().ToString();
-            video.CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            video.UTime = video.CTime;
-
-            var sql = @"
-                INSERT INTO Video (id, code, name, country, coverurl, videourl, videosize, quality, seriesid, sortorder, ctime, utime)
-                VALUES (@id, @code, @name, @country, @coverurl, @videourl, @videosize, @quality, @seriesid, @sortorder, @ctime, @utime)";
-
-            _db.ExecuteNonQuery(sql,
-                new SqliteParameter("@id", video.Id),
-                new SqliteParameter("@code", video.Code ?? ""),
-                new SqliteParameter("@name", video.Name),
-                new SqliteParameter("@country", video.Country ?? ""),
-                new SqliteParameter("@coverurl", video.CoverUrl ?? ""),
-                new SqliteParameter("@videourl", video.VideoUrl ?? ""),
-                new SqliteParameter("@videosize", video.VideoSize),
-                new SqliteParameter("@quality", video.Quality ?? ""),
-                new SqliteParameter("@seriesid", video.SeriesId ?? ""),
-                new SqliteParameter("@sortorder", video.SortOrder),
-                new SqliteParameter("@ctime", video.CTime),
-                new SqliteParameter("@utime", video.UTime)
-            );
-
-            return Ok(new { success = true, data = video, message = "添加成功" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "添加视频失败");
-            return Ok(new { success = false, message = "添加视频失败: " + ex.Message });
-        }
-    }
-
-    /// <summary>
-    /// 更新视频
-    /// </summary>
-    [HttpPut("{id}")]
-    public IActionResult UpdateVideo(string id, [FromBody] Video video)
-    {
-        try
-        {
-            video.UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-
-            var sql = @"
-                UPDATE Video 
-                SET code = @code, 
-                    name = @name, 
-                    country = @country,
-                    coverurl = @coverurl,
-                    videourl = @videourl,
-                    videosize = @videosize, 
-                    quality = @quality, 
-                    seriesid = @seriesid, 
-                    sortorder = @sortorder, 
-                    utime = @utime
-                WHERE id = @id";
-
-            var rows = _db.ExecuteNonQuery(sql,
-                new SqliteParameter("@code", video.Code ?? ""),
-                new SqliteParameter("@name", video.Name ?? ""),
-                new SqliteParameter("@country", video.Country ?? ""),
-                new SqliteParameter("@coverurl", video.CoverUrl ?? ""),
-                new SqliteParameter("@videourl", video.VideoUrl ?? ""),
-                new SqliteParameter("@videosize", video.VideoSize),
-                new SqliteParameter("@quality", video.Quality ?? ""),
-                new SqliteParameter("@seriesid", video.SeriesId ?? ""),
-                new SqliteParameter("@sortorder", video.SortOrder),
-                new SqliteParameter("@utime", video.UTime),
-                new SqliteParameter("@id", id)
-            );
-
-            if (rows > 0)
-            {
-                return Ok(new { success = true, message = "更新成功" });
-            }
-            return Ok(new { success = false, message = "视频不存在" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "更新视频失败");
-            return Ok(new { success = false, message = "更新视频失败" });
-        }
-    }
-
-    /// <summary>
-    /// 删除视频
-    /// </summary>
-    [HttpDelete("{id}")]
-    public IActionResult DeleteVideo(string id)
-    {
-        try
-        {
-            var rows = _db.ExecuteNonQuery(
-                "DELETE FROM Video WHERE id = @id",
-                new SqliteParameter("@id", id));
-
-            if (rows > 0)
-            {
-                return Ok(new { success = true, message = "删除成功" });
-            }
-            return Ok(new { success = false, message = "视频不存在" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "删除视频失败");
-            return Ok(new { success = false, message = "删除视频失败" });
-        }
-    }
-
-    /// <summary>
-    /// 视频流接口 - 从 Samba 读取视频文件并流式返回
-    /// 支持 HTTP Range 请求（视频拖拽）
-    /// </summary>
-    [HttpGet("stream/{id}")]
-    public async Task<IActionResult> GetVideoStream(string id)
-    {
-        try
-        {
-            // 1. 查询视频记录
-            var sql = "SELECT videourl, coverurl, name FROM Video WHERE id = @id";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
-            if (dt.Rows.Count == 0)
+            var sql = "SELECT * FROM videos WHERE id = @id";
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read())
                 return NotFound(new { success = false, message = "视频不存在" });
 
-            var videoUrl = dt.Rows[0]["videourl"]?.ToString() ?? "";
-            var videoName = dt.Rows[0]["name"]?.ToString() ?? "video";
-
-            // 2. 解析真实文件路径
-            string? filePath = null;
-
-            if (_sambaService.IsEnabled && !string.IsNullOrWhiteSpace(_sambaService.GetVideoLocalPath(videoUrl)))
+            var video = new
             {
-                // Samba 模式：使用挂载路径
-                filePath = _sambaService.GetVideoLocalPath(SambaService.ExtractRelativePath(videoUrl));
-            }
-            else
+                id = reader["id"].ToString(),
+                title = reader["title"].ToString(),
+                year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
+                category = reader["category"].ToString(),
+                file_path = reader["file_path"].ToString(),
+                file_size = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                cover_path = reader["cover_path"]?.ToString(),
+                added_at = reader["added_at"].ToString(),
+                play_count = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
+                last_played_at = reader["last_played_at"]?.ToString(),
+                note = reader["note"]?.ToString()
+            };
+
+            // 获取演员列表
+            var actorSql = @"
+                SELECT a.* FROM actors a
+                INNER JOIN video_actors va ON a.id = va.actor_id
+                WHERE va.video_id = @videoId";
+            
+            using var actorCmd = new SqliteCommand(actorSql, conn);
+            actorCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+            
+            using var actorReader = actorCmd.ExecuteReader();
+            var actors = new List<object>();
+            while (actorReader.Read())
             {
-                // HTTP 模式：后端代理读取，避免 Redirect 非 ASCII 字符崩溃
-                if (videoUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                actors.Add(new
                 {
-                    return await ProxyHttpFile(videoUrl, GetContentType(videoUrl));
-                }
-                // 本地文件模式
-                filePath = videoUrl;
+                    id = actorReader["id"].ToString(),
+                    name = actorReader["name"].ToString(),
+                    avatar_path = actorReader["avatar_path"]?.ToString()
+                });
             }
 
-            if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+            return Ok(new
             {
-                _logger.LogWarning("视频文件不存在: {Path}", filePath);
-                return NotFound(new { success = false, message = "视频文件不存在" });
-            }
-
-            // 3. 支持 Range 请求（视频拖拽）
-            var contentType = GetContentType(filePath);
-            return PhysicalFile(filePath, contentType, enableRangeProcessing: true);
+                success = true,
+                data = new
+                {
+                    video = video,
+                    actors = actors
+                }
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "视频流读取失败: {VideoId}", id);
-            return StatusCode(500, new { success = false, message = "视频流读取失败" });
+            _logger.LogError(ex, "GetById failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
     /// <summary>
-    /// 封面图接口 - 从 Samba 读取封面文件
+    /// 手动添加视频
+    /// </summary>
+    [HttpPost("add")]
+    public IActionResult AddVideo([FromBody] AddVideoRequest req)
+    {
+        try
+        {
+            var id = Guid.NewGuid().ToString();
+            var sql = @"
+                INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, added_at, note)
+                VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @addedAt, @note)";
+            
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
+            cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
+            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
+            cmd.Parameters.Add(new SqliteParameter("@fileSize", req.FileSize ?? 0));
+            cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
+            
+            cmd.ExecuteNonQuery();
+
+            // 关联演员
+            if (req.ActorIds != null && req.ActorIds.Any())
+            {
+                foreach (var actorId in req.ActorIds)
+                {
+                    var relSql = "INSERT OR IGNORE INTO video_actors (video_id, actor_id) VALUES (@videoId, @actorId)";
+                    using var relCmd = new SqliteCommand(relSql, conn);
+                    relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                    relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
+                    relCmd.ExecuteNonQuery();
+                }
+            }
+
+            return Ok(new { success = true, data = new { id = id }, message = "添加成功" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AddVideo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 扫描目录
+    /// </summary>
+    [HttpPost("scan")]
+    public IActionResult ScanDirectory([FromBody] ScanRequest req)
+    {
+        try
+        {
+            var taskId = 0;
+            var sql = @"
+                INSERT INTO scan_tasks (task_type, status, target_path, started_at)
+                VALUES ('manual', 'pending', @targetPath, @startedAt);
+                SELECT last_insert_rowid();";
+            
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@targetPath", req.TargetPath));
+            cmd.Parameters.Add(new SqliteParameter("@startedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            
+            taskId = Convert.ToInt32(cmd.ExecuteScalar());
+
+            // TODO: 启动后台扫描任务（用 Task.Run 或 Hangfire）
+            // 这里为了简化，先同步执行扫描
+            ScanDirectoryAsync(req.TargetPath, req.Recursive, taskId);
+
+            return Ok(new { success = true, data = new { task_id = taskId }, message = "扫描任务已启动" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ScanDirectory failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 获取扫描任务状态
+    /// </summary>
+    [HttpGet("scan/{taskId}")]
+    public IActionResult GetScanStatus(int taskId)
+    {
+        try
+        {
+            var sql = "SELECT * FROM scan_tasks WHERE id = @taskId";
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+            
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read())
+                return NotFound(new { success = false, message = "任务不存在" });
+
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    id = Convert.ToInt32(reader["id"]),
+                    task_type = reader["task_type"].ToString(),
+                    status = reader["status"].ToString(),
+                    target_path = reader["target_path"].ToString(),
+                    started_at = reader["started_at"].ToString(),
+                    completed_at = reader["completed_at"]?.ToString(),
+                    files_found = reader["files_found"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_found"]),
+                    files_added = reader["files_added"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_added"]),
+                    files_updated = reader["files_updated"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_updated"])
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetScanStatus failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 视频流代理（支持 Range 请求）
+    /// </summary>
+    [HttpGet("stream/{id}")]
+    public IActionResult StreamVideo(string id)
+    {
+        try
+        {
+            // 1. 从数据库获取文件路径
+            var sql = "SELECT file_path FROM videos WHERE id = @id";
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            
+            var filePath = cmd.ExecuteScalar()?.ToString();
+            if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
+                return NotFound(new { success = false, message = "视频文件不存在" });
+
+            // 2. 更新播放次数
+            var updateSql = @"
+                UPDATE videos 
+                SET play_count = play_count + 1, last_played_at = @lastPlayedAt
+                WHERE id = @id";
+            using var updateCmd = new SqliteCommand(updateSql, conn);
+            updateCmd.Parameters.Add(new SqliteParameter("@lastPlayedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            updateCmd.Parameters.Add(new SqliteParameter("@id", id));
+            updateCmd.ExecuteNonQuery();
+
+            // 3. 返回文件流（支持 Range）
+            var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var response = File(fileStream, "video/mp4", enableRangeProcessing: true);
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "StreamVideo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 封面代理
     /// </summary>
     [HttpGet("cover/{id}")]
-    public async Task<IActionResult> GetCoverImage(string id)
+    public IActionResult GetCover(string id)
     {
         try
         {
-            var sql = "SELECT coverurl FROM Video WHERE id = @id";
-            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
-            if (dt.Rows.Count == 0)
-                return NotFound();
+            var sql = "SELECT cover_path FROM videos WHERE id = @id";
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            
+            var coverPath = cmd.ExecuteScalar()?.ToString();
+            if (string.IsNullOrEmpty(coverPath) || !System.IO.File.Exists(coverPath))
+                return NotFound(new { success = false, message = "封面不存在" });
 
-            var coverUrl = dt.Rows[0]["coverurl"]?.ToString() ?? "";
-            if (string.IsNullOrWhiteSpace(coverUrl))
-                return NotFound();
+            var fileStream = new FileStream(coverPath, FileMode.Open, FileAccess.Read);
+            return File(fileStream, "image/jpeg");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetCover failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
 
-            string? filePath = null;
-            if (_sambaService.IsEnabled && !string.IsNullOrWhiteSpace(_sambaService.GetCoverLocalPath(coverUrl)))
+    #region 私有方法
+
+    private object? ExecuteScalar(string sql, SqliteParameter[] parameters)
+    {
+        using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+        conn.Open();
+        
+        using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddRange(parameters);
+        
+        return cmd.ExecuteScalar();
+    }
+
+    private void ScanDirectoryAsync(string targetPath, bool recursive, int taskId)
+    {
+        try
+        {
+            var filesFound = 0;
+            var filesAdded = 0;
+            var filesUpdated = 0;
+            var errors = new List<string>();
+
+            // 1. 遍历目录，查找 .mp4 文件
+            var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            var mp4Files = Directory.GetFiles(targetPath, "*.mp4", searchOption);
+
+            filesFound = mp4Files.Length;
+
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            foreach (var filePath in mp4Files)
             {
-                filePath = _sambaService.GetCoverLocalPath(SambaService.ExtractRelativePath(coverUrl));
-            }
-            else
-            {
-                // HTTP 模式：后端代理读取，避免 Redirect 非 ASCII 字符崩溃
-                if (coverUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    return await ProxyHttpFile(coverUrl, GetContentType(coverUrl));
+                    var fileName = Path.GetFileNameWithoutExtension(filePath);
+                    var fileInfo = new FileInfo(filePath);
+                    var coverPath = Path.ChangeExtension(filePath, ".jpg");
+                    
+                    // 检查封面是否存在
+                    var coverExists = System.IO.File.Exists(coverPath);
+
+                    // 检查数据库中是否已存在
+                    var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
+                    using var checkCmd = new SqliteCommand(checkSql, conn);
+                    checkCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+                    var exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+
+                    if (exists)
+                    {
+                        // 更新
+                        var updateSql = @"UPDATE videos SET file_size = @fileSize, cover_path = @coverPath WHERE file_path = @filePath";
+                        using var updateCmd = new SqliteCommand(updateSql, conn);
+                        updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
+                        updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+                        updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+                        updateCmd.ExecuteNonQuery();
+                        filesUpdated++;
+                    }
+                    else
+                    {
+                        // 新增
+                        var id = Guid.NewGuid().ToString();
+                        var category = DetermineCategory(filePath);
+                        var year = ExtractYear(fileName);
+
+                        var insertSql = @"INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, added_at) 
+                                        VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @addedAt)";
+                        using var insertCmd = new SqliteCommand(insertSql, conn);
+                        insertCmd.Parameters.Add(new SqliteParameter("@id", id));
+                        insertCmd.Parameters.Add(new SqliteParameter("@title", fileName));
+                        insertCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
+                        insertCmd.Parameters.Add(new SqliteParameter("@category", category));
+                        insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+                        insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
+                        insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+                        insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                        insertCmd.ExecuteNonQuery();
+                        filesAdded++;
+                    }
                 }
-                filePath = coverUrl;
+                catch (Exception ex)
+                {
+                    errors.Add($"{filePath}: {ex.Message}");
+                }
             }
 
-            if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
-                return NotFound();
-
-            var contentType = GetContentType(filePath);
-            return PhysicalFile(filePath, contentType);
+            // 更新任务状态
+            var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
+                                    files_found = @filesFound, files_added = @filesAdded, 
+                                    files_updated = @filesUpdated, errors = @errors 
+                                    WHERE id = @taskId";
+            using var updateTaskCmd = new SqliteCommand(updateTaskSql, conn);
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", filesFound));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", filesAdded));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", filesUpdated));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+            updateTaskCmd.ExecuteNonQuery();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "封面图读取失败: {VideoId}", id);
-            return StatusCode(500);
+            // 更新任务状态为失败
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+            
+            var updateTaskSql = @"UPDATE scan_tasks SET status = 'failed', completed_at = @completedAt, errors = @errors 
+                                    WHERE id = @taskId";
+            using var updateTaskCmd = new SqliteCommand(updateTaskSql, conn);
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", ex.Message));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+            updateTaskCmd.ExecuteNonQuery();
+            
+            _logger.LogError(ex, "ScanDirectoryAsync failed");
         }
     }
 
-    /// <summary>
-    /// 根据文件扩展名获取 Content-Type
-    /// </summary>
-    private static string GetContentType(string path)
+    private string DetermineCategory(string filePath)
     {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext switch
+        // 简化：根据目录结构判断分类
+        // 假设目录结构为：/Volumes/wdc4t/电影/xxx.mp4
+        var parts = filePath.Split('/', '\\');
+        foreach (var part in parts)
         {
-            ".mp4" => "video/mp4",
-            ".webm" => "video/webm",
-            ".ogg" => "video/ogg",
-            ".mov" => "video/quicktime",
-            ".mkv" => "video/x-matroska",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".png" => "image/png",
-            ".webp" => "image/webp",
-            ".gif" => "image/gif",
-            _ => "application/octet-stream"
-        };
+            if (part == "电影") return "电影";
+            if (part == "电视剧") return "电视剧";
+            if (part == "动漫") return "动漫";
+        }
+        return "其他";
     }
 
-    private static readonly HttpClient _proxyHttpClient;
-
-    static VideoController()
+    private int? ExtractYear(string fileName)
     {
-        var handler = new HttpClientHandler();
-        // 强制 HTTP/1.1，避免上游不支持 HTTP/2 导致 502
-        handler.SslProtocols = System.Security.Authentication.SslProtocols.None;
-        _proxyHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
-        _proxyHttpClient.DefaultRequestHeaders.Connection.ParseAdd("close");
-        _proxyHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; CKAPI/1.0)");
-        _proxyHttpClient.DefaultRequestHeaders.Accept.ParseAdd("image/*, video/*, */*");
+        var match = System.Text.RegularExpressions.Regex.Match(fileName, @"\((\d{4})\)");
+        if (match.Success)
+        {
+            return int.Parse(match.Groups[1].Value);
+        }
+        return null;
     }
 
-    /// <summary>
-    /// 代理读取 HTTP 文件并返回 FileStreamResult（避免 Redirect 非 ASCII 字符崩溃）
-    /// </summary>
-    private async Task<IActionResult> ProxyHttpFile(string url, string? contentType = null)
-    {
-        try
-        {
-            // 对 URL 中的非 ASCII 字符做 percent-encoding
-            var encodedUrl = EncodeNonAsciiUrl(url);
-
-            var response = await _proxyHttpClient.GetAsync(encodedUrl, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            // 流式转发到浏览器（不缓冲整个文件）
-            contentType ??= response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
-            return new StreamForwardResult(response.Content, contentType, response);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
-        {
-            _logger.LogError(ex, "代理读取文件失败 (上游返回 {StatusCode}): {Url}", ex.StatusCode, url);
-            return StatusCode((int)ex.StatusCode.Value, new { success = false, message = $"视频源服务器返回错误: {ex.StatusCode}" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "代理读取文件失败: {Url}", url);
-            return StatusCode(502, new { success = false, message = "视频源服务器不可用" });
-        }
-    }
-
-    /// <summary>
-    /// 对 URL 路径中的非 ASCII 字符进行 percent-encoding，保留斜杠不编码
-    /// 避免使用 UriBuilder.Uri / new Uri(...) 避免重编码导致双重编码
-    /// </summary>
-    private static string EncodeNonAsciiUrl(string url)
-    {
-        var uri = new Uri(url);
-        var sb = new System.Text.StringBuilder();
-        foreach (var c in uri.AbsolutePath)
-        {
-            if (c >= 0x80)
-                sb.Append(Uri.EscapeDataString(c.ToString()));
-            else if (c == '/')
-                sb.Append('/');
-            else
-                sb.Append(c);
-        }
-        var port = uri.Port;
-        var portStr = (port > 0 && port != 80) ? $":{port}" : "";
-        return $"{uri.Scheme}://{uri.Host}{portStr}{sb}";
-    }
+    #endregion
 }
+
+#region 请求模型
+
+public class AddVideoRequest
+{
+    public string Title { get; set; } = "";
+    public int? Year { get; set; }
+    public string Category { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public long? FileSize { get; set; }
+    public string? CoverPath { get; set; }
+    public string? Note { get; set; }
+    public List<string>? ActorIds { get; set; }
+}
+
+public class ScanRequest
+{
+    public string TargetPath { get; set; } = "";
+    public bool Recursive { get; set; } = true;
+}
+
+#endregion
