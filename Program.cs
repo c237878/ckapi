@@ -23,6 +23,11 @@ builder.Services.AddSingleton<ckapi.Utils.SQLiteHelper>(sp =>
     new ckapi.Utils.SQLiteHelper(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<ILogger<ckapi.Utils.SQLiteHelper>>()));
 builder.Services.AddScoped<IDataService, DataService>();
 
+// 注册 Samba 配置与服务
+builder.Services.Configure<ckapi.Models.SambaConfig>(
+    builder.Configuration.GetSection("SambaConfig"));
+builder.Services.AddScoped<ckapi.Services.SambaService>();
+
 // 配置CORS
 builder.Services.AddCors(options =>
 {

@@ -204,6 +204,16 @@
             获取今日推荐
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.GetLatest(System.Int32)">
+            <summary>
+            获取最新上映
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetMostLiked(System.Int32)">
+            <summary>
+            获取最受喜爱
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.AddVideo(ckapi.Models.Video)">
             <summary>
             添加视频
@@ -217,6 +227,33 @@
         <member name="M:ckapi.Controllers.VideoController.DeleteVideo(System.String)">
             <summary>
             删除视频
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetVideoStream(System.String)">
+            <summary>
+            视频流接口 - 从 Samba 读取视频文件并流式返回
+            支持 HTTP Range 请求（视频拖拽）
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetCoverImage(System.String)">
+            <summary>
+            封面图接口 - 从 Samba 读取封面文件
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetContentType(System.String)">
+            <summary>
+            根据文件扩展名获取 Content-Type
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.ProxyHttpFile(System.String,System.String)">
+            <summary>
+            代理读取 HTTP 文件并返回 FileStreamResult（避免 Redirect 非 ASCII 字符崩溃）
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.EncodeNonAsciiUrl(System.String)">
+            <summary>
+            对 URL 路径中的非 ASCII 字符进行 percent-encoding，保留斜杠不编码
+            避免使用 UriBuilder.Uri / new Uri(...) 避免重编码导致双重编码
             </summary>
         </member>
         <member name="T:ckapi.Models.Actor">
@@ -382,6 +419,58 @@
         <member name="P:ckapi.Models.LikeRecord.UTime">
             <summary>
             修改时间
+            </summary>
+        </member>
+        <member name="T:ckapi.Models.SambaConfig">
+            <summary>
+            Samba 配置项
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.Server">
+            <summary>
+            Samba 服务器地址（IP 或主机名）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.Username">
+            <summary>
+            Samba 用户名（匿名访问时留空）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.Password">
+            <summary>
+            Samba 密码（匿名访问时留空）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.ShareName">
+            <summary>
+            Samba 共享名称（如 "lib", "share"）
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.BasePath">
+            <summary>
+            Samba 共享根路径（URL 中的根前缀，如 "/" 或 "/libsF"）
+            用于解析数据库中存储的相对路径
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.MountPath">
+            <summary>
+            本地挂载路径（使用 mount -t smbfs 挂载后的本地目录）
+            如 "/mnt/smb"，留空则使用 SMB 协议直连
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.VideoRoot">
+            <summary>
+            视频文件在共享中的子目录名
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.CoverRoot">
+            <summary>
+            封面文件在共享中的子目录名
+            </summary>
+        </member>
+        <member name="P:ckapi.Models.SambaConfig.Enabled">
+            <summary>
+            是否启用 Samba 模式（false 时仍使用 HTTP URL）
             </summary>
         </member>
         <member name="T:ckapi.Models.SystemSetting">
@@ -559,6 +648,11 @@
             关联影片数量
             </summary>
         </member>
+        <member name="T:ckapi.Results.StreamForwardResult">
+            <summary>
+            将 HttpContent 流式转发到响应体，支持大文件
+            </summary>
+        </member>
         <member name="T:ckapi.Services.IDataService">
             <summary>
             数据服务接口
@@ -657,6 +751,47 @@
         <member name="T:ckapi.Services.IVideoService">
             <summary>
             视频服务接口
+            </summary>
+        </member>
+        <member name="T:ckapi.Services.SambaService">
+            <summary>
+            Samba 路径解析服务
+            根据配置组合出视频/封面的真实访问路径
+            </summary>
+        </member>
+        <member name="P:ckapi.Services.SambaService.IsEnabled">
+            <summary>
+            Samba 配置是否启用
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.GetVideoLocalPath(System.String)">
+            <summary>
+            获取视频文件的本地真实路径（用于文件流传输）
+            当 MountPath 配置时，直接返回本地挂载路径
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.GetCoverLocalPath(System.String)">
+            <summary>
+            获取封面文件的本地真实路径
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.GetSambaUncPath(System.String)">
+            <summary>
+            将数据库中的相对路径转换为 Samba UNC 路径（用于调试/日志）
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.ExtractRelativePath(System.String)">
+            <summary>
+            解析数据库中的 URL，提取相对路径
+            支持两种格式：
+            1. HTTP URL: "http://192.168.110.6/libsF/视频库/xxx.mp4"
+            2. 相对路径: "/libsF/视频库/xxx.mp4"
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.BuildStreamUrl(System.String)">
+            <summary>
+            构建视频流式访问 URL（供前端播放用）
+            返回后端代理地址："/api/video/stream/{id}"
             </summary>
         </member>
         <member name="T:ckapi.Utils.SQLiteHelper">

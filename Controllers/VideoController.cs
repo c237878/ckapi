@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using ckapi.Models;
+using ckapi.Services;
 using ckapi.Utils;
+using ckapi.Results;
 using Microsoft.Data.Sqlite;
 
 namespace ckapi.Controllers;
@@ -14,21 +16,28 @@ public class VideoController : ControllerBase
 {
     private readonly SQLiteHelper _db;
     private readonly ILogger<VideoController> _logger;
+    private readonly Services.SambaService _sambaService;
 
-    public VideoController(SQLiteHelper db, ILogger<VideoController> logger)
+    public VideoController(SQLiteHelper db, ILogger<VideoController> logger, Services.SambaService sambaService)
     {
         _db = db;
         _logger = logger;
+        _sambaService = sambaService;
     }
 
     /// <summary>
     /// 获取视频列表
     /// </summary>
-    [HttpGet]
-    public IActionResult GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? seriesId = null)
+    [HttpGet("list")]
+    public IActionResult GetList(
+        [FromQuery] int pageIndex = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? country = null,
+        [FromQuery] string? seriesId = null)
     {
         try
         {
+            var page = pageIndex;
             var offset = (page - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -102,7 +111,7 @@ public class VideoController : ControllerBase
                 videos.Add(video);
             }
 
-            return Ok(new { success = true, data = videos, total, page, pageSize });
+            return Ok(new { success = true, data = new { list = videos, total, page, pageSize } });
         }
         catch (Exception ex)
         {
@@ -344,6 +353,96 @@ public class VideoController : ControllerBase
         }
     }
 
+
+    /// <summary>
+    /// 获取最新上映
+    /// </summary>
+    [HttpGet("latest")]
+    public IActionResult GetLatest([FromQuery] int limit = 10)
+    {
+        try
+        {
+            if (limit <= 0) limit = 10;
+            var sql = @"
+                SELECT v.* FROM Video v
+                ORDER BY v.ctime DESC
+                LIMIT @limit";
+            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@limit", limit));
+            var videos = new List<Video>();
+            foreach (System.Data.DataRow row in dt.Rows)
+            {
+                videos.Add(new Video
+                {
+                    Id = row["id"]?.ToString(),
+                    Code = row["code"]?.ToString(),
+                    Name = row["name"]?.ToString(),
+                    Country = row["country"]?.ToString(),
+                    CoverUrl = row["coverurl"]?.ToString(),
+                    VideoUrl = row["videourl"]?.ToString(),
+                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
+                    Quality = row["quality"]?.ToString(),
+                    SeriesId = row["seriesid"]?.ToString(),
+                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
+                    CTime = row["ctime"]?.ToString(),
+                    UTime = row["utime"]?.ToString(),
+                    Actors = new List<Actor>()
+                });
+            }
+            return Ok(new { success = true, data = videos });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取最新视频失败");
+            return Ok(new { success = false, message = "获取最新视频失败" });
+        }
+    }
+
+
+    /// <summary>
+    /// 获取最受喜爱
+    /// </summary>
+    [HttpGet("most-liked")]
+    public IActionResult GetMostLiked([FromQuery] int limit = 10)
+    {
+        try
+        {
+            if (limit <= 0) limit = 10;
+            var sql = @"
+                SELECT v.* FROM Video v
+                INNER JOIN LikeRecord lr ON v.id = lr.videoid
+                GROUP BY v.id
+                ORDER BY COUNT(lr.id) DESC
+                LIMIT @limit";
+            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@limit", limit));
+            var videos = new List<Video>();
+            foreach (System.Data.DataRow row in dt.Rows)
+            {
+                videos.Add(new Video
+                {
+                    Id = row["id"]?.ToString(),
+                    Code = row["code"]?.ToString(),
+                    Name = row["name"]?.ToString(),
+                    Country = row["country"]?.ToString(),
+                    CoverUrl = row["coverurl"]?.ToString(),
+                    VideoUrl = row["videourl"]?.ToString(),
+                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
+                    Quality = row["quality"]?.ToString(),
+                    SeriesId = row["seriesid"]?.ToString(),
+                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
+                    CTime = row["ctime"]?.ToString(),
+                    UTime = row["utime"]?.ToString(),
+                    Actors = new List<Actor>()
+                });
+            }
+            return Ok(new { success = true, data = videos });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取最受喜爱视频失败");
+            return Ok(new { success = false, message = "获取最受喜爱视频失败" });
+        }
+    }
+
     /// <summary>
     /// 添加视频
     /// </summary>
@@ -463,5 +562,189 @@ public class VideoController : ControllerBase
             _logger.LogError(ex, "删除视频失败");
             return Ok(new { success = false, message = "删除视频失败" });
         }
+    }
+
+    /// <summary>
+    /// 视频流接口 - 从 Samba 读取视频文件并流式返回
+    /// 支持 HTTP Range 请求（视频拖拽）
+    /// </summary>
+    [HttpGet("stream/{id}")]
+    public async Task<IActionResult> GetVideoStream(string id)
+    {
+        try
+        {
+            // 1. 查询视频记录
+            var sql = "SELECT videourl, coverurl, name FROM Video WHERE id = @id";
+            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
+            if (dt.Rows.Count == 0)
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            var videoUrl = dt.Rows[0]["videourl"]?.ToString() ?? "";
+            var videoName = dt.Rows[0]["name"]?.ToString() ?? "video";
+
+            // 2. 解析真实文件路径
+            string? filePath = null;
+
+            if (_sambaService.IsEnabled && !string.IsNullOrWhiteSpace(_sambaService.GetVideoLocalPath(videoUrl)))
+            {
+                // Samba 模式：使用挂载路径
+                filePath = _sambaService.GetVideoLocalPath(SambaService.ExtractRelativePath(videoUrl));
+            }
+            else
+            {
+                // HTTP 模式：后端代理读取，避免 Redirect 非 ASCII 字符崩溃
+                if (videoUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    return await ProxyHttpFile(videoUrl, GetContentType(videoUrl));
+                }
+                // 本地文件模式
+                filePath = videoUrl;
+            }
+
+            if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+            {
+                _logger.LogWarning("视频文件不存在: {Path}", filePath);
+                return NotFound(new { success = false, message = "视频文件不存在" });
+            }
+
+            // 3. 支持 Range 请求（视频拖拽）
+            var contentType = GetContentType(filePath);
+            return PhysicalFile(filePath, contentType, enableRangeProcessing: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "视频流读取失败: {VideoId}", id);
+            return StatusCode(500, new { success = false, message = "视频流读取失败" });
+        }
+    }
+
+    /// <summary>
+    /// 封面图接口 - 从 Samba 读取封面文件
+    /// </summary>
+    [HttpGet("cover/{id}")]
+    public async Task<IActionResult> GetCoverImage(string id)
+    {
+        try
+        {
+            var sql = "SELECT coverurl FROM Video WHERE id = @id";
+            var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
+            if (dt.Rows.Count == 0)
+                return NotFound();
+
+            var coverUrl = dt.Rows[0]["coverurl"]?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(coverUrl))
+                return NotFound();
+
+            string? filePath = null;
+            if (_sambaService.IsEnabled && !string.IsNullOrWhiteSpace(_sambaService.GetCoverLocalPath(coverUrl)))
+            {
+                filePath = _sambaService.GetCoverLocalPath(SambaService.ExtractRelativePath(coverUrl));
+            }
+            else
+            {
+                // HTTP 模式：后端代理读取，避免 Redirect 非 ASCII 字符崩溃
+                if (coverUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    return await ProxyHttpFile(coverUrl, GetContentType(coverUrl));
+                }
+                filePath = coverUrl;
+            }
+
+            if (string.IsNullOrWhiteSpace(filePath) || !System.IO.File.Exists(filePath))
+                return NotFound();
+
+            var contentType = GetContentType(filePath);
+            return PhysicalFile(filePath, contentType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "封面图读取失败: {VideoId}", id);
+            return StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// 根据文件扩展名获取 Content-Type
+    /// </summary>
+    private static string GetContentType(string path)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        return ext switch
+        {
+            ".mp4" => "video/mp4",
+            ".webm" => "video/webm",
+            ".ogg" => "video/ogg",
+            ".mov" => "video/quicktime",
+            ".mkv" => "video/x-matroska",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            ".gif" => "image/gif",
+            _ => "application/octet-stream"
+        };
+    }
+
+    private static readonly HttpClient _proxyHttpClient;
+
+    static VideoController()
+    {
+        var handler = new HttpClientHandler();
+        // 强制 HTTP/1.1，避免上游不支持 HTTP/2 导致 502
+        handler.SslProtocols = System.Security.Authentication.SslProtocols.None;
+        _proxyHttpClient = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
+        _proxyHttpClient.DefaultRequestHeaders.Connection.ParseAdd("close");
+        _proxyHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; CKAPI/1.0)");
+        _proxyHttpClient.DefaultRequestHeaders.Accept.ParseAdd("image/*, video/*, */*");
+    }
+
+    /// <summary>
+    /// 代理读取 HTTP 文件并返回 FileStreamResult（避免 Redirect 非 ASCII 字符崩溃）
+    /// </summary>
+    private async Task<IActionResult> ProxyHttpFile(string url, string? contentType = null)
+    {
+        try
+        {
+            // 对 URL 中的非 ASCII 字符做 percent-encoding
+            var encodedUrl = EncodeNonAsciiUrl(url);
+
+            var response = await _proxyHttpClient.GetAsync(encodedUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            // 流式转发到浏览器（不缓冲整个文件）
+            contentType ??= response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            return new StreamForwardResult(response.Content, contentType, response);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            _logger.LogError(ex, "代理读取文件失败 (上游返回 {StatusCode}): {Url}", ex.StatusCode, url);
+            return StatusCode((int)ex.StatusCode.Value, new { success = false, message = $"视频源服务器返回错误: {ex.StatusCode}" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "代理读取文件失败: {Url}", url);
+            return StatusCode(502, new { success = false, message = "视频源服务器不可用" });
+        }
+    }
+
+    /// <summary>
+    /// 对 URL 路径中的非 ASCII 字符进行 percent-encoding，保留斜杠不编码
+    /// 避免使用 UriBuilder.Uri / new Uri(...) 避免重编码导致双重编码
+    /// </summary>
+    private static string EncodeNonAsciiUrl(string url)
+    {
+        var uri = new Uri(url);
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in uri.AbsolutePath)
+        {
+            if (c >= 0x80)
+                sb.Append(Uri.EscapeDataString(c.ToString()));
+            else if (c == '/')
+                sb.Append('/');
+            else
+                sb.Append(c);
+        }
+        var port = uri.Port;
+        var portStr = (port > 0 && port != 80) ? $":{port}" : "";
+        return $"{uri.Scheme}://{uri.Host}{portStr}{sb}";
     }
 }
