@@ -443,7 +443,7 @@ public class VideoController : ControllerBase
             // 这里为了简化，先同步执行扫描
             ScanDirectoryAsync(req.TargetPath, req.Recursive, taskId);
 
-            return Ok(new { success = true, data = new { task_id = taskId }, message = "扫描任务已启动" });
+            return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
         }
         catch (Exception ex)
         {
@@ -620,11 +620,12 @@ public class VideoController : ControllerBase
                     if (exists)
                     {
                         // 更新
-                        var updateSql = @"UPDATE videos SET file_size = @fileSize, cover_path = @coverPath, has_cover = @hasCover WHERE file_path = @filePath";
+                        var updateSql = @"UPDATE videos SET file_size = @fileSize, cover_path = @coverPath, has_cover = @hasCover, samba_dir = @sambaDir WHERE file_path = @filePath";
                         using var updateCmd = new SqliteCommand(updateSql, conn);
                         updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
                         updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
                         updateCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
+                        updateCmd.Parameters.Add(new SqliteParameter("@sambaDir", targetPath));
                         updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
                         updateCmd.ExecuteNonQuery();
                         filesUpdated++;
@@ -636,8 +637,8 @@ public class VideoController : ControllerBase
                         var category = DetermineCategory(filePath);
                         var year = ExtractYear(fileName);
 
-                        var insertSql = @"INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, has_cover, added_at) 
-                                        VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @hasCover, @addedAt)";
+                        var insertSql = @"INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, has_cover, samba_dir, added_at) 
+                                        VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @hasCover, @sambaDir, @addedAt)";
                         using var insertCmd = new SqliteCommand(insertSql, conn);
                         insertCmd.Parameters.Add(new SqliteParameter("@id", id));
                         insertCmd.Parameters.Add(new SqliteParameter("@title", fileName));
@@ -647,6 +648,7 @@ public class VideoController : ControllerBase
                         insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
                         insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
                         insertCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
+                        insertCmd.Parameters.Add(new SqliteParameter("@sambaDir", targetPath));
                         insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                         insertCmd.ExecuteNonQuery();
                         filesAdded++;
