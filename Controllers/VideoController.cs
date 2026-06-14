@@ -588,9 +588,21 @@ public class VideoController : ControllerBase
             var filesUpdated = 0;
             var errors = new List<string>();
 
-            // 1. 遍历目录，查找 .mp4 文件
-            var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var mp4Files = Directory.GetFiles(targetPath, "*.mp4", searchOption);
+            // 1. 遍历目录，查找 .mp4 文件（忽略无权限的子目录）
+            var enumOpts = new EnumerationOptions
+            {
+                RecurseSubdirectories = recursive,
+                IgnoreInaccessible = true  // 关键：跳过无权限的目录
+            };
+            var mp4Files = Array.Empty<string>();
+            try
+            {
+                mp4Files = Directory.GetFiles(targetPath, "*.mp4", enumOpts);
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"扫描目录失败: {ex.Message}");
+            }
 
             filesFound = mp4Files.Length;
 
