@@ -229,7 +229,7 @@
             影片控制器（新版 - Samba影城系统）
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String)">
+        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String,System.String)">
             <summary>
             获取视频列表
             </summary>

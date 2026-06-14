@@ -29,7 +29,8 @@ public class VideoController : ControllerBase
         [FromQuery] int pageIndex = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? category = null,
-        [FromQuery] string? keyword = null)
+        [FromQuery] string? keyword = null,
+        [FromQuery] string? sambaDir = null)
     {
         try
         {
@@ -47,6 +48,12 @@ public class VideoController : ControllerBase
             {
                 whereClause += " AND title LIKE @keyword";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
+            }
+
+            if (!string.IsNullOrEmpty(sambaDir))
+            {
+                whereClause += " AND samba_dir = @sambaDir";
+                parameters.Add(new SqliteParameter("@sambaDir", sambaDir));
             }
 
             // 获取总数
@@ -88,7 +95,8 @@ public class VideoController : ControllerBase
                     coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
                     addedAt = reader["added_at"].ToString(),
                     playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
-                    note = reader["note"] == DBNull.Value ? null : reader["note"].ToString()
+                    note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
+                    sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
                 });
             }
 
@@ -145,7 +153,8 @@ public class VideoController : ControllerBase
                 addedAt = reader["added_at"].ToString(),
                 playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
                 lastPlayedAt = reader["last_played_at"] == DBNull.Value ? null : reader["last_played_at"].ToString(),
-                note = reader["note"] == DBNull.Value ? null : reader["note"].ToString()
+                note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
+                sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
             };
 
             // 获取演员列表
@@ -196,8 +205,8 @@ public class VideoController : ControllerBase
         {
             var id = Guid.NewGuid().ToString();
             var sql = @"
-                INSERT INTO videos (id, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at, note)
-                VALUES (@id, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt, @note)";
+                INSERT INTO videos (id, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at, note, samba_dir)
+                VALUES (@id, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt, @note, @sambaDir)";
             
             using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
             conn.Open();
@@ -219,6 +228,7 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@hasCover", hasCover));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@sambaDir", req.SambaDir ?? (object)DBNull.Value));
             
             cmd.ExecuteNonQuery();
 
@@ -259,7 +269,8 @@ public class VideoController : ControllerBase
                     category = @category, 
                     country = @country,
                     file_path = @filePath, 
-                    note = @note
+                    note = @note,
+                    samba_dir = @sambaDir
                 WHERE id = @id";
 
             using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
@@ -279,6 +290,7 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
             cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@sambaDir", req.SambaDir ?? (object)DBNull.Value));
             cmd.ExecuteNonQuery();
 
             // 更新演员关联
@@ -656,6 +668,7 @@ public class AddVideoRequest
     public string? CoverPath { get; set; }
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
+    public string? SambaDir { get; set; }
 }
 
 public class UpdateVideoRequest
@@ -667,6 +680,7 @@ public class UpdateVideoRequest
     public string FilePath { get; set; } = "";
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
+    public string? SambaDir { get; set; }
 }
 
 public class ScanRequest
