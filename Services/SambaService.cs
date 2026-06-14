@@ -1,102 +1,208 @@
-using Microsoft.Extensions.Options;
-using ckapi.Models;
+using System.Diagnostics;
 
-namespace ckapi.Services
+namespace ckapi.Services;
+
+/// <summary>
+/// Samba共享服务 - 调用macOS sharing命令管理文件共享
+/// </summary>
+public class SambaService
 {
-    /// <summary>
-    /// Samba 路径解析服务
-    /// 根据配置组合出视频/封面的真实访问路径
-    /// </summary>
-    public class SambaService
+    private readonly ILogger<SambaService> _logger;
+
+    public SambaService(ILogger<SambaService> logger)
     {
-        private readonly SambaConfig _config;
+        _logger = logger;
+    }
 
-        public SambaService(IOptions<SambaConfig> config)
+    /// <summary>
+    /// 获取所有共享点列表
+    /// </summary>
+    public async Task<List<SharePointInfo>> GetSharePointsAsync()
+    {
+        var result = new List<SharePointInfo>();
+        var output = await RunSharingAsync("-l -f json");
+        if (string.IsNullOrEmpty(output)) return result;
+
+        try
         {
-            _config = config.Value;
-        }
+            var json = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, SharePointRaw>>(output);
+            if (json == null) return result;
 
-        /// <summary>
-        /// Samba 配置是否启用
-        /// </summary>
-        public bool IsEnabled => _config.Enabled;
-
-        /// <summary>
-        /// 获取视频文件的本地真实路径（用于文件流传输）
-        /// 当 MountPath 配置时，直接返回本地挂载路径
-        /// </summary>
-        public string? GetVideoLocalPath(string relativePath)
-        {
-            if (string.IsNullOrWhiteSpace(relativePath))
-                return null;
-
-            // 如果已挂载 Samba，直接拼接本地路径
-            if (!string.IsNullOrWhiteSpace(_config.MountPath))
+            foreach (var kvp in json)
             {
-                // relativePath 如 "/libsF/视频库/xxx.mp4"，去掉开头的 "/"
-                var cleanPath = relativePath.TrimStart('/');
-                return Path.Combine(_config.MountPath, cleanPath);
+                result.Add(new SharePointInfo
+                {
+                    Name = kvp.Value.smb_name ?? kvp.Key,
+                    Path = kvp.Value.path,
+                    SMBShared = kvp.Value.smb_shared == 1,
+                    GuestAccess = kvp.Value.smb_guest_access == 1,
+                    ReadOnly = kvp.Value.smb_read_only == 1
+                });
             }
-
-            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "解析sharing -l JSON失败: {output}", output);
         }
 
-        /// <summary>
-        /// 获取封面文件的本地真实路径
-        /// </summary>
-        public string? GetCoverLocalPath(string relativePath)
-        {
-            if (string.IsNullOrWhiteSpace(relativePath))
-                return null;
+        return result;
+    }
 
-            if (!string.IsNullOrWhiteSpace(_config.MountPath))
+    /// <summary>
+    /// 添加共享目录
+    /// </summary>
+    public async Task<(bool Success, string Message, string? ShareName)> AddShareAsync(
+        string path, string? shareName = null, bool smbEnabled = true,
+        bool guestAccess = true, bool readOnly = false)
+    {
+        if (!Directory.Exists(path))
+        {
+            return (false, $"目录不存在: {path}", null);
+        }
+
+        // 检查是否已存在
+        var existing = await GetSharePointsAsync();
+        var existingOne = existing.FirstOrDefault(s => s.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (existingOne != null)
+        {
+            return (false, $"该目录已被共享为: {existingOne.Name}", existingOne.Name);
+        }
+
+        // 生成共享名
+        var name = shareName ?? Path.GetFileName(path);
+
+        // 使用 -n 设置记录名，-S 设置SMB名称
+        var args = $"-a \"{path}\" -n \"{name}\" -S \"{name}\"";
+        var output = await RunSharingAsync(args);
+        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, output, null);
+        }
+
+        // 配置 SMB 权限
+        var smbFlag = smbEnabled ? "001" : "000";
+        var guestFlag = guestAccess ? "001" : "000";
+
+        await RunSharingAsync($"-e \"{name}\" -s {smbFlag} -g {guestFlag} -R {(readOnly ? "1" : "0")}");
+
+        return (true, "共享添加成功", name);
+    }
+
+    /// <summary>
+    /// 更新共享配置
+    /// </summary>
+    public async Task<(bool Success, string Message)> UpdateShareAsync(
+        string shareName, bool? smbEnabled = null, bool? guestAccess = null, bool? readOnly = null)
+    {
+        var smbFlag = smbEnabled.HasValue ? (smbEnabled.Value ? "001" : "000") : null;
+        var guestFlag = guestAccess.HasValue ? (guestAccess.Value ? "001" : "000") : null;
+        var readOnlyVal = readOnly.HasValue ? (readOnly.Value ? "1" : "0") : null;
+
+        var args = $"-e \"{shareName}\"";
+        if (smbFlag != null) args += $" -s {smbFlag}";
+        if (guestFlag != null) args += $" -g {guestFlag}";
+        if (readOnlyVal != null) args += $" -R {readOnlyVal}";
+
+        var output = await RunSharingAsync(args);
+        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, output);
+        }
+
+        return (true, "共享配置已更新");
+    }
+
+    /// <summary>
+    /// 删除共享目录
+    /// </summary>
+    public async Task<(bool Success, string Message)> RemoveShareAsync(string shareName)
+    {
+        var output = await RunSharingAsync($"-r \"{shareName}\"");
+        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, output);
+        }
+        return (true, "共享已删除");
+    }
+
+    /// <summary>
+    /// 测试SMB连接
+    /// </summary>
+    public async Task<(bool Success, string Message)> TestConnectionAsync(string host)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "smbutil",
+            Arguments = $"status {host}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null) return (false, "无法启动smbutil");
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode == 0)
             {
-                var cleanPath = relativePath.TrimStart('/');
-                return Path.Combine(_config.MountPath, cleanPath);
+                return (true, $"连接成功: {output}");
             }
-
-            return null;
+            return (false, error.Trim());
         }
-
-        /// <summary>
-        /// 将数据库中的相对路径转换为 Samba UNC 路径（用于调试/日志）
-        /// </summary>
-        public string GetSambaUncPath(string relativePath)
+        catch (Exception ex)
         {
-            // relativePath: "/libsF/视频库/xxx.mp4"
-            // → "\\192.168.110.6\lib\视频库\xxx.mp4"
-            var cleanPath = relativePath.TrimStart('/').Replace('/', '\\');
-            return $"\\\\{_config.Server}\\{_config.ShareName}\\{cleanPath}";
-        }
-
-        /// <summary>
-        /// 解析数据库中的 URL，提取相对路径
-        /// 支持两种格式：
-        /// 1. HTTP URL: "http://192.168.110.6/libsF/视频库/xxx.mp4"
-        /// 2. 相对路径: "/libsF/视频库/xxx.mp4"
-        /// </summary>
-        public static string ExtractRelativePath(string urlOrPath)
-        {
-            if (string.IsNullOrWhiteSpace(urlOrPath))
-                return "";
-
-            // 已经是相对路径
-            if (urlOrPath.StartsWith("/"))
-                return urlOrPath;
-
-            // HTTP URL: "http://192.168.110.6/libsF/视频库/xxx.mp4"
-            // → 提取 "/libsF/视频库/xxx.mp4"
-            var uri = new Uri(urlOrPath);
-            return uri.AbsolutePath;
-        }
-
-        /// <summary>
-        /// 构建视频流式访问 URL（供前端播放用）
-        /// 返回后端代理地址："/api/video/stream/{id}"
-        /// </summary>
-        public static string BuildStreamUrl(string videoId)
-        {
-            return $"/api/video/stream/{videoId}";
+            return (false, ex.Message);
         }
     }
+
+    private async Task<string> RunSharingAsync(string args)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "/usr/sbin/sharing",
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        try
+        {
+            using var process = Process.Start(psi);
+            if (process == null) return "无法启动sharing命令";
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            return string.IsNullOrEmpty(error) ? output.Trim() : error.Trim();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "执行sharing命令失败: {args}", args);
+            return ex.Message;
+        }
+    }
+}
+
+public class SharePointInfo
+{
+    public string Name { get; set; } = "";
+    public string Path { get; set; } = "";
+    public bool SMBShared { get; set; }
+    public bool GuestAccess { get; set; }
+    public bool ReadOnly { get; set; }
+}
+
+public class SharePointRaw
+{
+    public string path { get; set; } = "";
+    public string smb_name { get; set; } = "";
+    public int smb_shared { get; set; }
+    public int smb_guest_access { get; set; }
+    public int smb_read_only { get; set; }
+    public int smb_sealed { get; set; }
 }

@@ -96,22 +96,22 @@
         </member>
         <member name="M:ckapi.Controllers.SambaController.GetList">
             <summary>
-            获取所有Samba共享
+            获取所有Samba共享配置列表
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.GetById(System.String)">
+        <member name="M:ckapi.Controllers.SambaController.GetSystemShares">
             <summary>
-            根据ID获取Samba共享
+            获取系统实际共享点列表（只读）
             </summary>
         </member>
         <member name="M:ckapi.Controllers.SambaController.Add(ckapi.Controllers.AddSambaDto)">
             <summary>
-            添加Samba共享
+            添加Samba共享（数据库记录 + 实际创建共享）
             </summary>
         </member>
         <member name="M:ckapi.Controllers.SambaController.Update(System.String,ckapi.Controllers.UpdateSambaDto)">
             <summary>
-            更新Samba共享
+            更新Samba共享配置
             </summary>
         </member>
         <member name="M:ckapi.Controllers.SambaController.Delete(System.String)">
@@ -119,9 +119,9 @@
             删除Samba共享
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.EncryptPassword(System.String)">
+        <member name="M:ckapi.Controllers.SambaController.TestConnection(ckapi.Controllers.TestConnectionDto)">
             <summary>
-            简单加密密码（使用机器名作为盐值）
+            测试SMB连接
             </summary>
         </member>
         <member name="T:ckapi.Controllers.SeriesController">
@@ -768,43 +768,32 @@
         </member>
         <member name="T:ckapi.Services.SambaService">
             <summary>
-            Samba 路径解析服务
-            根据配置组合出视频/封面的真实访问路径
+            Samba共享服务 - 调用macOS sharing命令管理文件共享
             </summary>
         </member>
-        <member name="P:ckapi.Services.SambaService.IsEnabled">
+        <member name="M:ckapi.Services.SambaService.GetSharePointsAsync">
             <summary>
-            Samba 配置是否启用
+            获取所有共享点列表
             </summary>
         </member>
-        <member name="M:ckapi.Services.SambaService.GetVideoLocalPath(System.String)">
+        <member name="M:ckapi.Services.SambaService.AddShareAsync(System.String,System.String,System.Boolean,System.Boolean,System.Boolean)">
             <summary>
-            获取视频文件的本地真实路径（用于文件流传输）
-            当 MountPath 配置时，直接返回本地挂载路径
+            添加共享目录
             </summary>
         </member>
-        <member name="M:ckapi.Services.SambaService.GetCoverLocalPath(System.String)">
+        <member name="M:ckapi.Services.SambaService.UpdateShareAsync(System.String,System.Nullable{System.Boolean},System.Nullable{System.Boolean},System.Nullable{System.Boolean})">
             <summary>
-            获取封面文件的本地真实路径
+            更新共享配置
             </summary>
         </member>
-        <member name="M:ckapi.Services.SambaService.GetSambaUncPath(System.String)">
+        <member name="M:ckapi.Services.SambaService.RemoveShareAsync(System.String)">
             <summary>
-            将数据库中的相对路径转换为 Samba UNC 路径（用于调试/日志）
+            删除共享目录
             </summary>
         </member>
-        <member name="M:ckapi.Services.SambaService.ExtractRelativePath(System.String)">
+        <member name="M:ckapi.Services.SambaService.TestConnectionAsync(System.String)">
             <summary>
-            解析数据库中的 URL，提取相对路径
-            支持两种格式：
-            1. HTTP URL: "http://192.168.110.6/libsF/视频库/xxx.mp4"
-            2. 相对路径: "/libsF/视频库/xxx.mp4"
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.BuildStreamUrl(System.String)">
-            <summary>
-            构建视频流式访问 URL（供前端播放用）
-            返回后端代理地址："/api/video/stream/{id}"
+            测试SMB连接
             </summary>
         </member>
         <member name="T:ckapi.Utils.SQLiteHelper">
