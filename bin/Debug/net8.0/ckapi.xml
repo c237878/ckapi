@@ -89,6 +89,41 @@
             检查是否已点赞
             </summary>
         </member>
+        <member name="T:ckapi.Controllers.SambaController">
+            <summary>
+            Samba共享管理控制器
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.GetList">
+            <summary>
+            获取所有Samba共享
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.GetById(System.String)">
+            <summary>
+            根据ID获取Samba共享
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.Add(ckapi.Controllers.AddSambaDto)">
+            <summary>
+            添加Samba共享
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.Update(System.String,ckapi.Controllers.UpdateSambaDto)">
+            <summary>
+            更新Samba共享
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.Delete(System.String)">
+            <summary>
+            删除Samba共享
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SambaController.EncryptPassword(System.String)">
+            <summary>
+            简单加密密码（使用机器名作为盐值）
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.SeriesController">
             <summary>
             影视系列相关接口
