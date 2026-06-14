@@ -176,16 +176,41 @@ public class SambaController : ControllerBase
                 }
             }
 
-            // 更新系统共享配置
-            var (sysOk, sysMsg) = await _sambaService.UpdateShareAsync(
-                shareName,
-                smbEnabled: dto.IsEnabled,
-                guestAccess: dto.GuestAccess,
-                readOnly: dto.ReadOnly);
+            // 如果名称或路径改变，需要删旧建新（sharing -e 不支持改名）
+            bool nameChanged = !dto.Name.Equals(shareName, StringComparison.OrdinalIgnoreCase);
+            bool pathChanged = !dto.Path.Equals(sharePath, StringComparison.OrdinalIgnoreCase);
 
-            if (!sysOk)
+            if (nameChanged || pathChanged)
             {
-                _logger.LogWarning("更新系统共享配置失败: {msg}", sysMsg);
+                // 删除旧的系统共享
+                if (!string.IsNullOrEmpty(shareName))
+                {
+                    var (delOk, delMsg) = await _sambaService.RemoveShareAsync(shareName);
+                    _logger.LogInformation("删除旧共享 {name}: {ok} - {msg}", shareName, delOk, delMsg);
+                }
+                // 用新名称/路径创建共享
+                var (addOk, addMsg, newShareName) = await _sambaService.AddShareAsync(
+                    dto.Path, dto.Name,
+                    smbEnabled: dto.IsEnabled,
+                    guestAccess: dto.GuestAccess,
+                    readOnly: dto.ReadOnly);
+                if (!addOk)
+                {
+                    return Ok(new { success = false, message = $"重命名系统共享失败: {addMsg}" });
+                }
+            }
+            else
+            {
+                // 仅更新开关/访客/只读配置
+                var (sysOk, sysMsg) = await _sambaService.UpdateShareAsync(
+                    shareName,
+                    smbEnabled: dto.IsEnabled,
+                    guestAccess: dto.GuestAccess,
+                    readOnly: dto.ReadOnly);
+                if (!sysOk)
+                {
+                    _logger.LogWarning("更新系统共享配置失败: {msg}", sysMsg);
+                }
             }
 
             // 更新数据库
