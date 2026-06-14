@@ -254,6 +254,11 @@
             删除视频
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.BatchDeleteVideos(ckapi.Controllers.BatchDeleteRequest)">
+            <summary>
+            批量删除视频
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.ScanDirectory(ckapi.Controllers.ScanRequest)">
             <summary>
             扫描目录

@@ -355,6 +355,68 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
+    /// 批量删除视频
+    /// </summary>
+    [HttpDelete("batch")]
+    public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req)
+    {
+        try
+        {
+            if (req.Ids == null || req.Ids.Count == 0)
+                return BadRequest(new { success = false, message = "ids 不能为空" });
+
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            using var transaction = conn.BeginTransaction();
+            var deleted = 0;
+            var failed = 0;
+
+            foreach (var id in req.Ids)
+            {
+                try
+                {
+                    // 删除演员关联
+                    using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn, transaction);
+                    delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                    delRelCmd.ExecuteNonQuery();
+
+                    // 删除视频
+                    using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn, transaction);
+                    delCmd.Parameters.Add(new SqliteParameter("@id", id));
+                    var rows = delCmd.ExecuteNonQuery();
+
+                    if (rows > 0)
+                        deleted++;
+                    else
+                        failed++;
+                }
+                catch
+                {
+                    failed++;
+                }
+            }
+
+            transaction.Commit();
+
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    deleted = deleted,
+                    failed = failed
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BatchDeleteVideos failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 扫描目录
     /// </summary>
     [HttpPost("scan")]
@@ -687,6 +749,11 @@ public class ScanRequest
 {
     public string TargetPath { get; set; } = "";
     public bool Recursive { get; set; } = true;
+}
+
+public class BatchDeleteRequest
+{
+    public List<string> Ids { get; set; } = new List<string>();
 }
 
 #endregion
