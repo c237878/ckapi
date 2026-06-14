@@ -330,6 +330,54 @@ public class SambaController : ControllerBase
         var bytes = Encoding.UTF8.GetBytes(password + salt);
         return Convert.ToBase64String(SHA256.HashData(bytes));
     }
+
+    /// <summary>
+    /// 导入系统现有的Samba共享到数据库
+    /// </summary>
+    [HttpPost("import-system")]
+    public async Task<IActionResult> ImportSystemShares()
+    {
+        try
+        {
+            var sysShares = await _sambaService.GetSharePointsAsync();
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            await conn.OpenAsync();
+
+            int imported = 0;
+            foreach (var share in sysShares)
+            {
+                // 检查是否已在数据库中
+                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name OR path = @path";
+                using var checkCmd = new SqliteCommand(checkSql, conn);
+                checkCmd.Parameters.AddWithValue("@name", share.Name);
+                checkCmd.Parameters.AddWithValue("@path", share.Path);
+                var exists = Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0;
+
+                if (!exists)
+                {
+                    var id = Guid.NewGuid().ToString();
+                    var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    var sql = @"INSERT INTO samba_shares (id, name, path, username, password, domain, is_enabled, created_at, updated_at)
+                                   VALUES (@id, @name, @path, '', '', '', 1, @createdAt, @updatedAt)";
+                    using var cmd = new SqliteCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.Parameters.AddWithValue("@name", share.Name);
+                    cmd.Parameters.AddWithValue("@path", share.Path);
+                    cmd.Parameters.AddWithValue("@createdAt", now);
+                    cmd.Parameters.AddWithValue("@updatedAt", now);
+                    await cmd.ExecuteNonQueryAsync();
+                    imported++;
+                }
+            }
+
+            return Ok(new { success = true, data = new { imported }, message = $"成功导入 {imported} 个共享" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "导入系统共享失败");
+            return Ok(new { success = false, message = ex.Message });
+        }
+    }
 }
 
 public class DbShareRecord

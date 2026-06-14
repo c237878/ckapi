@@ -20,8 +20,8 @@ public class SambaService
     public async Task<List<SharePointInfo>> GetSharePointsAsync()
     {
         var result = new List<SharePointInfo>();
-        var output = await RunSharingAsync("-l -f json");
-        if (string.IsNullOrEmpty(output)) return result;
+        var (exitCode, output) = await RunSharingAsync("-l -f json");
+        if (exitCode != 0 || string.IsNullOrEmpty(output)) return result;
 
         try
         {
@@ -73,17 +73,21 @@ public class SambaService
 
         // 使用 -n 设置记录名，-S 设置SMB名称
         var args = $"-a \"{path}\" -n \"{name}\" -S \"{name}\"";
-        var output = await RunSharingAsync(args);
-        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        var (exitCode, output) = await RunSharingAsync(args);
+        if (exitCode != 0)
         {
-            return (false, output, null);
+            return (false, $"创建共享失败: {output}", null);
         }
 
         // 配置 SMB 权限
         var smbFlag = smbEnabled ? "001" : "000";
         var guestFlag = guestAccess ? "001" : "000";
 
-        await RunSharingAsync($"-e \"{name}\" -s {smbFlag} -g {guestFlag} -R {(readOnly ? "1" : "0")}");
+        var (exitCode2, output2) = await RunSharingAsync($"-e \"{name}\" -s {smbFlag} -g {guestFlag} -R {(readOnly ? "1" : "0")}");
+        if (exitCode2 != 0)
+        {
+            _logger.LogWarning("配置SMB权限失败: {output}", output2);
+        }
 
         return (true, "共享添加成功", name);
     }
@@ -103,10 +107,10 @@ public class SambaService
         if (guestFlag != null) args += $" -g {guestFlag}";
         if (readOnlyVal != null) args += $" -R {readOnlyVal}";
 
-        var output = await RunSharingAsync(args);
-        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        var (exitCode, output) = await RunSharingAsync(args);
+        if (exitCode != 0)
         {
-            return (false, output);
+            return (false, $"更新失败: {output}");
         }
 
         return (true, "共享配置已更新");
@@ -117,10 +121,10 @@ public class SambaService
     /// </summary>
     public async Task<(bool Success, string Message)> RemoveShareAsync(string shareName)
     {
-        var output = await RunSharingAsync($"-r \"{shareName}\"");
-        if (!string.IsNullOrEmpty(output) && output.Contains("error", StringComparison.OrdinalIgnoreCase))
+        var (exitCode, output) = await RunSharingAsync($"-r \"{shareName}\"");
+        if (exitCode != 0)
         {
-            return (false, output);
+            return (false, $"删除失败: {output}");
         }
         return (true, "共享已删除");
     }
@@ -159,31 +163,67 @@ public class SambaService
         }
     }
 
-    private async Task<string> RunSharingAsync(string args)
+    /// <summary>
+    /// 执行sharing命令。写操作（-a/-e/-r）需要管理员权限，通过osascript获取；
+    /// 读操作（-l）不需要管理员权限，直接执行。
+    /// </summary>
+    private async Task<(int ExitCode, string Output)> RunSharingAsync(string args)
     {
-        var psi = new ProcessStartInfo
+        var isReadOnly = args.TrimStart().StartsWith("-l");
+        string? tmpScript = null;
+
+        ProcessStartInfo psi;
+        if (isReadOnly)
         {
-            FileName = "/usr/sbin/sharing",
-            Arguments = args,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
+            // 查询操作不需要root
+            psi = new ProcessStartInfo
+            {
+                FileName = "/usr/sbin/sharing",
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+        }
+        else
+        {
+            // 写操作需要管理员权限，通过osascript获取
+            // 弹出macOS管理员授权对话框
+            // 写临时脚本文件，避免命令行引号转义问题
+            var script = $"do shell script \"/usr/sbin/sharing {args}\" with administrator privileges";
+            tmpScript = Path.Combine(Path.GetTempPath(), $"sharing-{Guid.NewGuid():N}.scpt");
+            await File.WriteAllTextAsync(tmpScript, script);
+            psi = new ProcessStartInfo
+            {
+                FileName = "/usr/bin/osascript",
+                Arguments = tmpScript,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+        }
 
         try
         {
             using var process = Process.Start(psi);
-            if (process == null) return "无法启动sharing命令";
+            if (process == null) return (-1, "无法启动sharing命令");
 
             var output = await process.StandardOutput.ReadToEndAsync();
             var error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            return string.IsNullOrEmpty(error) ? output.Trim() : error.Trim();
+            var combined = string.IsNullOrEmpty(error) ? output.Trim() : error.Trim();
+            return (process.ExitCode, combined);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "执行sharing命令失败: {args}", args);
-            return ex.Message;
+            return (-1, ex.Message);
+        }
+        finally
+        {
+            if (tmpScript != null && File.Exists(tmpScript))
+            {
+                try { File.Delete(tmpScript); } catch { }
+            }
         }
     }
 }

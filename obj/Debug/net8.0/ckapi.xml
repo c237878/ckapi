@@ -124,6 +124,11 @@
             测试SMB连接
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.SambaController.ImportSystemShares">
+            <summary>
+            导入系统现有的Samba共享到数据库
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.SeriesController">
             <summary>
             影视系列相关接口
@@ -794,6 +799,12 @@
         <member name="M:ckapi.Services.SambaService.TestConnectionAsync(System.String)">
             <summary>
             测试SMB连接
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.SambaService.RunSharingAsync(System.String)">
+            <summary>
+            执行sharing命令。写操作（-a/-e/-r）需要管理员权限，通过osascript获取；
+            读操作（-l）不需要管理员权限，直接执行。
             </summary>
         </member>
         <member name="T:ckapi.Utils.SQLiteHelper">
