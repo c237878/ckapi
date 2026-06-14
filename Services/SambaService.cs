@@ -188,8 +188,10 @@ public class SambaService
         {
             // 写操作需要管理员权限，通过osascript获取
             // 弹出macOS管理员授权对话框
-            // 写临时脚本文件，避免命令行引号转义问题
-            var script = $"do shell script \"/usr/sbin/sharing {args}\" with administrator privileges";
+            // 关键：args中的双引号必须转义为\"，否则AppleScript语法错误
+            // 例如：args = -r "wdc4t" → AppleScript字符串内需写成\"wdc4t\"
+            var argsEscaped = args.Replace("\"", "\\\"");
+            var script = $"do shell script \"/usr/sbin/sharing {argsEscaped}\" with administrator privileges";
             tmpScript = Path.Combine(Path.GetTempPath(), $"sharing-{Guid.NewGuid():N}.scpt");
             await File.WriteAllTextAsync(tmpScript, script);
             psi = new ProcessStartInfo

@@ -266,9 +266,13 @@ public class SambaController : ControllerBase
             }
 
             // 删除系统共享
-            await _sambaService.RemoveShareAsync(shareName);
+            var (sysOk, sysMsg) = await _sambaService.RemoveShareAsync(shareName);
+            if (!sysOk)
+            {
+                return Ok(new { success = false, message = $"删除系统共享失败: {sysMsg}" });
+            }
 
-            // 删除数据库记录
+            // 系统共享删除成功，再删除数据库记录
             var sql = "DELETE FROM samba_shares WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@id", id);
