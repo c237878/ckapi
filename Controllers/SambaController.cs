@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using ckapi.Services;
-using System.Security.Cryptography;
-using System.Text;
 
 namespace ckapi.Controllers;
 
@@ -54,8 +52,6 @@ public class SambaController : ControllerBase
                     id = db.Id,
                     name = db.Name,
                     path = db.Path,
-                    username = db.Username,
-                    domain = db.Domain,
                     isEnabled = db.IsEnabled,
                     smbShared = sys?.SMBShared ?? false,
                     guestAccess = sys?.GuestAccess ?? true,
@@ -126,16 +122,13 @@ public class SambaController : ControllerBase
             conn.Open();
 
             var sql = @"
-                INSERT INTO samba_shares (id, name, path, username, password, domain, is_enabled, created_at, updated_at)
-                VALUES (@id, @name, @path, @username, @password, @domain, @isEnabled, @createdAt, @updatedAt)";
+                INSERT INTO samba_shares (id, name, path, is_enabled, created_at, updated_at)
+                VALUES (@id, @name, @path, @isEnabled, @createdAt, @updatedAt)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@id", id);
             cmd.Parameters.AddWithValue("@name", dto.Name);
             cmd.Parameters.AddWithValue("@path", dto.Path);
-            cmd.Parameters.AddWithValue("@username", dto.Username ?? "");
-            cmd.Parameters.AddWithValue("@password", EncryptPassword(dto.Password ?? ""));
-            cmd.Parameters.AddWithValue("@domain", dto.Domain ?? "");
             cmd.Parameters.AddWithValue("@isEnabled", dto.IsEnabled ? 1 : 0);
             cmd.Parameters.AddWithValue("@createdAt", now);
             cmd.Parameters.AddWithValue("@updatedAt", now);
@@ -199,29 +192,15 @@ public class SambaController : ControllerBase
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
                 UPDATE samba_shares 
-                SET name = @name, path = @path, username = @username, 
-                    domain = @domain, is_enabled = @isEnabled, updated_at = @updatedAt";
-
-            if (!string.IsNullOrEmpty(dto.Password))
-            {
-                sql += ", password = @password";
-            }
-
-            sql += " WHERE id = @id";
+                SET name = @name, path = @path, is_enabled = @isEnabled, updated_at = @updatedAt
+                WHERE id = @id";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@id", id);
             cmd.Parameters.AddWithValue("@name", dto.Name);
             cmd.Parameters.AddWithValue("@path", dto.Path);
-            cmd.Parameters.AddWithValue("@username", dto.Username ?? "");
-            cmd.Parameters.AddWithValue("@domain", dto.Domain ?? "");
             cmd.Parameters.AddWithValue("@isEnabled", dto.IsEnabled ? 1 : 0);
             cmd.Parameters.AddWithValue("@updatedAt", now);
-
-            if (!string.IsNullOrEmpty(dto.Password))
-            {
-                cmd.Parameters.AddWithValue("@password", EncryptPassword(dto.Password));
-            }
 
             cmd.ExecuteNonQuery();
 
@@ -316,8 +295,6 @@ public class SambaController : ControllerBase
                 Id = reader["id"].ToString(),
                 Name = reader["name"].ToString(),
                 Path = reader["path"].ToString(),
-                Username = reader["username"]?.ToString() ?? "",
-                Domain = reader["domain"]?.ToString() ?? "",
                 IsEnabled = Convert.ToInt32(reader["is_enabled"]) == 1,
                 CreatedAt = reader["created_at"].ToString(),
                 UpdatedAt = reader["updated_at"].ToString()
@@ -325,14 +302,6 @@ public class SambaController : ControllerBase
         }
 
         return result;
-    }
-
-    private string EncryptPassword(string password)
-    {
-        if (string.IsNullOrEmpty(password)) return "";
-        var salt = Environment.MachineName;
-        var bytes = Encoding.UTF8.GetBytes(password + salt);
-        return Convert.ToBase64String(SHA256.HashData(bytes));
     }
 
     /// <summary>
@@ -361,8 +330,8 @@ public class SambaController : ControllerBase
                 {
                     var id = Guid.NewGuid().ToString();
                     var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    var sql = @"INSERT INTO samba_shares (id, name, path, username, password, domain, is_enabled, created_at, updated_at)
-                                   VALUES (@id, @name, @path, '', '', '', 1, @createdAt, @updatedAt)";
+                    var sql = @"INSERT INTO samba_shares (id, name, path, is_enabled, created_at, updated_at)
+                                   VALUES (@id, @name, @path, 1, @createdAt, @updatedAt)";
                     using var cmd = new SqliteCommand(sql, conn);
                     cmd.Parameters.AddWithValue("@id", id);
                     cmd.Parameters.AddWithValue("@name", share.Name);
@@ -389,8 +358,6 @@ public class DbShareRecord
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Path { get; set; } = "";
-    public string Username { get; set; } = "";
-    public string Domain { get; set; } = "";
     public bool IsEnabled { get; set; }
     public string CreatedAt { get; set; } = "";
     public string UpdatedAt { get; set; } = "";
@@ -400,9 +367,6 @@ public class AddSambaDto
 {
     public string Name { get; set; } = "";
     public string Path { get; set; } = "";
-    public string? Username { get; set; }
-    public string? Password { get; set; }
-    public string? Domain { get; set; }
     public bool IsEnabled { get; set; } = true;
     public bool GuestAccess { get; set; } = true;
     public bool ReadOnly { get; set; } = false;
@@ -412,9 +376,6 @@ public class UpdateSambaDto
 {
     public string Name { get; set; } = "";
     public string Path { get; set; } = "";
-    public string? Username { get; set; }
-    public string? Password { get; set; }
-    public string? Domain { get; set; }
     public bool IsEnabled { get; set; } = true;
     public bool GuestAccess { get; set; } = true;
     public bool ReadOnly { get; set; } = false;
