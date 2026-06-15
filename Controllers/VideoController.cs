@@ -222,7 +222,9 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
+            // 文件路径为空时生成唯一占位，避免 UNIQUE 约束冲突
+            var filePath = string.IsNullOrEmpty(req.FilePath) ? $"manual://{Guid.NewGuid()}" : req.FilePath;
+            cmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             cmd.Parameters.Add(new SqliteParameter("@fileSize", req.FileSize ?? 0));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@hasCover", hasCover));
