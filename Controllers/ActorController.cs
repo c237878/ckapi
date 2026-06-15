@@ -273,7 +273,6 @@ public class ActorController : ControllerBase
                     {
                         id = reader["id"].ToString(),
                         name = reader["title"].ToString(),
-                        code = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
                         category = reader["category"]?.ToString(),
                         year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                         filePath = reader["file_path"]?.ToString(),
