@@ -244,6 +244,11 @@
             获取视频详情
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.LikeVideo(System.String)">
+            <summary>
+            点赞影片
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.AddVideo(ckapi.Controllers.AddVideoRequest)">
             <summary>
             手动添加视频

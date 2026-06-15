@@ -94,7 +94,6 @@ public class VideoController : ControllerBase
                     fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
                     coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
                     addedAt = reader["added_at"].ToString(),
-                    playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
                     note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
                     sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
                 });
@@ -186,8 +185,6 @@ public class VideoController : ControllerBase
                 fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
                 coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
                 addedAt = reader["added_at"].ToString(),
-                playCount = reader["play_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["play_count"]),
-                lastPlayedAt = reader["last_played_at"] == DBNull.Value ? null : reader["last_played_at"].ToString(),
                 note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
                 sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
             };
@@ -213,19 +210,86 @@ public class VideoController : ControllerBase
                 });
             }
 
+            // 统计点赞数
+            int likeCount = 0;
+            try
+            {
+                using var likeCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId", conn);
+                likeCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                likeCount = Convert.ToInt32(likeCmd.ExecuteScalar());
+            }
+            catch { /* 表不存在时忽略 */ }
+
             return Ok(new
             {
                 success = true,
                 data = new
                 {
                     video = video,
-                    actors = actors
+                    actors = actors,
+                    likeCount = likeCount
                 }
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetById failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 点赞影片
+    /// </summary>
+    [HttpPost("{id}/like")]
+    public IActionResult LikeVideo(string id)
+    {
+        try
+        {
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            // 检查视频是否存在
+            using (var checkCmd = new SqliteCommand("SELECT id FROM videos WHERE id = @id", conn))
+            {
+                checkCmd.Parameters.Add(new SqliteParameter("@id", id));
+                if (checkCmd.ExecuteScalar() == null)
+                    return NotFound(new { success = false, message = "视频不存在" });
+            }
+
+            // 创建点赞记录表（如果不存在）
+            using (var createCmd = new SqliteCommand(@"
+                CREATE TABLE IF NOT EXISTS video_likes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id TEXT NOT NULL,
+                    liked_at TEXT NOT NULL
+                )", conn))
+            {
+                createCmd.ExecuteNonQuery();
+            }
+
+            // 插入点赞记录
+            var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            using (var insertCmd = new SqliteCommand("INSERT INTO video_likes (video_id, liked_at) VALUES (@videoId, @likedAt)", conn))
+            {
+                insertCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                insertCmd.Parameters.Add(new SqliteParameter("@likedAt", likedAt));
+                insertCmd.ExecuteNonQuery();
+            }
+
+            // 统计点赞数
+            int likeCount = 0;
+            using (var countCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId", conn))
+            {
+                countCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                likeCount = Convert.ToInt32(countCmd.ExecuteScalar());
+            }
+
+            return Ok(new { success = true, likeCount });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LikeVideo failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
@@ -556,17 +620,7 @@ public class VideoController : ControllerBase
             if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
                 return NotFound(new { success = false, message = "视频文件不存在" });
 
-            // 2. 更新播放次数
-            var updateSql = @"
-                UPDATE videos 
-                SET play_count = play_count + 1, last_played_at = @lastPlayedAt
-                WHERE id = @id";
-            using var updateCmd = new SqliteCommand(updateSql, conn);
-            updateCmd.Parameters.Add(new SqliteParameter("@lastPlayedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            updateCmd.Parameters.Add(new SqliteParameter("@id", id));
-            updateCmd.ExecuteNonQuery();
-
-            // 3. 返回文件流（支持 Range）
+            // 2. 返回文件流（支持 Range）
             var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var response = File(fileStream, "video/mp4", enableRangeProcessing: true);
             return response;
