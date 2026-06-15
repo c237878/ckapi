@@ -29,6 +29,7 @@ public class VideoController : ControllerBase
         [FromQuery] int pageIndex = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? category = null,
+        [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
         [FromQuery] string? sambaDir = null)
     {
@@ -54,6 +55,12 @@ public class VideoController : ControllerBase
             {
                 whereClause += " AND samba_dir = @sambaDir";
                 parameters.Add(new SqliteParameter("@sambaDir", sambaDir));
+            }
+
+            if (!string.IsNullOrEmpty(country))
+            {
+                whereClause += " AND country = @country";
+                parameters.Add(new SqliteParameter("@country", country));
             }
 
             // 获取总数
