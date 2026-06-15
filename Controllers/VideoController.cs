@@ -120,6 +120,41 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
+    /// 获取所有已有的分类和国家（用于表单下拉）
+    /// </summary>
+    [HttpGet("meta")]
+    public IActionResult GetMeta()
+    {
+        try
+        {
+            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            conn.Open();
+
+            var categories = new List<string>();
+            var countries = new List<string>();
+
+            using (var catCmd = new SqliteCommand("SELECT DISTINCT category FROM videos WHERE category != '' ORDER BY category", conn))
+            using (var reader = catCmd.ExecuteReader())
+            {
+                while (reader.Read()) categories.Add(reader.GetString(0));
+            }
+
+            using (var countryCmd = new SqliteCommand("SELECT DISTINCT country FROM videos WHERE country != '' ORDER BY country", conn))
+            using (var reader = countryCmd.ExecuteReader())
+            {
+                while (reader.Read()) countries.Add(reader.GetString(0));
+            }
+
+            return Ok(new { success = true, categories, countries });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetMeta failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 获取视频详情
     /// </summary>
     [HttpGet("{id}")]
@@ -271,6 +306,8 @@ public class VideoController : ControllerBase
                     category = @category, 
                     country = @country,
                     file_path = @filePath, 
+                    cover_path = @coverPath,
+                    has_cover = @hasCover,
                     note = @note,
                     samba_dir = @sambaDir
                 WHERE id = @id";
@@ -291,6 +328,8 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
+            cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@hasCover", string.IsNullOrEmpty(req.CoverPath) ? 0 : 1));
             cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@sambaDir", req.SambaDir ?? (object)DBNull.Value));
             cmd.ExecuteNonQuery();
@@ -756,9 +795,16 @@ public class UpdateVideoRequest
     public string Category { get; set; } = "";
     public string Country { get; set; } = "";
     public string FilePath { get; set; } = "";
+    public string? CoverPath { get; set; }
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
     public string? SambaDir { get; set; }
+}
+
+public class VideoMetaRequest
+{
+    public string? Category { get; set; }
+    public string? Country { get; set; }
 }
 
 public class ScanRequest

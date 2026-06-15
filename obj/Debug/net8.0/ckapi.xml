@@ -234,6 +234,11 @@
             获取视频列表
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.GetMeta">
+            <summary>
+            获取所有已有的分类和国家（用于表单下拉）
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.GetById(System.String)">
             <summary>
             获取视频详情
