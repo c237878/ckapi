@@ -42,6 +42,7 @@ public class DataService : IDataService
             CreateLikeRecordTable();
             CreateSystemSettingTable();
             CreateFriendLinkTable();
+            CreateSambaShareTable();
 
             _logger.LogInformation("数据库初始化完成，数据库路径: {DbPath}", _db.GetDbPath());
         }
@@ -319,6 +320,61 @@ public class DataService : IDataService
         else
         {
             _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    /// <summary>
+    /// 创建Samba共享表
+    /// </summary>
+    private void CreateSambaShareTable()
+    {
+        const string tableName = "samba_shares";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL,
+            path        TEXT    NOT NULL,
+            is_enabled  INTEGER DEFAULT 1,
+            source      TEXT    DEFAULT 'macos',
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+            MigrateSambaShareTable();
+        }
+    }
+
+    /// <summary>
+    /// 迁移SambaShare表结构，添加 source 列
+    /// </summary>
+    private void MigrateSambaShareTable()
+    {
+        try
+        {
+            var columns = _db.ExecuteDataTable("PRAGMA table_info(samba_shares)");
+            bool hasSource = false;
+            foreach (System.Data.DataRow row in columns.Rows)
+            {
+                if (row["name"].ToString() == "source") hasSource = true;
+            }
+
+            if (!hasSource)
+            {
+                _db.ExecuteNonQuery("ALTER TABLE samba_shares ADD COLUMN source TEXT DEFAULT 'macos'");
+                _db.ExecuteNonQuery("UPDATE samba_shares SET source = 'macos' WHERE source IS NULL OR source = ''");
+                _logger.LogInformation("添加 source 列到 samba_shares 表");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "迁移samba_shares表失败");
         }
     }
 }

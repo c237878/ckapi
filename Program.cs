@@ -27,6 +27,7 @@ builder.Services.AddScoped<IDataService, DataService>();
 builder.Services.Configure<ckapi.Models.SambaConfig>(
     builder.Configuration.GetSection("SambaConfig"));
 builder.Services.AddScoped<ckapi.Services.SambaService>();
+builder.Services.AddScoped<ckapi.Services.DockerSambaService>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

@@ -14,15 +14,18 @@ public class SambaController : ControllerBase
     private readonly IConfiguration _config;
     private readonly ILogger<SambaController> _logger;
     private readonly SambaService _sambaService;
+    private readonly DockerSambaService _dockerService;
 
     public SambaController(
         IConfiguration config,
         ILogger<SambaController> logger,
-        SambaService sambaService)
+        SambaService sambaService,
+        DockerSambaService dockerService)
     {
         _config = config;
         _logger = logger;
         _sambaService = sambaService;
+        _dockerService = dockerService;
     }
 
     /// <summary>
@@ -38,14 +41,25 @@ public class SambaController : ControllerBase
 
             // 读取系统实际共享点
             var sysShares = await _sambaService.GetSharePointsAsync();
+            var dockerShares = _dockerService.GetShares();
 
             // 合并数据：数据库记录 + 系统实际状态
             var result = new List<object>();
             foreach (var db in dbShares)
             {
-                var sys = sysShares.FirstOrDefault(s =>
-                    s.Name.Equals(db.Name, StringComparison.OrdinalIgnoreCase) ||
-                    s.Path.Equals(db.Path, StringComparison.OrdinalIgnoreCase));
+                SharePointInfo? sys = null;
+                if (db.Source.Equals("docker", StringComparison.OrdinalIgnoreCase))
+                {
+                    sys = dockerShares.FirstOrDefault(s =>
+                        s.Name.Equals(db.Name, StringComparison.OrdinalIgnoreCase) ||
+                        s.Path.Equals(db.Path, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    sys = sysShares.FirstOrDefault(s =>
+                        s.Name.Equals(db.Name, StringComparison.OrdinalIgnoreCase) ||
+                        s.Path.Equals(db.Path, StringComparison.OrdinalIgnoreCase));
+                }
 
                 result.Add(new
                 {
@@ -53,6 +67,7 @@ public class SambaController : ControllerBase
                     name = db.Name,
                     path = db.Path,
                     isEnabled = db.IsEnabled,
+                    source = db.Source,
                     smbShared = sys?.SMBShared ?? false,
                     guestAccess = sys?.GuestAccess ?? true,
                     readOnly = sys?.ReadOnly ?? false,
@@ -103,15 +118,30 @@ public class SambaController : ControllerBase
             }
 
             // 创建系统共享
-            var (sysOk, sysMsg, shareName) = await _sambaService.AddShareAsync(
-                dto.Path, dto.Name,
-                smbEnabled: dto.IsEnabled,
-                guestAccess: dto.GuestAccess,
-                readOnly: dto.ReadOnly);
+            bool sysOk;
+            string sysMsg;
+            string? shareName = null;
+            bool isDocker = dto.Source.Equals("docker", StringComparison.OrdinalIgnoreCase);
+
+            if (isDocker)
+            {
+                (sysOk, sysMsg) = _dockerService.UpsertShare(
+                    dto.Name, dto.Path,
+                    guestAccess: dto.GuestAccess,
+                    readOnly: dto.ReadOnly);
+            }
+            else
+            {
+                (sysOk, sysMsg, shareName) = await _sambaService.AddShareAsync(
+                    dto.Path, dto.Name,
+                    smbEnabled: dto.IsEnabled,
+                    guestAccess: dto.GuestAccess,
+                    readOnly: dto.ReadOnly);
+            }
 
             if (!sysOk)
             {
-                return Ok(new { success = false, message = $"创建系统共享失败: {sysMsg}" });
+                return Ok(new { success = false, message = $"创建共享失败: {sysMsg}" });
             }
 
             // 保存到数据库
@@ -122,20 +152,21 @@ public class SambaController : ControllerBase
             conn.Open();
 
             var sql = @"
-                INSERT INTO samba_shares (id, name, path, is_enabled, created_at, updated_at)
-                VALUES (@id, @name, @path, @isEnabled, @createdAt, @updatedAt)";
+                INSERT INTO samba_shares (id, name, path, is_enabled, source, created_at, updated_at)
+                VALUES (@id, @name, @path, @isEnabled, @source, @createdAt, @updatedAt)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@id", id);
             cmd.Parameters.AddWithValue("@name", dto.Name);
             cmd.Parameters.AddWithValue("@path", dto.Path);
             cmd.Parameters.AddWithValue("@isEnabled", dto.IsEnabled ? 1 : 0);
+            cmd.Parameters.AddWithValue("@source", dto.Source);
             cmd.Parameters.AddWithValue("@createdAt", now);
             cmd.Parameters.AddWithValue("@updatedAt", now);
 
             cmd.ExecuteNonQuery();
 
-            return Ok(new { success = true, data = new { id, name = dto.Name, path = dto.Path, message = "添加成功" } });
+            return Ok(new { success = true, data = new { id, name = dto.Name, path = dto.Path, source = dto.Source, message = "添加成功" } });
         }
         catch (Exception ex)
         {
@@ -156,8 +187,8 @@ public class SambaController : ControllerBase
             conn.Open();
 
             // 查询当前记录
-            var selectSql = "SELECT id, name, path, is_enabled FROM samba_shares WHERE id = @id";
-            string shareName = "", sharePath = "";
+            var selectSql = "SELECT id, name, path, is_enabled, source FROM samba_shares WHERE id = @id";
+            string shareName = "", sharePath = "", source = "macos";
             bool wasEnabled = false;
 
             using (var selectCmd = new SqliteCommand(selectSql, conn))
@@ -169,6 +200,7 @@ public class SambaController : ControllerBase
                     shareName = reader["name"].ToString();
                     sharePath = reader["path"].ToString();
                     wasEnabled = Convert.ToInt32(reader["is_enabled"]) == 1;
+                    source = reader["source"]?.ToString() ?? "macos";
                 }
                 else
                 {
@@ -176,40 +208,62 @@ public class SambaController : ControllerBase
                 }
             }
 
-            // 如果名称或路径改变，需要删旧建新（sharing -e 不支持改名）
+            bool isDocker = source.Equals("docker", StringComparison.OrdinalIgnoreCase);
+
+            // 如果名称或路径改变，需要删旧建新
             bool nameChanged = !dto.Name.Equals(shareName, StringComparison.OrdinalIgnoreCase);
             bool pathChanged = !dto.Path.Equals(sharePath, StringComparison.OrdinalIgnoreCase);
 
-            if (nameChanged || pathChanged)
+            if (isDocker)
             {
-                // 删除旧的系统共享
-                if (!string.IsNullOrEmpty(shareName))
+                if (nameChanged)
                 {
-                    var (delOk, delMsg) = await _sambaService.RemoveShareAsync(shareName);
-                    _logger.LogInformation("删除旧共享 {name}: {ok} - {msg}", shareName, delOk, delMsg);
+                    // Docker 改名：先删旧名 section，再添加新名 section
+                    var (delOk, delMsg) = _dockerService.RemoveShare(shareName);
+                    _logger.LogInformation("删除旧 Docker 共享 {name}: {ok} - {msg}", shareName, delOk, delMsg);
                 }
-                // 用新名称/路径创建共享
-                var (addOk, addMsg, newShareName) = await _sambaService.AddShareAsync(
-                    dto.Path, dto.Name,
-                    smbEnabled: dto.IsEnabled,
+                var (upOk, upMsg) = _dockerService.UpsertShare(
+                    dto.Name, dto.Path,
                     guestAccess: dto.GuestAccess,
                     readOnly: dto.ReadOnly);
-                if (!addOk)
+                if (!upOk)
                 {
-                    return Ok(new { success = false, message = $"重命名系统共享失败: {addMsg}" });
+                    return Ok(new { success = false, message = $"更新 Docker 共享失败: {upMsg}" });
                 }
             }
             else
             {
-                // 仅更新开关/访客/只读配置
-                var (sysOk, sysMsg) = await _sambaService.UpdateShareAsync(
-                    shareName,
-                    smbEnabled: dto.IsEnabled,
-                    guestAccess: dto.GuestAccess,
-                    readOnly: dto.ReadOnly);
-                if (!sysOk)
+                if (nameChanged || pathChanged)
                 {
-                    _logger.LogWarning("更新系统共享配置失败: {msg}", sysMsg);
+                    // 删除旧的系统共享
+                    if (!string.IsNullOrEmpty(shareName))
+                    {
+                        var (delOk, delMsg) = await _sambaService.RemoveShareAsync(shareName);
+                        _logger.LogInformation("删除旧共享 {name}: {ok} - {msg}", shareName, delOk, delMsg);
+                    }
+                    // 用新名称/路径创建共享
+                    var (addOk, addMsg, newShareName) = await _sambaService.AddShareAsync(
+                        dto.Path, dto.Name,
+                        smbEnabled: dto.IsEnabled,
+                        guestAccess: dto.GuestAccess,
+                        readOnly: dto.ReadOnly);
+                    if (!addOk)
+                    {
+                        return Ok(new { success = false, message = $"重命名系统共享失败: {addMsg}" });
+                    }
+                }
+                else
+                {
+                    // 仅更新开关/访客/只读配置
+                    var (sysOk, sysMsg) = await _sambaService.UpdateShareAsync(
+                        shareName,
+                        smbEnabled: dto.IsEnabled,
+                        guestAccess: dto.GuestAccess,
+                        readOnly: dto.ReadOnly);
+                    if (!sysOk)
+                    {
+                        _logger.LogWarning("更新系统共享配置失败: {msg}", sysMsg);
+                    }
                 }
             }
 
@@ -250,8 +304,8 @@ public class SambaController : ControllerBase
             conn.Open();
 
             // 查询记录
-            var selectSql = "SELECT name, path FROM samba_shares WHERE id = @id";
-            string shareName = "", sharePath = "";
+            var selectSql = "SELECT name, path, source FROM samba_shares WHERE id = @id";
+            string shareName = "", sharePath = "", source = "macos";
 
             using (var selectCmd = new SqliteCommand(selectSql, conn))
             {
@@ -261,6 +315,7 @@ public class SambaController : ControllerBase
                 {
                     shareName = reader["name"].ToString();
                     sharePath = reader["path"].ToString();
+                    source = reader["source"]?.ToString() ?? "macos";
                 }
             }
 
@@ -270,7 +325,16 @@ public class SambaController : ControllerBase
             }
 
             // 删除系统共享
-            var (sysOk, sysMsg) = await _sambaService.RemoveShareAsync(shareName);
+            bool sysOk;
+            string sysMsg;
+            if (source.Equals("docker", StringComparison.OrdinalIgnoreCase))
+            {
+                (sysOk, sysMsg) = _dockerService.RemoveShare(shareName);
+            }
+            else
+            {
+                (sysOk, sysMsg) = await _sambaService.RemoveShareAsync(shareName);
+            }
             if (!sysOk)
             {
                 return Ok(new { success = false, message = $"删除系统共享失败: {sysMsg}" });
@@ -321,6 +385,7 @@ public class SambaController : ControllerBase
                 Name = reader["name"].ToString(),
                 Path = reader["path"].ToString(),
                 IsEnabled = Convert.ToInt32(reader["is_enabled"]) == 1,
+                Source = reader["source"]?.ToString() ?? "macos",
                 CreatedAt = reader["created_at"].ToString(),
                 UpdatedAt = reader["updated_at"].ToString()
             });
@@ -355,12 +420,13 @@ public class SambaController : ControllerBase
                 {
                     var id = Guid.NewGuid().ToString();
                     var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    var sql = @"INSERT INTO samba_shares (id, name, path, is_enabled, created_at, updated_at)
-                                   VALUES (@id, @name, @path, 1, @createdAt, @updatedAt)";
+                    var sql = @"INSERT INTO samba_shares (id, name, path, is_enabled, source, created_at, updated_at)
+                                   VALUES (@id, @name, @path, 1, @source, @createdAt, @updatedAt)";
                     using var cmd = new SqliteCommand(sql, conn);
                     cmd.Parameters.AddWithValue("@id", id);
                     cmd.Parameters.AddWithValue("@name", share.Name);
                     cmd.Parameters.AddWithValue("@path", share.Path);
+                    cmd.Parameters.AddWithValue("@source", "macos");
                     cmd.Parameters.AddWithValue("@createdAt", now);
                     cmd.Parameters.AddWithValue("@updatedAt", now);
                     await cmd.ExecuteNonQueryAsync();
@@ -384,6 +450,7 @@ public class DbShareRecord
     public string Name { get; set; } = "";
     public string Path { get; set; } = "";
     public bool IsEnabled { get; set; }
+    public string Source { get; set; } = "macos";
     public string CreatedAt { get; set; } = "";
     public string UpdatedAt { get; set; } = "";
 }
@@ -395,6 +462,7 @@ public class AddSambaDto
     public bool IsEnabled { get; set; } = true;
     public bool GuestAccess { get; set; } = true;
     public bool ReadOnly { get; set; } = false;
+    public string Source { get; set; } = "macos";
 }
 
 public class UpdateSambaDto
@@ -404,6 +472,7 @@ public class UpdateSambaDto
     public bool IsEnabled { get; set; } = true;
     public bool GuestAccess { get; set; } = true;
     public bool ReadOnly { get; set; } = false;
+    public string Source { get; set; } = "macos";
 }
 
 public class TestConnectionDto
