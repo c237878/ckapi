@@ -414,10 +414,9 @@ public class SambaController : ControllerBase
             // 导入 macOS 原生共享
             foreach (var share in macShares)
             {
-                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name OR path = @path";
+                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name AND source = 'macos'";
                 using var checkCmd = new SqliteCommand(checkSql, conn);
                 checkCmd.Parameters.AddWithValue("@name", share.Name);
-                checkCmd.Parameters.AddWithValue("@path", share.Path);
                 var exists = Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0;
 
                 if (!exists)
@@ -441,10 +440,9 @@ public class SambaController : ControllerBase
             // 导入 Docker Samba 共享
             foreach (var share in dockerShares)
             {
-                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name OR path = @path";
+                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name AND source = 'docker'";
                 using var checkCmd = new SqliteCommand(checkSql, conn);
                 checkCmd.Parameters.AddWithValue("@name", share.Name);
-                checkCmd.Parameters.AddWithValue("@path", share.Path);
                 var exists = Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0;
 
                 if (!exists)
