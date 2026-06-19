@@ -65,7 +65,7 @@ public class SambaController : ControllerBase
                 {
                     id = db.Id,
                     name = db.Name,
-                    path = db.Path,
+                    path = sys?.Path ?? db.Path,
                     isEnabled = db.IsEnabled,
                     source = db.Source,
                     smbShared = sys?.SMBShared ?? false,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace ckapi.Services;
@@ -93,18 +94,114 @@ public class DockerSambaService
             result.Add(current);
         }
 
+        // 将容器内路径转换回宿主机路径
+        var mounts = GetContainerMounts();
+        foreach (var share in result)
+        {
+            share.Path = ContainerPathToHostPath(share.Path);
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// 获取 Docker 容器当前的所有挂载（容器内路径 → 宿主机路径）
+    /// </summary>
+    private Dictionary<string, string> GetContainerMounts()
+    {
+        var mounts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var (exitCode, output) = RunShell("docker", $"inspect {_containerName}");
+            if (exitCode != 0) return mounts;
+
+            using var doc = JsonDocument.Parse(output);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0) return mounts;
+
+            var mountsElement = root[0].GetProperty("Mounts");
+            foreach (var mount in mountsElement.EnumerateArray())
+            {
+                if (mount.TryGetProperty("Source", out var sourceEl) &&
+                    mount.TryGetProperty("Destination", out var destEl))
+                {
+                    var src = sourceEl.GetString()?.Replace("\\", "/") ?? "";
+                    var dst = destEl.GetString()?.Replace("\\", "/") ?? "";
+                    if (!string.IsNullOrEmpty(dst) && !mounts.ContainsKey(dst))
+                        mounts[dst] = src;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "获取 Docker 容器挂载信息失败");
+        }
+        return mounts;
+    }
+
+    /// <summary>
+    /// 将容器内路径转换为宿主机路径
+    /// </summary>
+    private string ContainerPathToHostPath(string containerPath)
+    {
+        var mounts = GetContainerMounts();
+        if (mounts.TryGetValue(containerPath, out var hostPath))
+            return hostPath;
+
+        // 子路径前缀匹配（如容器内 /share/movies/subdir 匹配挂载点 /share/movies → 宿主机 /Volumes/wdc4t）
+        var sorted = mounts.OrderByDescending(m => m.Key.Length);
+        foreach (var kvp in sorted)
+        {
+            if (containerPath.StartsWith(kvp.Key + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                var suffix = containerPath.Substring(kvp.Key.Length).Replace("\\", "/");
+                return kvp.Value.TrimEnd('/') + suffix;
+            }
+        }
+
+        // 没找到匹配挂载，返回原路径
+        return containerPath;
+    }
+
+    /// <summary>
+    /// 将宿主路径转换为容器内路径
+    /// </summary>
+    private string HostPathToContainerPath(string hostPath)
+    {
+        var mounts = GetContainerMounts();
+        // 精确匹配
+        foreach (var kvp in mounts)
+        {
+            if (kvp.Value.Equals(hostPath, StringComparison.OrdinalIgnoreCase))
+                return kvp.Key;
+        }
+        // 前缀匹配（子路径）
+        var sorted = mounts.OrderByDescending(m => m.Value.Length);
+        foreach (var kvp in sorted)
+        {
+            if (hostPath.StartsWith(kvp.Value + "/", StringComparison.OrdinalIgnoreCase) ||
+                hostPath.Equals(kvp.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                var suffix = hostPath.Substring(kvp.Value.Length);
+                return kvp.Key.TrimEnd('/') + suffix.Replace("/", "\\");
+            }
+        }
+        // 没找到匹配挂载，返回原路径（由调用方判断是否有效）
+        return hostPath;
     }
 
     /// <summary>
     /// 添加或更新 Docker Samba 共享
     /// </summary>
-    public (bool Success, string Message) UpsertShare(string name, string path, bool guestAccess = true, bool readOnly = false)
+    public (bool Success, string Message) UpsertShare(string name, string hostPath, bool guestAccess = true, bool readOnly = false)
     {
-        if (!Directory.Exists(path))
+        if (!Directory.Exists(hostPath))
         {
-            return (false, $"目录不存在: {path}");
+            return (false, $"目录不存在: {hostPath}");
         }
+
+        // 将宿主路径转为容器内路径
+        var containerPath = HostPathToContainerPath(hostPath);
 
         if (!File.Exists(_configPath))
         {
@@ -120,7 +217,7 @@ public class DockerSambaService
         var sectionLines = new List<string>
         {
             $"[{sectionName}]",
-            $"   path = {path}",
+            $"   path = {containerPath}",
             "   browsable = yes",
             $"   read only = {(readOnly ? "yes" : "no")}",
             $"   guest ok = {(guestAccess ? "yes" : "no")}",
@@ -130,7 +227,6 @@ public class DockerSambaService
 
         if (sections.TryGetValue(sectionName, out var existing))
         {
-            // 替换已有 section
             var start = existing.Start;
             var end = existing.End;
             lines.RemoveRange(start, end - start + 1);
@@ -138,13 +234,12 @@ public class DockerSambaService
         }
         else
         {
-            // 在文件末尾添加
             if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1])) lines.Add("");
             lines.AddRange(sectionLines);
         }
 
         File.WriteAllLines(_configPath, lines);
-        _logger.LogInformation("Docker Samba 配置已写入: {name} -> {path}", sectionName, path);
+        _logger.LogInformation("Docker Samba 配置已写入: {name} -> 宿主:{hostPath} 容器:{containerPath}", sectionName, hostPath, containerPath);
 
         return RestartContainer();
     }
@@ -167,7 +262,6 @@ public class DockerSambaService
 
         lines.RemoveRange(existing.Start, existing.End - existing.Start + 1);
 
-        // 清理末尾空行
         while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1])) lines.RemoveAt(lines.Count - 1);
 
         File.WriteAllLines(_configPath, lines);
