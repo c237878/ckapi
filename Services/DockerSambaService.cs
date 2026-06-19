@@ -306,6 +306,9 @@ public class DockerSambaService
             return (false, $"配置中不存在共享: {name}");
         }
 
+        // 读取被删除共享的路径
+        var removedPath = GetSectionValue(lines, existing.Start, existing.End, "path");
+
         lines.RemoveRange(existing.Start, existing.End - existing.Start + 1);
 
         while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1])) lines.RemoveAt(lines.Count - 1);
@@ -313,7 +316,105 @@ public class DockerSambaService
         File.WriteAllLines(_configPath, lines);
         _logger.LogInformation("Docker Samba 共享已删除: {name}", sectionName);
 
+        // 检查是否有其他共享还在使用同一路径的容器挂载
+        var remainingSections = ParseSections(File.ReadAllLines(_configPath).ToList());
+        var removedContainerPath = removedPath;
+        var pathStillUsed = false;
+        foreach (var sec in remainingSections)
+            {
+                var secPath = GetSectionValue(File.ReadAllLines(_configPath).ToList(), sec.Value.Start, sec.Value.End, "path");
+                if (!string.IsNullOrEmpty(secPath) && secPath.Equals(removedContainerPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    pathStillUsed = true;
+                    break;
+                }
+            }
+
+        if (!pathStillUsed && !string.IsNullOrEmpty(removedContainerPath))
+        {
+            // 该路径没有其他共享引用了，重建容器释放挂载
+            _logger.LogInformation("路径 {path} 不再有共享引用，重建容器释放挂载", removedContainerPath);
+            var (ok, msg) = RebuildContainerWithoutMount(removedContainerPath);
+            if (!ok)
+            {
+                return (false, $"共享已删除，但释放挂载失败: {msg}（请手动执行 docker stop samba-server 后拔出磁盘）");
+            }
+            return (true, msg);
+        }
+
         return RestartContainer();
+    }
+
+    /// <summary>
+    /// 重建容器，去掉指定的容器内路径挂载（保留其他所有挂载）
+    /// </summary>
+    public (bool Success, string Message) RebuildContainerWithoutMount(string containerPathToRemove)
+    {
+        try
+        {
+            var currentMounts = GetContainerMounts();
+
+            // 1. 停止并删除容器
+            _logger.LogInformation("停止 Docker Samba 容器准备重建（去掉挂载 {path}）...", containerPathToRemove);
+            RunShell("docker", $"stop {_containerName}");
+            RunShell("docker", $"rm {_containerName}");
+
+            // 2. 构建新的 docker run 命令，排除要移除的挂载和 smb.conf 自身
+            var bindMounts = new List<string>();
+            foreach (var m in currentMounts)
+            {
+                // 跳过非 bind 类型（匿名卷等）
+                if (!m.Value.StartsWith("/")) continue;
+                // 跳过 smb.conf 自身
+                if (m.Value == _configPath) continue;
+                // 跳过要移除的容器路径
+                if (m.Key.Equals(containerPathToRemove, StringComparison.OrdinalIgnoreCase)) continue;
+                // 跳过不存在的旧挂载
+                if (!Directory.Exists(m.Value)) continue;
+
+                bindMounts.Add($"-v {m.Value}:{m.Key}");
+            }
+
+            // 3. 重新创建容器
+            var bindArgs = string.Join(" ", bindMounts);
+            var result = RunShell("docker",
+                $"run -d --name {_containerName} --restart unless-stopped -p 1445:445 " +
+                $"-v /tmp/samba-config/smb.conf:/etc/samba/smb.conf:ro {bindArgs} " +
+                $"-e SAMBA_SERVER_STRING=\"Docker Samba\" " +
+                $"-e SAMBA_WORKGROUP=WORKGROUP crazymax/samba:latest");
+
+            if (result.ExitCode != 0)
+            {
+                return (false, $"重建容器失败: {result.Output}");
+            }
+
+            _logger.LogInformation("Docker Samba 容器已重建，已移除挂载: {path}", containerPathToRemove);
+            return (true, $"共享已删除，容器已重建释放磁盘挂载: {containerPathToRemove}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "重建 Docker Samba 容器失败（移除挂载）");
+            return (false, $"重建容器异常: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 获取指定 section 的配置值
+    /// </summary>
+    private string GetSectionValue(List<string> lines, int start, int end, string key)
+    {
+        for (int i = start + 1; i <= end; i++)
+        {
+            var trim = lines[i].Trim();
+            if (trim.StartsWith("[")) break; // 下一个 section
+            if (trim.StartsWith(key + " =", StringComparison.OrdinalIgnoreCase) ||
+                trim.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                var eqIdx = trim.IndexOf('=');
+                return eqIdx >= 0 ? trim.Substring(eqIdx + 1).Trim() : "";
+            }
+        }
+        return "";
     }
 
     /// <summary>
