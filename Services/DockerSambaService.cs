@@ -245,6 +245,22 @@ public class DockerSambaService
     }
 
     /// <summary>
+    /// 启用 Docker Samba 共享（将配置写回 smb.conf 并重启容器）
+    /// </summary>
+    public (bool Success, string Message) EnableShare(string name, string hostPath, bool guestAccess = true, bool readOnly = false)
+    {
+        return UpsertShare(name, hostPath, guestAccess, readOnly);
+    }
+
+    /// <summary>
+    /// 禁用 Docker Samba 共享（从 smb.conf 删除对应 section 并重启容器）
+    /// </summary>
+    public (bool Success, string Message) DisableShare(string name)
+    {
+        return RemoveShare(name);
+    }
+
+    /// <summary>
     /// 删除 Docker Samba 共享
     /// </summary>
     public (bool Success, string Message) RemoveShare(string name)

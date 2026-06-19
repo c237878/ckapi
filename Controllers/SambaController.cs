@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using ckapi.Services;
@@ -216,19 +217,53 @@ public class SambaController : ControllerBase
 
             if (isDocker)
             {
-                if (nameChanged)
+                bool shouldEnable = dto.IsEnabled;
+                bool wasSysEnabled = _dockerService.GetShares().Any(s => s.Name.Equals(shareName, StringComparison.OrdinalIgnoreCase));
+
+                if (nameChanged && !shouldEnable)
                 {
-                    // Docker 改名：先删旧名 section，再添加新名 section
-                    var (delOk, delMsg) = _dockerService.RemoveShare(shareName);
-                    _logger.LogInformation("删除旧 Docker 共享 {name}: {ok} - {msg}", shareName, delOk, delMsg);
+                    // 改名且禁用：先删旧的（或无操作如果已不存在）
+                    if (wasSysEnabled)
+                        _dockerService.RemoveShare(shareName);
                 }
-                var (upOk, upMsg) = _dockerService.UpsertShare(
-                    dto.Name, dto.Path,
-                    guestAccess: dto.GuestAccess,
-                    readOnly: dto.ReadOnly);
-                if (!upOk)
+                else if (nameChanged && shouldEnable)
                 {
-                    return Ok(new { success = false, message = $"更新 Docker 共享失败: {upMsg}" });
+                    // 改名且启用：删旧的，建新的
+                    if (wasSysEnabled)
+                        _dockerService.RemoveShare(shareName);
+                    var (upOk, upMsg) = _dockerService.UpsertShare(
+                        dto.Name, dto.Path,
+                        guestAccess: dto.GuestAccess,
+                        readOnly: dto.ReadOnly);
+                    if (!upOk)
+                        return Ok(new { success = false, message = $"更新 Docker 共享失败: {upMsg}" });
+                }
+                else if (!nameChanged && shouldEnable && !wasSysEnabled)
+                {
+                    // 未改名、启用、但 smb.conf 中不存在 → 创建
+                    var (upOk, upMsg) = _dockerService.UpsertShare(
+                        dto.Name, dto.Path,
+                        guestAccess: dto.GuestAccess,
+                        readOnly: dto.ReadOnly);
+                    if (!upOk)
+                        return Ok(new { success = false, message = $"启用 Docker 共享失败: {upMsg}" });
+                }
+                else if (!nameChanged && !shouldEnable && wasSysEnabled)
+                {
+                    // 未改名、禁用、但 smb.conf 中存在 → 删除 section
+                    var (disOk, disMsg) = _dockerService.DisableShare(shareName);
+                    if (!disOk)
+                        return Ok(new { success = false, message = $"禁用 Docker 共享失败: {disMsg}" });
+                }
+                // else: 状态一致，仅权限变更需要重写
+                else if (shouldEnable)
+                {
+                    var (upOk, upMsg) = _dockerService.UpsertShare(
+                        dto.Name, dto.Path,
+                        guestAccess: dto.GuestAccess,
+                        readOnly: dto.ReadOnly);
+                    if (!upOk)
+                        return Ok(new { success = false, message = $"更新 Docker 共享失败: {upMsg}" });
                 }
             }
             else
