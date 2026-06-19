@@ -206,11 +206,31 @@ public class DockerSambaService
         // 校验：如果转换后的路径与宿主路径相同，说明没有找到对应的容器挂载
         if (containerPath.Equals(hostPath, StringComparison.OrdinalIgnoreCase))
         {
-            var mounts = GetContainerMounts();
-            var mountList = mounts.Any() 
-                ? string.Join(", ", mounts.Select(m => $"{m.Value}→{m.Key}")) 
-                : "（无）";
-            return (false, $"宿主路径未挂载到 Docker 容器，无法创建共享。\n宿主路径: {hostPath}\n当前已挂载到容器的路径: {mountList}\n\n请先将 {hostPath} 挂载到 Docker 容器，或修改共享路径为已挂载的目录。");
+            // 检查是匿名卷 /data（不需要挂载）还是真正的未挂载路径
+            if (!hostPath.StartsWith("/Volumes/") && !hostPath.StartsWith("/Users/") && !hostPath.StartsWith("/tmp/"))
+            {
+                // 非标准路径，跳过自动重建（可能是匿名卷）
+                return (false, $"无法识别的路径格式: {hostPath}");
+            }
+
+            // 自动重建容器，将新路径挂载进去
+            var (rebuildOk, rebuildMsg) = RebuildContainerWithNewMount(hostPath);
+            if (!rebuildOk)
+            {
+                return (false, $"宿主路径未挂载到容器，自动重建容器失败: {rebuildMsg}");
+            }
+
+            // 重建成功后，重新获取容器挂载（用新的 container 实例查询）
+            var newMounts = GetContainerMounts();
+            containerPath = newMounts.TryGetValue($"/share/{hostPath.Split('/').Last()}", out var cp) 
+                ? cp 
+                : hostPath;
+
+            // 如果仍未找到挂载，说明该路径在宿主机上不存在
+            if (containerPath.Equals(hostPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return (false, $"容器已重建，但新路径 {hostPath} 在容器中仍不可见（可能该路径在宿主机上不存在或容器未正常启动），请检查。");
+            }
         }
 
         if (!File.Exists(_configPath))
@@ -315,6 +335,72 @@ public class DockerSambaService
         {
             _logger.LogError(ex, "重启 Docker Samba 容器失败");
             return (false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 将新的宿主路径挂载到容器，并重建容器（保留 smb.conf 和所有共享配置）
+    /// </summary>
+    /// <param name="newHostPath">要新增挂载的宿主路径</param>
+    public (bool Success, string Message) RebuildContainerWithNewMount(string newHostPath)
+    {
+        try
+        {
+            // 1. 获取当前容器的所有挂载
+            var currentMounts = GetContainerMounts();
+
+            // 2. 检查是否已挂载
+            if (currentMounts.Any(m => m.Value.Equals(newHostPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                return (true, "路径已挂载，无需重建");
+            }
+
+            // 3. 停止并删除容器（smb.conf 是独立文件挂载，不会丢失）
+            _logger.LogInformation("停止 Docker Samba 容器准备重建...");
+            RunShell("docker", $"stop {_containerName}");
+            RunShell("docker", $"rm {_containerName}");
+
+            // 4. 构建新的 docker run 命令
+            //    从现有挂载中提取：类型为 bind 的需要重新挂载（排除 smb.conf 自身）
+            var bindMounts = new List<string>();
+            foreach (var m in currentMounts)
+            {
+                // 跳过非 bind 类型的挂载（如匿名卷），只处理宿主目录挂载
+                // smb.conf 单独处理，后面追加
+                if (!m.Value.StartsWith("/") || m.Value == _configPath) continue;
+                // 跳过不存在的旧挂载（如已拔出的磁盘）
+                if (!Directory.Exists(m.Value)) continue;
+                // 转换为 Docker run 的 -v 参数
+                var containerPath = m.Key;
+                bindMounts.Add($"-v {m.Value}:{containerPath}");
+            }
+
+            // 5. 添加新的挂载：宿主路径 → 容器内同名路径（如 /Volumes/Seagate8T → /share/Seagate8T）
+            var volumeName = newHostPath.Split('/').Last();
+            if (string.IsNullOrEmpty(volumeName)) volumeName = "data";
+            var newContainerPath = $"/share/{volumeName}";
+            bindMounts.Add($"-v {newHostPath}:{newContainerPath}");
+
+            // 6. 重新创建容器
+            var bindArgs = string.Join(" ", bindMounts);
+            var newContainerId = RunShell("docker",
+                $"run -d --name {_containerName} --restart unless-stopped -p 1445:445 " +
+                $"-v /tmp/samba-config/smb.conf:/etc/samba/smb.conf:ro {bindArgs} " +
+                $"-e SAMBA_SERVER_STRING=\"Docker Samba\" " +
+                $"-e SAMBA_WORKGROUP=WORKGROUP crazymax/samba:latest");
+
+            if (newContainerId.ExitCode != 0)
+            {
+                return (false, $"重建容器失败: {newContainerId.Output}");
+            }
+
+            _logger.LogInformation("Docker Samba 容器已重建，新挂载: {host} → {container}", newHostPath, newContainerPath);
+            return (true, $"容器已重建，新磁盘已挂载: {newHostPath} → {newContainerPath}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "重建 Docker Samba 容器失败");
+            return (false, $"重建容器异常: {ex.Message}");
         }
     }
 
