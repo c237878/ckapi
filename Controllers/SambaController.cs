@@ -402,14 +402,18 @@ public class SambaController : ControllerBase
     {
         try
         {
-            var sysShares = await _sambaService.GetSharePointsAsync();
+            // 同时导入 macOS 原生共享和 Docker Samba 共享
+            var macShares = await _sambaService.GetSharePointsAsync();
+            var dockerShares = _dockerService.GetShares();
+
             using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
             await conn.OpenAsync();
 
             int imported = 0;
-            foreach (var share in sysShares)
+
+            // 导入 macOS 原生共享
+            foreach (var share in macShares)
             {
-                // 检查是否已在数据库中
                 var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name OR path = @path";
                 using var checkCmd = new SqliteCommand(checkSql, conn);
                 checkCmd.Parameters.AddWithValue("@name", share.Name);
@@ -427,6 +431,33 @@ public class SambaController : ControllerBase
                     cmd.Parameters.AddWithValue("@name", share.Name);
                     cmd.Parameters.AddWithValue("@path", share.Path);
                     cmd.Parameters.AddWithValue("@source", "macos");
+                    cmd.Parameters.AddWithValue("@createdAt", now);
+                    cmd.Parameters.AddWithValue("@updatedAt", now);
+                    await cmd.ExecuteNonQueryAsync();
+                    imported++;
+                }
+            }
+
+            // 导入 Docker Samba 共享
+            foreach (var share in dockerShares)
+            {
+                var checkSql = "SELECT COUNT(*) FROM samba_shares WHERE name = @name OR path = @path";
+                using var checkCmd = new SqliteCommand(checkSql, conn);
+                checkCmd.Parameters.AddWithValue("@name", share.Name);
+                checkCmd.Parameters.AddWithValue("@path", share.Path);
+                var exists = Convert.ToInt32(await checkCmd.ExecuteScalarAsync()) > 0;
+
+                if (!exists)
+                {
+                    var id = Guid.NewGuid().ToString();
+                    var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    var sql = @"INSERT INTO samba_shares (id, name, path, is_enabled, source, created_at, updated_at)
+                                   VALUES (@id, @name, @path, 1, @source, @createdAt, @updatedAt)";
+                    using var cmd = new SqliteCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("@id", id);
+                    cmd.Parameters.AddWithValue("@name", share.Name);
+                    cmd.Parameters.AddWithValue("@path", share.Path);
+                    cmd.Parameters.AddWithValue("@source", "docker");
                     cmd.Parameters.AddWithValue("@createdAt", now);
                     cmd.Parameters.AddWithValue("@updatedAt", now);
                     await cmd.ExecuteNonQueryAsync();
