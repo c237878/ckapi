@@ -197,11 +197,21 @@ public class DockerSambaService
     {
         if (!Directory.Exists(hostPath))
         {
-            return (false, $"目录不存在: {hostPath}");
+            return (false, $"宿主路径目录不存在: {hostPath}");
         }
 
         // 将宿主路径转为容器内路径
         var containerPath = HostPathToContainerPath(hostPath);
+
+        // 校验：如果转换后的路径与宿主路径相同，说明没有找到对应的容器挂载
+        if (containerPath.Equals(hostPath, StringComparison.OrdinalIgnoreCase))
+        {
+            var mounts = GetContainerMounts();
+            var mountList = mounts.Any() 
+                ? string.Join(", ", mounts.Select(m => $"{m.Value}→{m.Key}")) 
+                : "（无）";
+            return (false, $"宿主路径未挂载到 Docker 容器，无法创建共享。\n宿主路径: {hostPath}\n当前已挂载到容器的路径: {mountList}\n\n请先将 {hostPath} 挂载到 Docker 容器，或修改共享路径为已挂载的目录。");
+        }
 
         if (!File.Exists(_configPath))
         {
