@@ -74,6 +74,11 @@
             获取所有扫描目录
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.ScanDirectoryController.CheckDirectory(ckapi.Controllers.DirectoryCheckRequest)">
+            <summary>
+            检查目录是否存在
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.ScanDirectoryController.GetById(System.String)">
             <summary>
             获取单个扫描目录

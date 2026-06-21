@@ -55,6 +55,25 @@ public class ScanDirectoryController : ControllerBase
     }
 
     /// <summary>
+    /// 检查目录是否存在
+    /// </summary>
+    [HttpPost("check")]
+    public IActionResult CheckDirectory([FromBody] DirectoryCheckRequest req)
+    {
+        try
+        {
+            var exists = Directory.Exists(req.Path);
+            _logger.LogInformation("检查目录路径: {Path}, 存在: {Exists}", req.Path, exists);
+            return Ok(new { success = true, exists });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "CheckDirectory failed");
+            return Ok(new { success = false, exists = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 获取单个扫描目录
     /// </summary>
     [HttpGet("{id}")]
@@ -110,15 +129,13 @@ public class ScanDirectoryController : ControllerBase
             var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
-                INSERT INTO scan_directories (id, path, video_types, recursive, is_enabled, created_at, updated_at)
-                VALUES (@id, @path, @videoTypes, @recursive, @isEnabled, @createdAt, @updatedAt)";
+                INSERT INTO scan_directories (id, path, recursive, created_at, updated_at)
+                VALUES (@id, @path, @recursive, @createdAt, @updatedAt)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
-            cmd.Parameters.Add(new SqliteParameter("@videoTypes", req.VideoTypes ?? "mp4"));
             cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@isEnabled", req.IsEnabled ? 1 : 0));
             cmd.Parameters.Add(new SqliteParameter("@createdAt", now));
             cmd.Parameters.Add(new SqliteParameter("@updatedAt", now));
             cmd.ExecuteNonQuery();
@@ -149,18 +166,14 @@ public class ScanDirectoryController : ControllerBase
             var sql = @"
                 UPDATE scan_directories SET
                     path = @path,
-                    video_types = @videoTypes,
                     recursive = @recursive,
-                    is_enabled = @isEnabled,
                     updated_at = @updatedAt
                 WHERE id = @id";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
-            cmd.Parameters.Add(new SqliteParameter("@videoTypes", req.VideoTypes ?? "mp4"));
             cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@isEnabled", req.IsEnabled ? 1 : 0));
             cmd.Parameters.Add(new SqliteParameter("@updatedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
 
             if (cmd.ExecuteNonQuery() > 0)
@@ -218,7 +231,10 @@ public class ScanDirectoryController : ControllerBase
 public class ScanDirectoryRequest
 {
     public string Path { get; set; } = "";
-    public string? VideoTypes { get; set; } = "mp4";
     public bool Recursive { get; set; } = true;
-    public bool IsEnabled { get; set; } = true;
+}
+
+public class DirectoryCheckRequest
+{
+    public string Path { get; set; } = "";
 }
