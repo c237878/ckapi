@@ -219,9 +219,7 @@ public class ScanDirectoryController : ControllerBase
         {
             id = reader["id"].ToString(),
             path = reader["path"].ToString(),
-            videoTypes = reader["video_types"].ToString(),
             recursive = Convert.ToInt32(reader["recursive"]) == 1,
-            isEnabled = Convert.ToInt32(reader["is_enabled"]) == 1,
             createdAt = reader["created_at"]?.ToString(),
             updatedAt = reader["updated_at"]?.ToString()
         };

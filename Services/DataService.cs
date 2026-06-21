@@ -167,9 +167,7 @@ public class DataService : IDataService
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             path        TEXT    NOT NULL,
-            video_types TEXT    NOT NULL,
             recursive   INTEGER DEFAULT 1,
-            is_enabled  INTEGER DEFAULT 1,
             created_at  TEXT    NOT NULL,
             updated_at  TEXT    NOT NULL
         ";
