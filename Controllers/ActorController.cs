@@ -55,7 +55,11 @@ public class ActorController : ControllerBase
                 // 列表 + video_count 子查询
                 var sql = $@"
                     SELECT a.*, 
-                        (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count
+                        (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count,
+                        (SELECT COALESCE(SUM(vl.like_count), 0) FROM video_actors va2 
+                         JOIN videos v ON va2.video_id = v.id 
+                         LEFT JOIN video_likes vl ON v.id = vl.video_id 
+                         WHERE va2.actor_id = a.id) as like_count
                     FROM actors a
                     {whereClause}
                     ORDER BY a.name ASC
@@ -79,6 +83,7 @@ public class ActorController : ControllerBase
                         avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
+                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
                         addedAt = reader["added_at"]?.ToString()
                     });
                 }
