@@ -64,31 +64,6 @@
             删除友情链接
             </summary>
         </member>
-        <member name="T:ckapi.Controllers.LikeController">
-            <summary>
-            点赞相关接口
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.LikeController.LikeVideo(System.String,System.String)">
-            <summary>
-            点赞视频
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.LikeController.UnlikeVideo(System.String,System.String)">
-            <summary>
-            取消点赞
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.LikeController.GetLikeCount(System.String)">
-            <summary>
-            获取视频的点赞数
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.LikeController.CheckLiked(System.String,System.String)">
-            <summary>
-            检查是否已点赞
-            </summary>
-        </member>
         <member name="T:ckapi.Controllers.ScanDirectoryController">
             <summary>
             扫描目录管理控制器
@@ -364,41 +339,6 @@
             修改时间
             </summary>
         </member>
-        <member name="T:ckapi.Models.LikeRecord">
-            <summary>
-            点赞记录模型
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.Id">
-            <summary>
-            主键ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.VideoId">
-            <summary>
-            视频ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.LikeTime">
-            <summary>
-            点赞时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.UserToken">
-            <summary>
-            用户标识（可选，用于防重复点赞）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.CTime">
-            <summary>
-            创建时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.LikeRecord.UTime">
-            <summary>
-            修改时间
-            </summary>
-        </member>
         <member name="T:ckapi.Models.SystemSetting">
             <summary>
             系统设置模型
@@ -532,11 +472,6 @@
         <member name="M:ckapi.Services.DataService.CreateVideoActorTable">
             <summary>
             创建影片-演员关联表
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.DataService.CreateLikeRecordTable">
-            <summary>
-            创建点赞记录表
             </summary>
         </member>
         <member name="M:ckapi.Services.DataService.CreateSystemSettingTable">

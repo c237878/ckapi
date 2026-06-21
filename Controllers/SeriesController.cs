@@ -39,12 +39,12 @@ public class SeriesController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            var countSql = $"SELECT COUNT(*) FROM VideoSeries {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM video_series {whereClause}";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
                 SELECT s.*, (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count
-                FROM VideoSeries s
+                FROM video_series s
                 {whereClause}
                 ORDER BY s.name ASC
                 LIMIT @pageSize OFFSET @offset";
@@ -85,7 +85,7 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM VideoSeries WHERE id = @id";
+            var sql = "SELECT * FROM video_series WHERE id = @id";
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
             if (dt.Rows.Count == 0)
             {
@@ -203,7 +203,7 @@ public class SeriesController : ControllerBase
             series.UTime = now;
 
             var sql = @"
-                INSERT INTO VideoSeries (id, name, alias, link, country, created_at, updated_at)
+                INSERT INTO video_series (id, name, alias, link, country, created_at, updated_at)
                 VALUES (@id, @name, @alias, @link, @country, @ctime, @utime)";
 
             _db.ExecuteNonQuery(sql,
@@ -234,7 +234,7 @@ public class SeriesController : ControllerBase
         try
         {
             var sql = @"
-                UPDATE VideoSeries SET 
+                UPDATE video_series SET 
                     name = @name,
                     alias = @alias,
                     link = @link,
@@ -276,7 +276,7 @@ public class SeriesController : ControllerBase
                 new SqliteParameter("@seriesid", id));
 
             // 删除系列
-            var result = _db.ExecuteNonQuery("DELETE FROM VideoSeries WHERE id = @id",
+            var result = _db.ExecuteNonQuery("DELETE FROM video_series WHERE id = @id",
                 new SqliteParameter("@id", id));
 
             if (result > 0)

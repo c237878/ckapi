@@ -40,7 +40,6 @@ public class DataService : IDataService
             CreateVideoSeriesTable();
             CreateActorTable();
             CreateVideoActorTable();
-            CreateLikeRecordTable();
             CreateSystemSettingTable();
             CreateFriendLinkTable();
             CreateScanDirectoryTable();
@@ -250,7 +249,7 @@ public class DataService : IDataService
     /// </summary>
     private void CreateVideoSeriesTable()
     {
-        const string tableName = "VideoSeries";
+        const string tableName = "video_series";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             name        TEXT    NOT NULL,
@@ -311,31 +310,6 @@ public class DataService : IDataService
             video_id    TEXT    NOT NULL,
             actor_id    TEXT    NOT NULL,
             created_at  TEXT    NOT NULL
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
-        }
-    }
-
-    /// <summary>
-    /// 创建点赞记录表
-    /// </summary>
-    private void CreateLikeRecordTable()
-    {
-        const string tableName = "LikeRecord";
-        const string fieldStr = @"
-            id          TEXT    NOT NULL    PRIMARY KEY,
-            videoid     TEXT    NOT NULL,
-            liketime    TEXT    NOT NULL,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))

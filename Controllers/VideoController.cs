@@ -76,7 +76,7 @@ public class VideoController : ControllerBase
             var sql = $@"
                 SELECT v.*, s.name as series_name
                 FROM videos v
-                LEFT JOIN VideoSeries s ON v.seriesid = s.id
+                LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
                 ORDER BY v.added_at DESC
                 LIMIT @pageSize OFFSET @offset";
@@ -144,7 +144,7 @@ public class VideoController : ControllerBase
                 while (reader.Read()) countries.Add(reader.GetString(0));
             }
 
-            using (var seriesCmd = new SqliteCommand("SELECT id, name FROM VideoSeries ORDER BY name", conn))
+            using (var seriesCmd = new SqliteCommand("SELECT id, name FROM video_series ORDER BY name", conn))
             using (var reader = seriesCmd.ExecuteReader())
             {
                 while (reader.Read())
@@ -173,7 +173,7 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.*, s.name as series_name
                 FROM videos v
-                LEFT JOIN VideoSeries s ON v.seriesid = s.id
+                LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.id = @id";
             using var conn = GetConnection();
             conn.Open();
