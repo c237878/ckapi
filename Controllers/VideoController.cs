@@ -824,9 +824,8 @@ public class VideoController : ControllerBase
                 cmd.ExecuteNonQuery();
             }
 
-            // 收集所有扫描目录中发现的文件路径
-            var allFoundPaths = new HashSet<string>();
-
+            // 第一遍：收集所有文件路径及对应的目录分类
+            var pathToCategory = new Dictionary<string, string>();
             foreach (var dir in dirs)
             {
                 if (!Directory.Exists(dir.path)) continue;
@@ -837,42 +836,39 @@ public class VideoController : ControllerBase
                     IgnoreInaccessible = true
                 };
 
-                var allFiles = new List<string>();
                 foreach (var ext in extensions)
                 {
                     try
                     {
-                        allFiles.AddRange(Directory.GetFiles(dir.path, $"*{ext}", enumOpts));
+                        var files = Directory.GetFiles(dir.path, $"*{ext}", enumOpts)
+                            .Where(f => !Path.GetFileName(f).StartsWith("._"));
+                        foreach (var file in files)
+                            pathToCategory[file] = dir.category;
                     }
                     catch (Exception ex)
                     {
                         errors.Add($"扫描目录 {dir.path} 扩展名 {ext} 失败: {ex.Message}");
                     }
                 }
-
-                allFiles = allFiles.Distinct().ToList();
-                totalFilesFound += allFiles.Count;
-
-                foreach (var filePath in allFiles)
-                {
-                    if (Path.GetFileName(filePath).StartsWith("._")) continue;
-
-                    allFoundPaths.Add(filePath);
-
-                    try
-                    {
-                        if (UpsertVideoFromFile(filePath, dir.category, conn))
-                            totalFilesAdded++;
-                    }
-                    catch (Exception ex)
-                    {
-                        errors.Add($"{filePath}: {ex.Message}");
-                    }
-                }
             }
 
-            // 清空不在扫描目录中的视频路径
-            totalFilesCleared = ClearMissingPaths(conn, allFoundPaths);
+            totalFilesFound = pathToCategory.Count;
+
+            // 第二遍：先清空不在扫描目录的旧记录，再插入/更新
+            totalFilesCleared = ClearMissingPaths(conn, pathToCategory.Keys.ToHashSet());
+
+            foreach (var kvp in pathToCategory)
+            {
+                try
+                {
+                    if (UpsertVideoFromFile(kvp.Key, kvp.Value, conn))
+                        totalFilesAdded++;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{kvp.Key}: {ex.Message}");
+                }
+            }
 
             var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
                                     files_found = @filesFound, files_added = @filesAdded, 
