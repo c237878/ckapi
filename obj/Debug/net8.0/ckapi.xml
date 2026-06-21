@@ -269,6 +269,16 @@
             封面代理
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.UpsertVideoFromFile(System.String,System.String,Microsoft.Data.Sqlite.SqliteConnection)">
+            <summary>
+            插入或更新视频记录，返回 true 表示新增
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.ClearMissingPaths(Microsoft.Data.Sqlite.SqliteConnection,System.Collections.Generic.HashSet{System.String})">
+            <summary>
+            清空不在扫描目录中的视频路径，返回清除数量
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.VideoTypeController">
             <summary>
             视频类型管理控制器

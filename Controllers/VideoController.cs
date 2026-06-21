@@ -528,43 +528,33 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 读取启用的扫描目录
-            var dirs = new List<(string id, string path, string videoTypes, bool recursive)>();
-            using (var dirCmd = new SqliteCommand(
-                "SELECT id, path, video_types, recursive FROM scan_directories WHERE is_enabled = 1", conn))
+            // 读取扫描类型配置
+            var scanType = "";
+            using (var stCmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'scanType'", conn))
+            {
+                var result = stCmd.ExecuteScalar();
+                scanType = result?.ToString() ?? "";
+            }
+
+            if (string.IsNullOrEmpty(scanType))
+                return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
+
+            // 读取扫描目录（含分类属性）
+            var dirs = new List<(string path, string category, bool recursive)>();
+            using (var dirCmd = new SqliteCommand("SELECT path, category, recursive FROM scan_directories", conn))
             using (var reader = dirCmd.ExecuteReader())
             {
                 while (reader.Read())
                 {
                     dirs.Add((
-                        reader["id"].ToString()!,
                         reader["path"].ToString()!,
-                        reader["video_types"].ToString()!,
+                        reader["category"] == DBNull.Value ? "" : reader["category"].ToString()!,
                         Convert.ToInt32(reader["recursive"]) == 1));
                 }
             }
 
             if (dirs.Count == 0)
-            {
                 return Ok(new { success = false, message = "没有配置扫描目录" });
-            }
-
-            // 读取启用的视频类型
-            var types = new List<(string name, string extensions)>();
-            using (var typeCmd = new SqliteCommand(
-                "SELECT name, extensions FROM video_types ORDER BY sort_order", conn))
-            using (var reader = typeCmd.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    types.Add((reader["name"].ToString()!, reader["extensions"].ToString()!));
-                }
-            }
-
-            if (types.Count == 0)
-            {
-                return Ok(new { success = false, message = "没有配置视频类型" });
-            }
 
             // 创建扫描任务
             var taskId = 0;
@@ -580,7 +570,7 @@ public class VideoController : ControllerBase
             }
 
             // 异步执行扫描
-            _ = Task.Run(() => ScanAllDirectoriesAsync(dirs, types, taskId));
+            _ = Task.Run(() => ScanAllDirectoriesAsync(dirs, scanType, taskId));
 
             return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
         }
@@ -607,20 +597,39 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
+            // 读取扫描类型配置
+            var scanType = "";
+            using (var stCmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'scanType'", conn))
+            {
+                var result = stCmd.ExecuteScalar();
+                scanType = result?.ToString() ?? "";
+            }
+
+            if (string.IsNullOrEmpty(scanType))
+                return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
+
+            // 读取该目录的分类
+            var category = "";
+            using (var catCmd = new SqliteCommand("SELECT category FROM scan_directories WHERE path = @path", conn))
+            {
+                catCmd.Parameters.Add(new SqliteParameter("@path", req.TargetPath));
+                var catResult = catCmd.ExecuteScalar();
+                category = catResult?.ToString() ?? "";
+            }
+
             var taskId = 0;
             var sql = @"
                 INSERT INTO scan_tasks (task_type, status, target_path, started_at)
                 VALUES ('manual', 'pending', @targetPath, @startedAt);
                 SELECT last_insert_rowid();";
-            
+
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@targetPath", req.TargetPath));
             cmd.Parameters.Add(new SqliteParameter("@startedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            
             taskId = Convert.ToInt32(cmd.ExecuteScalar());
 
             // 异步执行扫描
-            _ = Task.Run(() => ScanDirectoryAsync(req.TargetPath, req.Recursive, taskId));
+            _ = Task.Run(() => ScanSingleDirectoryAsync(req.TargetPath, req.Recursive, category, scanType, taskId));
 
             return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
         }
@@ -735,6 +744,25 @@ public class VideoController : ControllerBase
 
     #region 私有方法
 
+    private List<string> ParseScanType(string scanType)
+    {
+        return scanType.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim().ToLowerInvariant())
+            .Where(t => t.Length > 0)
+            .Select(t => t.StartsWith(".") ? t : "." + t)
+            .ToList();
+    }
+
+    private string ExtractVideoName(string filePath)
+    {
+        // 取文件名中第一个.前的部分
+        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        var dotIndex = fileName.IndexOf('.');
+        if (dotIndex > 0)
+            return fileName.Substring(0, dotIndex);
+        return fileName;
+    }
+
     private object ReadVideoRow(SqliteDataReader reader, bool withSeriesName = false)
     {
         var result = new Dictionary<string, object?>
@@ -770,41 +798,38 @@ public class VideoController : ControllerBase
         return cmd.ExecuteScalar();
     }
 
-    private void ScanAllDirectoriesAsync(List<(string id, string path, string videoTypes, bool recursive)> dirs, 
-        List<(string name, string extensions)> types, int taskId)
+    private void ScanAllDirectoriesAsync(List<(string path, string category, bool recursive)> dirs, 
+        string scanType, int taskId)
     {
         try
         {
             var totalFilesFound = 0;
             var totalFilesAdded = 0;
-            var totalFilesUpdated = 0;
+            var totalFilesCleared = 0;
             var errors = new List<string>();
+
+            var extensions = ParseScanType(scanType);
+            if (extensions.Count == 0)
+            {
+                UpdateScanTaskFailed(taskId, "扫描类型为空");
+                return;
+            }
 
             using var conn = GetConnection();
             conn.Open();
 
-            // 先更新任务状态为 running
             using (var cmd = new SqliteCommand("UPDATE scan_tasks SET status = 'running' WHERE id = @taskId", conn))
             {
                 cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
                 cmd.ExecuteNonQuery();
             }
 
+            // 收集所有扫描目录中发现的文件路径
+            var allFoundPaths = new HashSet<string>();
+
             foreach (var dir in dirs)
             {
                 if (!Directory.Exists(dir.path)) continue;
-
-                // 解析该目录要扫描的视频类型扩展名
-                var typeNames = dir.videoTypes.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(t => t.Trim()).ToList();
-                var extensions = types
-                    .Where(t => typeNames.Contains(t.name, StringComparer.OrdinalIgnoreCase))
-                    .SelectMany(t => t.extensions.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                        .Select(e => e.Trim().ToLowerInvariant()))
-                    .Distinct()
-                    .ToList();
-
-                if (extensions.Count == 0) continue;
 
                 var enumOpts = new EnumerationOptions
                 {
@@ -817,8 +842,7 @@ public class VideoController : ControllerBase
                 {
                     try
                     {
-                        var pattern = $"*{ext}";
-                        allFiles.AddRange(Directory.GetFiles(dir.path, pattern, enumOpts));
+                        allFiles.AddRange(Directory.GetFiles(dir.path, $"*{ext}", enumOpts));
                     }
                     catch (Exception ex)
                     {
@@ -833,11 +857,12 @@ public class VideoController : ControllerBase
                 {
                     if (Path.GetFileName(filePath).StartsWith("._")) continue;
 
+                    allFoundPaths.Add(filePath);
+
                     try
                     {
-                        var (added, updated) = UpsertVideoFromFile(filePath, conn);
-                        if (added) totalFilesAdded++;
-                        if (updated) totalFilesUpdated++;
+                        if (UpsertVideoFromFile(filePath, dir.category, conn))
+                            totalFilesAdded++;
                     }
                     catch (Exception ex)
                     {
@@ -846,17 +871,19 @@ public class VideoController : ControllerBase
                 }
             }
 
-            // 更新任务状态为完成
+            // 清空不在扫描目录中的视频路径
+            totalFilesCleared = ClearMissingPaths(conn, allFoundPaths);
+
             var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
                                     files_found = @filesFound, files_added = @filesAdded, 
-                                    files_updated = @filesUpdated, errors = @errors 
+                                    files_updated = @filesCleared, errors = @errors 
                                     WHERE id = @taskId";
             using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
             {
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", totalFilesFound));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", totalFilesAdded));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", totalFilesUpdated));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesCleared", totalFilesCleared));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
                 updateTaskCmd.ExecuteNonQuery();
@@ -869,10 +896,17 @@ public class VideoController : ControllerBase
         }
     }
 
-    private void ScanDirectoryAsync(string targetPath, bool recursive, int taskId)
+    private void ScanSingleDirectoryAsync(string targetPath, bool recursive, string category, string scanType, int taskId)
     {
         try
         {
+            var extensions = ParseScanType(scanType);
+            if (extensions.Count == 0)
+            {
+                UpdateScanTaskFailed(taskId, "扫描类型为空");
+                return;
+            }
+
             using var conn = GetConnection();
             conn.Open();
 
@@ -884,7 +918,6 @@ public class VideoController : ControllerBase
 
             var filesFound = 0;
             var filesAdded = 0;
-            var filesUpdated = 0;
             var errors = new List<string>();
 
             var enumOpts = new EnumerationOptions
@@ -892,27 +925,30 @@ public class VideoController : ControllerBase
                 RecurseSubdirectories = recursive,
                 IgnoreInaccessible = true
             };
-            var mp4Files = Array.Empty<string>();
-            try
-            {
-                mp4Files = Directory.GetFiles(targetPath, "*.mp4", enumOpts);
-            }
-            catch (Exception ex)
-            {
-                errors.Add($"扫描目录失败: {ex.Message}");
-            }
 
-            filesFound = mp4Files.Length;
+            var allFiles = new List<string>();
+            foreach (var ext in extensions)
+            {
+                try
+                {
+                    allFiles.AddRange(Directory.GetFiles(targetPath, $"*{ext}", enumOpts));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"扫描目录失败: {ex.Message}");
+                }
+            }
+            allFiles = allFiles.Distinct().ToList();
+            filesFound = allFiles.Count;
 
-            foreach (var filePath in mp4Files)
+            foreach (var filePath in allFiles)
             {
                 if (Path.GetFileName(filePath).StartsWith("._")) continue;
 
                 try
                 {
-                    var (added, updated) = UpsertVideoFromFile(filePath, conn);
-                    if (added) filesAdded++;
-                    if (updated) filesUpdated++;
+                    if (UpsertVideoFromFile(filePath, category, conn))
+                        filesAdded++;
                 }
                 catch (Exception ex)
                 {
@@ -922,14 +958,13 @@ public class VideoController : ControllerBase
 
             var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
                                     files_found = @filesFound, files_added = @filesAdded, 
-                                    files_updated = @filesUpdated, errors = @errors 
+                                    files_updated = 0, errors = @errors 
                                     WHERE id = @taskId";
             using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
             {
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", filesFound));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", filesAdded));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", filesUpdated));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
                 updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
                 updateTaskCmd.ExecuteNonQuery();
@@ -938,17 +973,19 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             UpdateScanTaskFailed(taskId, ex.Message);
-            _logger.LogError(ex, "ScanDirectoryAsync failed");
+            _logger.LogError(ex, "ScanSingleDirectoryAsync failed");
         }
     }
 
-    private (bool Added, bool Updated) UpsertVideoFromFile(string filePath, SqliteConnection conn)
+    /// <summary>
+    /// 插入或更新视频记录，返回 true 表示新增
+    /// </summary>
+    private bool UpsertVideoFromFile(string filePath, string dirCategory, SqliteConnection conn)
     {
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        var videoName = ExtractVideoName(filePath);
         var fileInfo = new FileInfo(filePath);
         var coverPath = Path.ChangeExtension(filePath, ".jpg");
         var coverExists = System.IO.File.Exists(coverPath);
-        var category = DetermineCategory(filePath);
 
         var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
         using var checkCmd = new SqliteCommand(checkSql, conn);
@@ -957,18 +994,17 @@ public class VideoController : ControllerBase
 
         if (exists)
         {
+            // 已存在只更新文件大小和封面
             var updateSql = @"UPDATE videos SET 
                 file_size = @fileSize, 
-                cover_path = @coverPath, 
-                category = @category
+                cover_path = @coverPath
                 WHERE file_path = @filePath";
             using var updateCmd = new SqliteCommand(updateSql, conn);
             updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
             updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
-            updateCmd.Parameters.Add(new SqliteParameter("@category", category));
             updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             updateCmd.ExecuteNonQuery();
-            return (false, true);
+            return false;
         }
         else
         {
@@ -977,16 +1013,63 @@ public class VideoController : ControllerBase
                             VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt)";
             using var insertCmd = new SqliteCommand(insertSql, conn);
             insertCmd.Parameters.Add(new SqliteParameter("@id", id));
-            insertCmd.Parameters.Add(new SqliteParameter("@name", fileName));
-            insertCmd.Parameters.Add(new SqliteParameter("@category", category));
+            insertCmd.Parameters.Add(new SqliteParameter("@name", videoName));
+            insertCmd.Parameters.Add(new SqliteParameter("@category", dirCategory));
             insertCmd.Parameters.Add(new SqliteParameter("@country", ""));
             insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
             insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
             insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             insertCmd.ExecuteNonQuery();
-            return (true, false);
+            return true;
         }
+    }
+
+    /// <summary>
+    /// 清空不在扫描目录中的视频路径，返回清除数量
+    /// </summary>
+    private int ClearMissingPaths(SqliteConnection conn, HashSet<string> allFoundPaths)
+    {
+        // 读取所有扫描目录路径
+        var scanDirPaths = new List<string>();
+        using (var dirCmd = new SqliteCommand("SELECT path FROM scan_directories", conn))
+        using (var reader = dirCmd.ExecuteReader())
+        {
+            while (reader.Read())
+                scanDirPaths.Add(reader.GetString(0));
+        }
+
+        // 查询所有有文件路径的视频
+        var videosWithPath = new List<(string id, string filePath)>();
+        using (var videoCmd = new SqliteCommand("SELECT id, file_path FROM videos WHERE file_path IS NOT NULL AND file_path != ''", conn))
+        using (var reader = videoCmd.ExecuteReader())
+        {
+            while (reader.Read())
+                videosWithPath.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        var cleared = 0;
+        foreach (var (id, filePath) in videosWithPath)
+        {
+            // 跳过手动添加的占位路径
+            if (filePath.StartsWith("manual://")) continue;
+
+            // 检查文件路径是否在某个扫描目录下
+            var inScanDir = scanDirPaths.Any(scanPath => 
+                filePath.StartsWith(scanPath, StringComparison.OrdinalIgnoreCase));
+
+            if (inScanDir && !allFoundPaths.Contains(filePath))
+            {
+                // 文件路径在扫描目录下但文件不存在了，清空路径
+                using var clearCmd = new SqliteCommand(
+                    "UPDATE videos SET file_path = '' WHERE id = @id", conn);
+                clearCmd.Parameters.Add(new SqliteParameter("@id", id));
+                clearCmd.ExecuteNonQuery();
+                cleared++;
+            }
+        }
+
+        return cleared;
     }
 
     private void UpdateScanTaskFailed(int taskId, string error)
@@ -1008,18 +1091,6 @@ public class VideoController : ControllerBase
         {
             _logger.LogError(ex, "UpdateScanTaskFailed failed");
         }
-    }
-
-    private string DetermineCategory(string filePath)
-    {
-        var parts = filePath.Split('/', '\\');
-        foreach (var part in parts)
-        {
-            if (part == "电影") return "电影";
-            if (part == "电视剧") return "电视剧";
-            if (part == "动漫") return "动漫";
-        }
-        return "其他";
     }
 
     #endregion

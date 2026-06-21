@@ -167,6 +167,7 @@ public class DataService : IDataService
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             path        TEXT    NOT NULL,
+            category    TEXT    DEFAULT '',
             recursive   INTEGER DEFAULT 1,
             created_at  TEXT    NOT NULL,
             updated_at  TEXT    NOT NULL
