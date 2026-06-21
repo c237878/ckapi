@@ -40,8 +40,8 @@ public class DataService : IDataService
             CreateVideoSeriesTable();
             CreateActorTable();
             CreateVideoActorTable();
-            CreateSystemSettingTable();
-            CreateFriendLinkTable();
+            CreateSystemSettingsTable();
+            CreateFriendLinksTable();
             CreateScanDirectoryTable();
             CreateVideoTypeTable();
 
@@ -326,9 +326,9 @@ public class DataService : IDataService
     /// <summary>
     /// 创建系统设置表
     /// </summary>
-    private void CreateSystemSettingTable()
+    private void CreateSystemSettingsTable()
     {
-        const string tableName = "SystemSetting";
+        const string tableName = "system_settings";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             name        TEXT    NOT NULL,
@@ -351,9 +351,9 @@ public class DataService : IDataService
     /// <summary>
     /// 创建友情链接表
     /// </summary>
-    private void CreateFriendLinkTable()
+    private void CreateFriendLinksTable()
     {
-        const string tableName = "FriendLink";
+        const string tableName = "friend_links";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             name        TEXT    NOT NULL,

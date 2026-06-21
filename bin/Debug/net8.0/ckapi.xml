@@ -474,12 +474,12 @@
             创建影片-演员关联表
             </summary>
         </member>
-        <member name="M:ckapi.Services.DataService.CreateSystemSettingTable">
+        <member name="M:ckapi.Services.DataService.CreateSystemSettingsTable">
             <summary>
             创建系统设置表
             </summary>
         </member>
-        <member name="M:ckapi.Services.DataService.CreateFriendLinkTable">
+        <member name="M:ckapi.Services.DataService.CreateFriendLinksTable">
             <summary>
             创建友情链接表
             </summary>

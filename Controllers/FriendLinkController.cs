@@ -29,7 +29,7 @@ public class FriendLinkController : ControllerBase
     {
         try
         {
-            var dt = _db.ExecuteDataTable("SELECT * FROM FriendLink ORDER BY sortorder, id");
+            var dt = _db.ExecuteDataTable("SELECT * FROM friend_links ORDER BY sortorder, id");
             var list = new List<Dictionary<string, object?>>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
@@ -66,7 +66,7 @@ public class FriendLinkController : ControllerBase
             var id = Guid.NewGuid().ToString("N").ToUpper();
             
             _db.ExecuteNonQuery(
-                "INSERT INTO FriendLink (id, name, link, logo, description, sortorder, ctime, utime) VALUES (@id, @name, @link, @logo, @description, @sortorder, @ctime, @utime)",
+                "INSERT INTO friend_links (id, name, link, logo, description, sortorder, ctime, utime) VALUES (@id, @name, @link, @logo, @description, @sortorder, @ctime, @utime)",
                 new SqliteParameter("@id", id),
                 new SqliteParameter("@name", data.Name ?? ""),
                 new SqliteParameter("@link", data.Link ?? ""),
@@ -96,7 +96,7 @@ public class FriendLinkController : ControllerBase
         {
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var rows = _db.ExecuteNonQuery(
-                "UPDATE FriendLink SET name = @name, link = @link, logo = @logo, description = @description, sortorder = @sortorder, utime = @utime WHERE id = @id",
+                "UPDATE friend_links SET name = @name, link = @link, logo = @logo, description = @description, sortorder = @sortorder, utime = @utime WHERE id = @id",
                 new SqliteParameter("@name", data.Name ?? ""),
                 new SqliteParameter("@link", data.Link ?? ""),
                 new SqliteParameter("@logo", data.Logo ?? ""),
@@ -128,7 +128,7 @@ public class FriendLinkController : ControllerBase
         try
         {
             var rows = _db.ExecuteNonQuery(
-                "DELETE FROM FriendLink WHERE id = @id",
+                "DELETE FROM friend_links WHERE id = @id",
                 new SqliteParameter("@id", id));
 
             if (rows > 0)
