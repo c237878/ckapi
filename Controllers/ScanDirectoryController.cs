@@ -107,7 +107,7 @@ public class ScanDirectoryController : ControllerBase
                     return Ok(new { success = false, message = "该路径已存在" });
             }
 
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
                 INSERT INTO scan_directories (id, path, video_types, recursive, is_enabled, created_at, updated_at)

@@ -84,14 +84,12 @@ public class VideoActorController : ControllerBase
                 {
                     Id = row["id"]?.ToString(),
                     Code = row["code"]?.ToString(),
-                    Title = row["title"]?.ToString(),
+                    Name = row["name"]?.ToString(),
                     Category = row["category"]?.ToString(),
                     Country = row["country"]?.ToString(),
                     FilePath = row["file_path"]?.ToString(),
                     FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
                     CoverPath = row["cover_path"]?.ToString(),
-                    HasCover = row["has_cover"] != DBNull.Value ? Convert.ToInt32(row["has_cover"]) : 0,
-                    Year = row["year"] != DBNull.Value ? (int?)Convert.ToInt32(row["year"]) : null,
                     SeriesId = row["seriesid"]?.ToString(),
                     AddedAt = row["added_at"]?.ToString()
                 });

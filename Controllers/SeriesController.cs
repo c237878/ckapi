@@ -159,14 +159,12 @@ public class SeriesController : ControllerBase
                 {
                     Id = videoId,
                     Code = row["code"]?.ToString(),
-                    Title = row["title"]?.ToString(),
+                    Name = row["name"]?.ToString(),
                     Category = row["category"]?.ToString(),
                     Country = row["country"] == DBNull.Value ? "" : row["country"].ToString(),
                     CoverPath = row["cover_path"] == DBNull.Value ? null : row["cover_path"].ToString(),
                     FilePath = row["file_path"]?.ToString(),
                     FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
-                    HasCover = row["has_cover"] != DBNull.Value ? Convert.ToInt32(row["has_cover"]) : 0,
-                    Year = row["year"] != DBNull.Value ? (int?)Convert.ToInt32(row["year"]) : null,
                     SeriesId = row["seriesid"]?.ToString(),
                     AddedAt = row["added_at"]?.ToString(),
                     Actors = actors
@@ -197,7 +195,7 @@ public class SeriesController : ControllerBase
 
             if (string.IsNullOrEmpty(series.Id))
             {
-                series.Id = Guid.NewGuid().ToString();
+                series.Id = Guid.NewGuid().ToString("N").ToUpper();
             }
 
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");

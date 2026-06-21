@@ -63,7 +63,7 @@ public class FriendLinkController : ControllerBase
         try
         {
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             
             _db.ExecuteNonQuery(
                 "INSERT INTO FriendLink (id, name, link, logo, description, sortorder, ctime, utime) VALUES (@id, @name, @link, @logo, @description, @sortorder, @ctime, @utime)",

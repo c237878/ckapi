@@ -143,7 +143,7 @@ public class ActorController : ControllerBase
             if (string.IsNullOrEmpty(request.Name))
                 return Ok(new { success = false, message = "演员姓名不能为空" });
 
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             using var conn = GetConnection();
@@ -280,9 +280,8 @@ public class ActorController : ControllerBase
                     videos.Add(new
                     {
                         id = reader["id"].ToString(),
-                        name = reader["title"].ToString(),
+                        name = reader["name"].ToString(),
                         category = reader["category"]?.ToString(),
-                        year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
                         filePath = reader["file_path"]?.ToString(),
                         fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
                         coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),

@@ -63,17 +63,14 @@ public class DataService : IDataService
         const string tableName = "videos";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
-            title       TEXT    NOT NULL,
+            name        TEXT    NOT NULL,
             code        TEXT,
-            year        INTEGER,
             category    TEXT    NOT NULL,
             country     TEXT,
             file_path   TEXT    UNIQUE NOT NULL,
             file_size   INTEGER,
             cover_path  TEXT,
-            has_cover   INTEGER DEFAULT 0,
             added_at    TEXT    NOT NULL,
-            note        TEXT,
             seriesid    TEXT
         ";
 
@@ -99,6 +96,13 @@ public class DataService : IDataService
             foreach (System.Data.DataRow row in columns.Rows)
             {
                 columnNames.Add(row["name"].ToString()?.ToLower() ?? "");
+            }
+
+            // 添加 name 列（旧表可能还是 title）
+            if (!columnNames.Contains("name") && columnNames.Contains("title"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos RENAME COLUMN title TO name");
+                _logger.LogInformation("重命名 title 列为 name");
             }
 
             // 添加 code 列
@@ -227,7 +231,7 @@ public class DataService : IDataService
                 _db.ExecuteNonQuery(@"
                     INSERT OR IGNORE INTO video_types (id, name, extensions, sort_order, created_at, updated_at)
                     VALUES (@id, @name, @ext, @sort, @ctime, @utime)",
-                    new SqliteParameter("@id", Guid.NewGuid().ToString()),
+                    new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()),
                     new SqliteParameter("@name", name),
                     new SqliteParameter("@ext", ext),
                     new SqliteParameter("@sort_order", 0),

@@ -42,7 +42,7 @@ public class LikeController : ControllerBase
 
             var likeRecord = new LikeRecord
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = Guid.NewGuid().ToString("N").ToUpper(),
                 VideoId = videoId,
                 LikeTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                 UserToken = userToken ?? "",

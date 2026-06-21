@@ -96,7 +96,7 @@ public class VideoTypeController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
                 INSERT INTO video_types (id, name, extensions, sort_order, created_at, updated_at)

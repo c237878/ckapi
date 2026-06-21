@@ -52,7 +52,7 @@ public class VideoController : ControllerBase
 
             if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND (title LIKE @keyword OR code LIKE @keyword)";
+                whereClause += " AND (name LIKE @keyword OR code LIKE @keyword)";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
@@ -302,34 +302,26 @@ public class VideoController : ControllerBase
     {
         try
         {
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             var sql = @"
-                INSERT INTO videos (id, code, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at, note, seriesid)
-                VALUES (@id, @code, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt, @note, @seriesId)";
+                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, added_at, seriesid)
+                VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId)";
             
             using var conn = GetConnection();
             conn.Open();
             
-            // 判断封面是否存在
-            int hasCover = 0;
-            if (!string.IsNullOrEmpty(req.CoverPath) && System.IO.File.Exists(req.CoverPath))
-                hasCover = 1;
-            
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
-            cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
             // 文件路径为空时生成唯一占位，避免 UNIQUE 约束冲突
-            var filePath = string.IsNullOrEmpty(req.FilePath) ? $"manual://{Guid.NewGuid()}" : req.FilePath;
+            var filePath = string.IsNullOrEmpty(req.FilePath) ? $"manual://{Guid.NewGuid().ToString("N").ToUpper()}" : req.FilePath;
             cmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             cmd.Parameters.Add(new SqliteParameter("@fileSize", req.FileSize ?? 0));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@hasCover", hasCover));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             
             cmd.ExecuteNonQuery();
@@ -341,7 +333,7 @@ public class VideoController : ControllerBase
                 {
                     var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
                     using var relCmd = new SqliteCommand(relSql, conn);
-                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString()));
+                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
                     relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
@@ -369,14 +361,14 @@ public class VideoController : ControllerBase
             var sql = @"
                 UPDATE videos SET 
                     code = @code,
-                    title = @title, 
-                    year = @year, 
+                    name = @name, 
+
                     category = @category, 
                     country = @country,
                     file_path = @filePath, 
                     cover_path = @coverPath,
-                    has_cover = @hasCover,
-                    note = @note,
+
+
                     seriesid = @seriesId
                 WHERE id = @id";
 
@@ -392,14 +384,11 @@ public class VideoController : ControllerBase
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
-            cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@hasCover", string.IsNullOrEmpty(req.CoverPath) ? 0 : 1));
-            cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             cmd.ExecuteNonQuery();
 
@@ -416,7 +405,7 @@ public class VideoController : ControllerBase
                 {
                     var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
                     using var relCmd = new SqliteCommand(relSql, conn);
-                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString()));
+                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
                     relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
@@ -752,16 +741,13 @@ public class VideoController : ControllerBase
         {
             ["id"] = reader["id"].ToString(),
             ["code"] = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
-            ["title"] = reader["title"].ToString(),
-            ["year"] = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
+            ["name"] = reader["name"].ToString(),
             ["category"] = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
             ["country"] = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-            ["hasCover"] = reader["has_cover"] == DBNull.Value ? 0 : Convert.ToInt32(reader["has_cover"]),
             ["filePath"] = reader["file_path"].ToString(),
             ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
             ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
             ["addedAt"] = reader["added_at"].ToString(),
-            ["note"] = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
             ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString()
         };
 
@@ -963,7 +949,6 @@ public class VideoController : ControllerBase
         var coverPath = Path.ChangeExtension(filePath, ".jpg");
         var coverExists = System.IO.File.Exists(coverPath);
         var category = DetermineCategory(filePath);
-        var year = ExtractYear(fileName);
 
         var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
         using var checkCmd = new SqliteCommand(checkSql, conn);
@@ -975,35 +960,29 @@ public class VideoController : ControllerBase
             var updateSql = @"UPDATE videos SET 
                 file_size = @fileSize, 
                 cover_path = @coverPath, 
-                has_cover = @hasCover,
-                category = @category,
-                year = @year
+                category = @category
                 WHERE file_path = @filePath";
             using var updateCmd = new SqliteCommand(updateSql, conn);
             updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
             updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
-            updateCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
             updateCmd.Parameters.Add(new SqliteParameter("@category", category));
-            updateCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
             updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             updateCmd.ExecuteNonQuery();
             return (false, true);
         }
         else
         {
-            var id = Guid.NewGuid().ToString();
-            var insertSql = @"INSERT INTO videos (id, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at) 
-                            VALUES (@id, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt)";
+            var id = Guid.NewGuid().ToString("N").ToUpper();
+            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, added_at) 
+                            VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt)";
             using var insertCmd = new SqliteCommand(insertSql, conn);
             insertCmd.Parameters.Add(new SqliteParameter("@id", id));
-            insertCmd.Parameters.Add(new SqliteParameter("@title", fileName));
-            insertCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
+            insertCmd.Parameters.Add(new SqliteParameter("@name", fileName));
             insertCmd.Parameters.Add(new SqliteParameter("@category", category));
             insertCmd.Parameters.Add(new SqliteParameter("@country", ""));
             insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
             insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
-            insertCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
             insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             insertCmd.ExecuteNonQuery();
             return (true, false);
@@ -1043,16 +1022,6 @@ public class VideoController : ControllerBase
         return "其他";
     }
 
-    private int? ExtractYear(string fileName)
-    {
-        var match = System.Text.RegularExpressions.Regex.Match(fileName, @"\((\d{4})\)");
-        if (match.Success)
-        {
-            return int.Parse(match.Groups[1].Value);
-        }
-        return null;
-    }
-
     #endregion
 }
 
@@ -1061,14 +1030,12 @@ public class VideoController : ControllerBase
 public class AddVideoRequest
 {
     public string? Code { get; set; }
-    public string Title { get; set; } = "";
-    public int? Year { get; set; }
+    public string Name { get; set; } = "";
     public string Category { get; set; } = "";
     public string Country { get; set; } = "";
     public string FilePath { get; set; } = "";
     public long? FileSize { get; set; }
     public string? CoverPath { get; set; }
-    public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
     public string? SeriesId { get; set; }
 }
@@ -1076,13 +1043,11 @@ public class AddVideoRequest
 public class UpdateVideoRequest
 {
     public string? Code { get; set; }
-    public string Title { get; set; } = "";
-    public int? Year { get; set; }
+    public string Name { get; set; } = "";
     public string Category { get; set; } = "";
     public string Country { get; set; } = "";
     public string FilePath { get; set; } = "";
     public string? CoverPath { get; set; }
-    public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
     public string? SeriesId { get; set; }
 }
