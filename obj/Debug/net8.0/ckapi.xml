@@ -89,44 +89,34 @@
             检查是否已点赞
             </summary>
         </member>
-        <member name="T:ckapi.Controllers.SambaController">
+        <member name="T:ckapi.Controllers.ScanDirectoryController">
             <summary>
-            Samba共享管理控制器
+            扫描目录管理控制器
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.GetList">
+        <member name="M:ckapi.Controllers.ScanDirectoryController.GetList">
             <summary>
-            获取所有Samba共享配置列表
+            获取所有扫描目录
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.GetSystemShares">
+        <member name="M:ckapi.Controllers.ScanDirectoryController.GetById(System.String)">
             <summary>
-            获取系统实际共享点列表（只读）
+            获取单个扫描目录
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.Add(ckapi.Controllers.AddSambaDto)">
+        <member name="M:ckapi.Controllers.ScanDirectoryController.AddDirectory(ckapi.Controllers.ScanDirectoryRequest)">
             <summary>
-            添加Samba共享（数据库记录 + 实际创建共享）
+            添加扫描目录
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.Update(System.String,ckapi.Controllers.UpdateSambaDto)">
+        <member name="M:ckapi.Controllers.ScanDirectoryController.UpdateDirectory(System.String,ckapi.Controllers.ScanDirectoryRequest)">
             <summary>
-            更新Samba共享配置
+            更新扫描目录
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SambaController.Delete(System.String)">
+        <member name="M:ckapi.Controllers.ScanDirectoryController.DeleteDirectory(System.String)">
             <summary>
-            删除Samba共享
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.SambaController.TestConnection(ckapi.Controllers.TestConnectionDto)">
-            <summary>
-            测试SMB连接
-            </summary>
-        </member>
-        <member name="M:ckapi.Controllers.SambaController.ImportSystemShares">
-            <summary>
-            导入系统现有的Samba共享到数据库
+            删除扫描目录
             </summary>
         </member>
         <member name="T:ckapi.Controllers.SeriesController">
@@ -204,12 +194,12 @@
             获取演员关联的视频列表
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoActorController.AddRelation(ckapi.Models.VideoActor)">
+        <member name="M:ckapi.Controllers.VideoActorController.AddRelation(ckapi.Controllers.VideoActorRelation)">
             <summary>
             添加视频-演员关联
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoActorController.DeleteRelation(System.String)">
+        <member name="M:ckapi.Controllers.VideoActorController.DeleteRelation(System.String,System.String)">
             <summary>
             删除视频-演员关联
             </summary>
@@ -224,9 +214,14 @@
             批量设置视频的演员（先删除旧的，再添加新的）
             </summary>
         </member>
+        <member name="T:ckapi.Controllers.VideoActorRelation">
+            <summary>
+            视频-演员关联请求模型
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.VideoController">
             <summary>
-            影片控制器（新版 - Samba影城系统）
+            影片控制器
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String,System.String,System.String)">
@@ -236,7 +231,7 @@
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetMeta">
             <summary>
-            获取所有已有的分类和国家（用于表单下拉）
+            获取所有已有的分类、国家、系列（用于表单下拉）
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetById(System.String)">
@@ -269,9 +264,14 @@
             批量删除视频
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.ScanAll">
+            <summary>
+            扫描所有配置目录
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.ScanDirectory(ckapi.Controllers.ScanRequest)">
             <summary>
-            扫描目录
+            扫描单个目录
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetScanStatus(System.Int32)">
@@ -289,44 +289,34 @@
             封面代理
             </summary>
         </member>
-        <member name="T:ckapi.Models.Actor">
+        <member name="T:ckapi.Controllers.VideoTypeController">
             <summary>
-            演员模型
+            视频类型管理控制器
             </summary>
         </member>
-        <member name="P:ckapi.Models.Actor.Id">
+        <member name="M:ckapi.Controllers.VideoTypeController.GetList">
             <summary>
-            主键ID
+            获取所有视频类型
             </summary>
         </member>
-        <member name="P:ckapi.Models.Actor.Name">
+        <member name="M:ckapi.Controllers.VideoTypeController.GetById(System.String)">
             <summary>
-            姓名
+            获取单个视频类型
             </summary>
         </member>
-        <member name="P:ckapi.Models.Actor.Alias">
+        <member name="M:ckapi.Controllers.VideoTypeController.AddType(ckapi.Controllers.VideoTypeRequest)">
             <summary>
-            别名
+            添加视频类型
             </summary>
         </member>
-        <member name="P:ckapi.Models.Actor.Country">
+        <member name="M:ckapi.Controllers.VideoTypeController.UpdateType(System.String,ckapi.Controllers.VideoTypeRequest)">
             <summary>
-            所属国家
+            更新视频类型
             </summary>
         </member>
-        <member name="P:ckapi.Models.Actor.CTime">
+        <member name="M:ckapi.Controllers.VideoTypeController.DeleteType(System.String)">
             <summary>
-            创建时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Actor.UTime">
-            <summary>
-            修改时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Actor.VideoCount">
-            <summary>
-            参演影片数量
+            删除视频类型
             </summary>
         </member>
         <member name="T:ckapi.Models.FriendLink">
@@ -374,51 +364,6 @@
             修改时间
             </summary>
         </member>
-        <member name="T:ckapi.Models.Highlight">
-            <summary>
-            精彩集锦模型
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.Id">
-            <summary>
-            主键ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.Image">
-            <summary>
-            图片（Base64）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.ActorId">
-            <summary>
-            对应演员ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.VideoId">
-            <summary>
-            对应影片ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.Title">
-            <summary>
-            标题
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.Description">
-            <summary>
-            描述
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.CTime">
-            <summary>
-            创建时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Highlight.UTime">
-            <summary>
-            修改时间
-            </summary>
-        </member>
         <member name="T:ckapi.Models.LikeRecord">
             <summary>
             点赞记录模型
@@ -454,58 +399,6 @@
             修改时间
             </summary>
         </member>
-        <member name="T:ckapi.Models.SambaConfig">
-            <summary>
-            Samba 配置项
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.Server">
-            <summary>
-            Samba 服务器地址（IP 或主机名）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.Username">
-            <summary>
-            Samba 用户名（匿名访问时留空）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.Password">
-            <summary>
-            Samba 密码（匿名访问时留空）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.ShareName">
-            <summary>
-            Samba 共享名称（如 "lib", "share"）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.BasePath">
-            <summary>
-            Samba 共享根路径（URL 中的根前缀，如 "/" 或 "/libsF"）
-            用于解析数据库中存储的相对路径
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.MountPath">
-            <summary>
-            本地挂载路径（使用 mount -t smbfs 挂载后的本地目录）
-            如 "/mnt/smb"，留空则使用 SMB 协议直连
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.VideoRoot">
-            <summary>
-            视频文件在共享中的子目录名
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.CoverRoot">
-            <summary>
-            封面文件在共享中的子目录名
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.SambaConfig.Enabled">
-            <summary>
-            是否启用 Samba 模式（false 时仍使用 HTTP URL）
-            </summary>
-        </member>
         <member name="T:ckapi.Models.SystemSetting">
             <summary>
             系统设置模型
@@ -532,106 +425,6 @@
             </summary>
         </member>
         <member name="P:ckapi.Models.SystemSetting.UTime">
-            <summary>
-            修改时间
-            </summary>
-        </member>
-        <member name="T:ckapi.Models.Video">
-            <summary>
-            影片模型
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Id">
-            <summary>
-            主键ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Code">
-            <summary>
-            番号
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Name">
-            <summary>
-            名称
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Country">
-            <summary>
-            所属国家
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.CoverUrl">
-            <summary>
-            封面图片地址
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.VideoUrl">
-            <summary>
-            主机地址
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.VideoSize">
-            <summary>
-            视频大小（字节）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Quality">
-            <summary>
-            视频质量标记（如：4K, 1080P, 720P等）
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.SeriesId">
-            <summary>
-            所属系列ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.SortOrder">
-            <summary>
-            排序序号
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.CTime">
-            <summary>
-            创建时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.UTime">
-            <summary>
-            修改时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.Video.Actors">
-            <summary>
-            关联演员列表
-            </summary>
-        </member>
-        <member name="T:ckapi.Models.VideoActor">
-            <summary>
-            视频-演员关联模型
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.VideoActor.Id">
-            <summary>
-            主键ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.VideoActor.VideoId">
-            <summary>
-            视频ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.VideoActor.ActorId">
-            <summary>
-            演员ID
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.VideoActor.CTime">
-            <summary>
-            创建时间
-            </summary>
-        </member>
-        <member name="P:ckapi.Models.VideoActor.UTime">
             <summary>
             修改时间
             </summary>
@@ -711,9 +504,19 @@
             创建影片表
             </summary>
         </member>
-        <member name="M:ckapi.Services.DataService.MigrateVideoTable">
+        <member name="M:ckapi.Services.DataService.MigrateActorTable">
             <summary>
-            迁移Video表结构
+            迁移actors表结构
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateScanDirectoryTable">
+            <summary>
+            创建扫描目录表
+            </summary>
+        </member>
+        <member name="M:ckapi.Services.DataService.CreateVideoTypeTable">
+            <summary>
+            创建视频类型表
             </summary>
         </member>
         <member name="M:ckapi.Services.DataService.CreateVideoSeriesTable">
@@ -731,11 +534,6 @@
             创建影片-演员关联表
             </summary>
         </member>
-        <member name="M:ckapi.Services.DataService.CreateHighlightTable">
-            <summary>
-            创建精彩集锦表
-            </summary>
-        </member>
         <member name="M:ckapi.Services.DataService.CreateLikeRecordTable">
             <summary>
             创建点赞记录表
@@ -749,77 +547,6 @@
         <member name="M:ckapi.Services.DataService.CreateFriendLinkTable">
             <summary>
             创建友情链接表
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.IActorService">
-            <summary>
-            演员服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.IFriendLinkService">
-            <summary>
-            友情链接服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.IHighlightService">
-            <summary>
-            精彩集锦服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.ILikeService">
-            <summary>
-            点赞服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.ISeriesService">
-            <summary>
-            系列服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.ISystemSettingService">
-            <summary>
-            系统设置服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.IVideoService">
-            <summary>
-            视频服务接口
-            </summary>
-        </member>
-        <member name="T:ckapi.Services.SambaService">
-            <summary>
-            Samba共享服务 - 调用macOS sharing命令管理文件共享
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.GetSharePointsAsync">
-            <summary>
-            获取所有共享点列表
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.AddShareAsync(System.String,System.String,System.Boolean,System.Boolean,System.Boolean)">
-            <summary>
-            添加共享目录
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.UpdateShareAsync(System.String,System.Nullable{System.Boolean},System.Nullable{System.Boolean},System.Nullable{System.Boolean})">
-            <summary>
-            更新共享配置
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.RemoveShareAsync(System.String)">
-            <summary>
-            删除共享目录
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.TestConnectionAsync(System.String)">
-            <summary>
-            测试SMB连接
-            </summary>
-        </member>
-        <member name="M:ckapi.Services.SambaService.RunSharingAsync(System.String)">
-            <summary>
-            执行sharing命令。写操作（-a/-e/-r）需要管理员权限，通过osascript获取；
-            读操作（-l）不需要管理员权限，直接执行。
             </summary>
         </member>
         <member name="T:ckapi.Utils.SQLiteHelper">

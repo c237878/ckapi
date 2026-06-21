@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace ckapi.Services;
 
 /// <summary>
@@ -38,11 +40,11 @@ public class DataService : IDataService
             CreateVideoSeriesTable();
             CreateActorTable();
             CreateVideoActorTable();
-            CreateHighlightTable();
             CreateLikeRecordTable();
             CreateSystemSettingTable();
             CreateFriendLinkTable();
-            CreateSambaShareTable();
+            CreateScanDirectoryTable();
+            CreateVideoTypeTable();
 
             _logger.LogInformation("数据库初始化完成，数据库路径: {DbPath}", _db.GetDbPath());
         }
@@ -58,20 +60,21 @@ public class DataService : IDataService
     /// </summary>
     private void CreateVideoTable()
     {
-        const string tableName = "Video";
+        const string tableName = "videos";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
+            title       TEXT    NOT NULL,
             code        TEXT,
-            name        TEXT    NOT NULL,
+            year        INTEGER,
+            category    TEXT    NOT NULL,
             country     TEXT,
-            coverurl    TEXT,
-            videourl    TEXT,
-            videosize   INTEGER,
-            quality     TEXT,
-            seriesid    TEXT,
-            sortorder   INTEGER DEFAULT 0,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
+            file_path   TEXT    UNIQUE NOT NULL,
+            file_size   INTEGER,
+            cover_path  TEXT,
+            has_cover   INTEGER DEFAULT 0,
+            added_at    TEXT    NOT NULL,
+            note        TEXT,
+            seriesid    TEXT
         ";
 
         if (!_db.TableExists(tableName))
@@ -87,57 +90,154 @@ public class DataService : IDataService
         }
     }
 
-    /// <summary>
-    /// 迁移Video表结构
-    /// </summary>
     private void MigrateVideoTable()
     {
         try
         {
-            var columns = _db.ExecuteDataTable("PRAGMA table_info(Video)");
-            bool hasCoverUrl = false;
-            bool hasVideoUrl = false;
-            bool hasHostUrl = false;
-
+            var columns = _db.ExecuteDataTable("PRAGMA table_info(videos)");
+            var columnNames = new List<string>();
             foreach (System.Data.DataRow row in columns.Rows)
             {
-                var colName = row["name"].ToString();
-                if (colName == "coverurl") hasCoverUrl = true;
-                if (colName == "videourl") hasVideoUrl = true;
-                if (colName == "hosturl") hasHostUrl = true;
+                columnNames.Add(row["name"].ToString()?.ToLower() ?? "");
             }
 
-            // 添加coverurl列
-            if (!hasCoverUrl)
+            // 添加 code 列
+            if (!columnNames.Contains("code"))
             {
-                _db.ExecuteNonQuery("ALTER TABLE Video ADD COLUMN coverurl TEXT");
-                _logger.LogInformation("添加 coverurl 列到 Video 表");
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN code TEXT");
+                _logger.LogInformation("添加 code 列到 videos 表");
             }
 
-            // 添加videourl列
-            if (!hasVideoUrl)
+            // 添加 seriesid 列
+            if (!columnNames.Contains("seriesid"))
             {
-                _db.ExecuteNonQuery("ALTER TABLE Video ADD COLUMN videourl TEXT");
-                _logger.LogInformation("添加 videourl 列到 Video 表");
-            }
-
-            // 如果有旧的hosturl列，迁移数据
-            if (hasHostUrl && !hasVideoUrl)
-            {
-                try
-                {
-                    _db.ExecuteNonQuery("UPDATE Video SET videourl = hosturl WHERE videourl IS NULL AND hosturl IS NOT NULL");
-                    _logger.LogInformation("迁移 hosturl 数据到 videourl");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "迁移 hosturl 数据失败");
-                }
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN seriesid TEXT");
+                _logger.LogInformation("添加 seriesid 列到 videos 表");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "迁移Video表失败");
+            _logger.LogError(ex, "迁移videos表失败");
+        }
+    }
+
+    /// <summary>
+    /// 迁移actors表结构
+    /// </summary>
+    private void MigrateActorTable()
+    {
+        try
+        {
+            var columns = _db.ExecuteDataTable("PRAGMA table_info(actors)");
+            var columnNames = new List<string>();
+            foreach (System.Data.DataRow row in columns.Rows)
+            {
+                columnNames.Add(row["name"].ToString()?.ToLower() ?? "");
+            }
+
+            // 添加 alias 列
+            if (!columnNames.Contains("alias"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE actors ADD COLUMN alias TEXT");
+                _logger.LogInformation("添加 alias 列到 actors 表");
+            }
+
+            // 添加 country 列
+            if (!columnNames.Contains("country"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE actors ADD COLUMN country TEXT");
+                _logger.LogInformation("添加 country 列到 actors 表");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "迁移actors表失败");
+        }
+    }
+
+    /// <summary>
+    /// 创建扫描目录表
+    /// </summary>
+    private void CreateScanDirectoryTable()
+    {
+        const string tableName = "scan_directories";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            path        TEXT    NOT NULL,
+            video_types TEXT    NOT NULL,
+            recursive   INTEGER DEFAULT 1,
+            is_enabled  INTEGER DEFAULT 1,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    /// <summary>
+    /// 创建视频类型表
+    /// </summary>
+    private void CreateVideoTypeTable()
+    {
+        const string tableName = "video_types";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL UNIQUE,
+            extensions  TEXT    NOT NULL,
+            sort_order  INTEGER DEFAULT 0,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+            // 初始化默认类型
+            InitDefaultVideoTypes();
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    private void InitDefaultVideoTypes()
+    {
+        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var defaults = new (string name, string ext)[]
+        {
+            ("mp4", ".mp4"),
+            ("mkv", ".mkv"),
+            ("avi", ".avi"),
+            ("mov", ".mov")
+        };
+        foreach (var (name, ext) in defaults)
+        {
+            try
+            {
+                _db.ExecuteNonQuery(@"
+                    INSERT OR IGNORE INTO video_types (id, name, extensions, sort_order, created_at, updated_at)
+                    VALUES (@id, @name, @ext, @sort, @ctime, @utime)",
+                    new SqliteParameter("@id", Guid.NewGuid().ToString()),
+                    new SqliteParameter("@name", name),
+                    new SqliteParameter("@ext", ext),
+                    new SqliteParameter("@sort_order", 0),
+                    new SqliteParameter("@ctime", now),
+                    new SqliteParameter("@utime", now));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "初始化视频类型 {name} 失败", name);
+            }
         }
     }
 
@@ -153,8 +253,8 @@ public class DataService : IDataService
             alias       TEXT,
             link        TEXT,
             country     TEXT,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -173,14 +273,15 @@ public class DataService : IDataService
     /// </summary>
     private void CreateActorTable()
     {
-        const string tableName = "Actor";
+        const string tableName = "actors";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
-            name        TEXT    NOT NULL,
+            name        TEXT    NOT NULL UNIQUE,
             alias       TEXT,
             country     TEXT,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
+            avatar_path TEXT,
+            bio         TEXT,
+            added_at    TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -191,6 +292,7 @@ public class DataService : IDataService
         else
         {
             _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+            MigrateActorTable();
         }
     }
 
@@ -199,39 +301,12 @@ public class DataService : IDataService
     /// </summary>
     private void CreateVideoActorTable()
     {
-        const string tableName = "VideoActor";
+        const string tableName = "video_actors";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
-            videoid     TEXT    NOT NULL,
-            actorid     TEXT    NOT NULL,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
-        }
-    }
-
-    /// <summary>
-    /// 创建精彩集锦表
-    /// </summary>
-    private void CreateHighlightTable()
-    {
-        const string tableName = "Highlight";
-        const string fieldStr = @"
-            id          TEXT    NOT NULL    PRIMARY KEY,
-            image       TEXT,
-            actorid     TEXT,
-            videoid     TEXT,
-            ctime       TEXT    NOT NULL,
-            utime       TEXT    NOT NULL
+            video_id    TEXT    NOT NULL,
+            actor_id    TEXT    NOT NULL,
+            created_at  TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -323,58 +398,5 @@ public class DataService : IDataService
         }
     }
 
-    /// <summary>
-    /// 创建Samba共享表
-    /// </summary>
-    private void CreateSambaShareTable()
-    {
-        const string tableName = "samba_shares";
-        const string fieldStr = @"
-            id          TEXT    NOT NULL    PRIMARY KEY,
-            name        TEXT    NOT NULL,
-            path        TEXT    NOT NULL,
-            is_enabled  INTEGER DEFAULT 1,
-            source      TEXT    DEFAULT 'macos',
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL
-        ";
 
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
-            MigrateSambaShareTable();
-        }
-    }
-
-    /// <summary>
-    /// 迁移SambaShare表结构，添加 source 列
-    /// </summary>
-    private void MigrateSambaShareTable()
-    {
-        try
-        {
-            var columns = _db.ExecuteDataTable("PRAGMA table_info(samba_shares)");
-            bool hasSource = false;
-            foreach (System.Data.DataRow row in columns.Rows)
-            {
-                if (row["name"].ToString() == "source") hasSource = true;
-            }
-
-            if (!hasSource)
-            {
-                _db.ExecuteNonQuery("ALTER TABLE samba_shares ADD COLUMN source TEXT DEFAULT 'macos'");
-                _db.ExecuteNonQuery("UPDATE samba_shares SET source = 'macos' WHERE source IS NULL OR source = ''");
-                _logger.LogInformation("添加 source 列到 samba_shares 表");
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "迁移samba_shares表失败");
-        }
-    }
 }

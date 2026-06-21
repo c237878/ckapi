@@ -24,10 +24,10 @@ builder.Services.AddSingleton<ckapi.Utils.SQLiteHelper>(sp =>
 builder.Services.AddScoped<IDataService, DataService>();
 
 // 注册 Samba 配置与服务
-builder.Services.Configure<ckapi.Models.SambaConfig>(
-    builder.Configuration.GetSection("SambaConfig"));
-builder.Services.AddScoped<ckapi.Services.SambaService>();
-builder.Services.AddScoped<ckapi.Services.DockerSambaService>();
+// builder.Services.Configure<ckapi.Models.SambaConfig>(
+//     builder.Configuration.GetSection("SambaConfig"));
+// builder.Services.AddScoped<ckapi.Services.SambaService>();
+// builder.Services.AddScoped<ckapi.Services.DockerSambaService>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

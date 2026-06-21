@@ -30,7 +30,7 @@ public class LikeController : ControllerBase
         try
         {
             // 检查视频是否存在
-            var videoSql = "SELECT id FROM Video WHERE id = @id";
+            var videoSql = "SELECT id FROM videos WHERE id = @id";
             var videoResult = _db.ExecuteScalar(videoSql, new SqliteParameter("@id", videoId));
             if (videoResult == null)
             {

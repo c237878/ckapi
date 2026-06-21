@@ -43,7 +43,7 @@ public class SeriesController : ControllerBase
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT s.*, (SELECT COUNT(*) FROM Video v WHERE v.seriesid = s.id) as video_count
+                SELECT s.*, (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count
                 FROM VideoSeries s
                 {whereClause}
                 ORDER BY s.name ASC
@@ -62,8 +62,8 @@ public class SeriesController : ControllerBase
                     Alias = row["alias"]?.ToString(),
                     Link = row["link"]?.ToString(),
                     Country = row["country"]?.ToString(),
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
+                    CTime = row["created_at"]?.ToString(),
+                    UTime = row["updated_at"]?.ToString(),
                     VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
                 });
             }
@@ -100,8 +100,8 @@ public class SeriesController : ControllerBase
                 Alias = row["alias"]?.ToString(),
                 Link = row["link"]?.ToString(),
                 Country = row["country"]?.ToString(),
-                CTime = row["ctime"]?.ToString(),
-                UTime = row["utime"]?.ToString()
+                CTime = row["created_at"]?.ToString(),
+                UTime = row["updated_at"]?.ToString()
             };
 
             return Ok(new { success = true, data = series });
@@ -122,53 +122,55 @@ public class SeriesController : ControllerBase
         try
         {
             var offset = (page - 1) * pageSize;
-            var countSql = "SELECT COUNT(*) FROM Video WHERE seriesid = @seriesid";
+
+            var countSql = "SELECT COUNT(*) FROM videos WHERE seriesid = @seriesid";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@seriesid", id)));
 
             var sql = @"
-                SELECT * FROM Video 
+                SELECT * FROM videos 
                 WHERE seriesid = @seriesid
-                ORDER BY sortorder ASC, ctime DESC
+                ORDER BY added_at DESC
                 LIMIT @pageSize OFFSET @offset";
             var dt = _db.ExecuteDataTable(sql,
                 new SqliteParameter("@seriesid", id),
                 new SqliteParameter("@pageSize", pageSize),
                 new SqliteParameter("@offset", offset));
 
-            var videos = new List<Video>();
+            var videos = new List<object>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
-                var video = new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
-                    SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Actors = new List<Actor>()
-                };
+                var videoId = row["id"]?.ToString();
 
-                // 获取该视频的演员列表
-                var actorSql = @"SELECT a.* FROM Actor a INNER JOIN VideoActor va ON a.id = va.actorid WHERE va.videoid = @videoId";
-                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
+                var actorSql = @"SELECT a.* FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
+                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", videoId));
+                var actors = new List<object>();
                 foreach (System.Data.DataRow actorRow in actorDt.Rows)
                 {
-                    video.Actors.Add(new Actor
+                    actors.Add(new
                     {
                         Id = actorRow["id"]?.ToString(),
                         Name = actorRow["name"]?.ToString(),
+                        Alias = actorRow["alias"]?.ToString(),
                         Country = actorRow["country"]?.ToString()
                     });
                 }
 
-                videos.Add(video);
+                videos.Add(new
+                {
+                    Id = videoId,
+                    Code = row["code"]?.ToString(),
+                    Title = row["title"]?.ToString(),
+                    Category = row["category"]?.ToString(),
+                    Country = row["country"] == DBNull.Value ? "" : row["country"].ToString(),
+                    CoverPath = row["cover_path"] == DBNull.Value ? null : row["cover_path"].ToString(),
+                    FilePath = row["file_path"]?.ToString(),
+                    FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
+                    HasCover = row["has_cover"] != DBNull.Value ? Convert.ToInt32(row["has_cover"]) : 0,
+                    Year = row["year"] != DBNull.Value ? (int?)Convert.ToInt32(row["year"]) : null,
+                    SeriesId = row["seriesid"]?.ToString(),
+                    AddedAt = row["added_at"]?.ToString(),
+                    Actors = actors
+                });
             }
 
             return Ok(new { success = true, data = videos, total, page, pageSize });
@@ -193,12 +195,17 @@ public class SeriesController : ControllerBase
                 return Ok(new { success = false, message = "系列名称不能为空" });
             }
 
-            series.Id = Guid.NewGuid().ToString();
-            series.CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            series.UTime = series.CTime;
+            if (string.IsNullOrEmpty(series.Id))
+            {
+                series.Id = Guid.NewGuid().ToString();
+            }
+
+            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            series.CTime = now;
+            series.UTime = now;
 
             var sql = @"
-                INSERT INTO VideoSeries (id, name, alias, link, country, ctime, utime)
+                INSERT INTO VideoSeries (id, name, alias, link, country, created_at, updated_at)
                 VALUES (@id, @name, @alias, @link, @country, @ctime, @utime)";
 
             _db.ExecuteNonQuery(sql,
@@ -211,7 +218,7 @@ public class SeriesController : ControllerBase
                 new SqliteParameter("@utime", series.UTime)
             );
 
-            return Ok(new { success = true, data = series, message = "添加成功" });
+            return Ok(new { success = true, data = series });
         }
         catch (Exception ex)
         {
@@ -228,15 +235,13 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            series.UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-
             var sql = @"
                 UPDATE VideoSeries SET 
                     name = @name,
                     alias = @alias,
                     link = @link,
                     country = @country,
-                    utime = @utime
+                    updated_at = @utime
                 WHERE id = @id";
 
             var result = _db.ExecuteNonQuery(sql,
@@ -249,13 +254,9 @@ public class SeriesController : ControllerBase
             );
 
             if (result > 0)
-            {
                 return Ok(new { success = true, message = "更新成功" });
-            }
             else
-            {
                 return Ok(new { success = false, message = "系列不存在" });
-            }
         }
         catch (Exception ex)
         {
@@ -272,22 +273,18 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            // 先清空该系列下影片的seriesid
-            _db.ExecuteNonQuery("UPDATE Video SET seriesid = NULL WHERE seriesid = @seriesid",
+            // 将系列下影片的seriesid置为空
+            _db.ExecuteNonQuery("UPDATE videos SET seriesid = NULL WHERE seriesid = @seriesid",
                 new SqliteParameter("@seriesid", id));
 
-            // 再删除系列
-            var sql = "DELETE FROM VideoSeries WHERE id = @id";
-            var result = _db.ExecuteNonQuery(sql, new SqliteParameter("@id", id));
+            // 删除系列
+            var result = _db.ExecuteNonQuery("DELETE FROM VideoSeries WHERE id = @id",
+                new SqliteParameter("@id", id));
 
             if (result > 0)
-            {
                 return Ok(new { success = true, message = "删除成功" });
-            }
             else
-            {
                 return Ok(new { success = false, message = "系列不存在" });
-            }
         }
         catch (Exception ex)
         {

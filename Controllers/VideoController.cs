@@ -6,7 +6,7 @@ using System.IO;
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 影片控制器（新版 - Samba影城系统）
+/// 影片控制器
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -21,6 +21,11 @@ public class VideoController : ControllerBase
         _logger = logger;
     }
 
+    private SqliteConnection GetConnection()
+    {
+        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+    }
+
     /// <summary>
     /// 获取视频列表
     /// </summary>
@@ -31,7 +36,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? category = null,
         [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
-        [FromQuery] string? sambaDir = null)
+        [FromQuery] string? seriesId = null)
     {
         try
         {
@@ -47,14 +52,14 @@ public class VideoController : ControllerBase
 
             if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND title LIKE @keyword";
+                whereClause += " AND (title LIKE @keyword OR code LIKE @keyword)";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
-            if (!string.IsNullOrEmpty(sambaDir))
+            if (!string.IsNullOrEmpty(seriesId))
             {
-                whereClause += " AND samba_dir = @sambaDir";
-                parameters.Add(new SqliteParameter("@sambaDir", sambaDir));
+                whereClause += " AND seriesid = @seriesId";
+                parameters.Add(new SqliteParameter("@seriesId", seriesId));
             }
 
             if (!string.IsNullOrEmpty(country))
@@ -69,15 +74,17 @@ public class VideoController : ControllerBase
 
             // 获取列表
             var sql = $@"
-                SELECT * FROM videos
+                SELECT v.*, s.name as series_name
+                FROM videos v
+                LEFT JOIN VideoSeries s ON v.seriesid = s.id
                 {whereClause}
-                ORDER BY added_at DESC
+                ORDER BY v.added_at DESC
                 LIMIT @pageSize OFFSET @offset";
             
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
 
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
@@ -88,22 +95,7 @@ public class VideoController : ControllerBase
             var videos = new List<object>();
             while (reader.Read())
             {
-                videos.Add(new
-                {
-                    id = reader["id"].ToString(),
-                    name = reader["title"].ToString(),
-                    title = reader["title"].ToString(),
-                    year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
-                    category = reader["category"].ToString(),
-                    country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-                    hasCover = reader["has_cover"] == DBNull.Value ? 0 : Convert.ToInt32(reader["has_cover"]),
-                    filePath = reader["file_path"].ToString(),
-                    fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                    coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                    addedAt = reader["added_at"].ToString(),
-                    note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
-                    sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
-                });
+                videos.Add(ReadVideoRow(reader, withSeriesName: true));
             }
 
             return Ok(new
@@ -126,18 +118,19 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 获取所有已有的分类和国家（用于表单下拉）
+    /// 获取所有已有的分类、国家、系列（用于表单下拉）
     /// </summary>
     [HttpGet("meta")]
     public IActionResult GetMeta()
     {
         try
         {
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
 
             var categories = new List<string>();
             var countries = new List<string>();
+            var series = new List<object>();
 
             using (var catCmd = new SqliteCommand("SELECT DISTINCT category FROM videos WHERE category != '' ORDER BY category", conn))
             using (var reader = catCmd.ExecuteReader())
@@ -151,7 +144,16 @@ public class VideoController : ControllerBase
                 while (reader.Read()) countries.Add(reader.GetString(0));
             }
 
-            return Ok(new { success = true, categories, countries });
+            using (var seriesCmd = new SqliteCommand("SELECT id, name FROM VideoSeries ORDER BY name", conn))
+            using (var reader = seriesCmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    series.Add(new { id = reader["id"].ToString(), name = reader["name"].ToString() });
+                }
+            }
+
+            return Ok(new { success = true, categories, countries, series });
         }
         catch (Exception ex)
         {
@@ -168,8 +170,12 @@ public class VideoController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM videos WHERE id = @id";
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            var sql = @"
+                SELECT v.*, s.name as series_name
+                FROM videos v
+                LEFT JOIN VideoSeries s ON v.seriesid = s.id
+                WHERE v.id = @id";
+            using var conn = GetConnection();
             conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
@@ -179,22 +185,7 @@ public class VideoController : ControllerBase
             if (!reader.Read())
                 return NotFound(new { success = false, message = "视频不存在" });
 
-            var video = new
-            {
-                id = reader["id"].ToString(),
-                name = reader["title"].ToString(),
-                title = reader["title"].ToString(),
-                year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
-                category = reader["category"].ToString(),
-                country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-                hasCover = reader["has_cover"] == DBNull.Value ? 0 : Convert.ToInt32(reader["has_cover"]),
-                filePath = reader["file_path"].ToString(),
-                fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                addedAt = reader["added_at"].ToString(),
-                note = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
-                sambaDir = reader["samba_dir"] == DBNull.Value ? "" : reader["samba_dir"].ToString()
-            };
+            var video = ReadVideoRow(reader, withSeriesName: true);
 
             // 获取演员列表
             var actorSql = @"
@@ -213,7 +204,9 @@ public class VideoController : ControllerBase
                 {
                     id = actorReader["id"].ToString(),
                     name = actorReader["name"].ToString(),
-                    avatar_path = actorReader["avatar_path"]?.ToString()
+                    alias = actorReader["alias"] == DBNull.Value ? null : actorReader["alias"].ToString(),
+                    country = actorReader["country"] == DBNull.Value ? null : actorReader["country"].ToString(),
+                    avatarPath = actorReader["avatar_path"] == DBNull.Value ? null : actorReader["avatar_path"].ToString()
                 });
             }
 
@@ -253,7 +246,7 @@ public class VideoController : ControllerBase
     {
         try
         {
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
 
             // 检查视频是否存在
@@ -311,10 +304,10 @@ public class VideoController : ControllerBase
         {
             var id = Guid.NewGuid().ToString();
             var sql = @"
-                INSERT INTO videos (id, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at, note, samba_dir)
-                VALUES (@id, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt, @note, @sambaDir)";
+                INSERT INTO videos (id, code, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at, note, seriesid)
+                VALUES (@id, @code, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt, @note, @seriesId)";
             
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
             
             // 判断封面是否存在
@@ -324,6 +317,7 @@ public class VideoController : ControllerBase
             
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
@@ -336,7 +330,7 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@hasCover", hasCover));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@sambaDir", req.SambaDir ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             
             cmd.ExecuteNonQuery();
 
@@ -345,10 +339,12 @@ public class VideoController : ControllerBase
             {
                 foreach (var actorId in req.ActorIds)
                 {
-                    var relSql = "INSERT OR IGNORE INTO video_actors (video_id, actor_id) VALUES (@videoId, @actorId)";
+                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
                     using var relCmd = new SqliteCommand(relSql, conn);
+                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
+                    relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                     relCmd.ExecuteNonQuery();
                 }
             }
@@ -372,6 +368,7 @@ public class VideoController : ControllerBase
         {
             var sql = @"
                 UPDATE videos SET 
+                    code = @code,
                     title = @title, 
                     year = @year, 
                     category = @category, 
@@ -380,10 +377,10 @@ public class VideoController : ControllerBase
                     cover_path = @coverPath,
                     has_cover = @hasCover,
                     note = @note,
-                    samba_dir = @sambaDir
+                    seriesid = @seriesId
                 WHERE id = @id";
 
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
 
             // 检查是否存在
@@ -394,6 +391,7 @@ public class VideoController : ControllerBase
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@title", req.Title));
             cmd.Parameters.Add(new SqliteParameter("@year", req.Year ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
@@ -402,7 +400,7 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@hasCover", string.IsNullOrEmpty(req.CoverPath) ? 0 : 1));
             cmd.Parameters.Add(new SqliteParameter("@note", req.Note ?? (object)DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@sambaDir", req.SambaDir ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             cmd.ExecuteNonQuery();
 
             // 更新演员关联
@@ -416,10 +414,12 @@ public class VideoController : ControllerBase
                 // 重新添加
                 foreach (var actorId in req.ActorIds)
                 {
-                    var relSql = "INSERT INTO video_actors (video_id, actor_id) VALUES (@videoId, @actorId)";
+                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
                     using var relCmd = new SqliteCommand(relSql, conn);
+                    relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
+                    relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                     relCmd.ExecuteNonQuery();
                 }
             }
@@ -441,7 +441,7 @@ public class VideoController : ControllerBase
     {
         try
         {
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
 
             // 删除演员关联
@@ -477,7 +477,7 @@ public class VideoController : ControllerBase
             if (req.Ids == null || req.Ids.Count == 0)
                 return BadRequest(new { success = false, message = "ids 不能为空" });
 
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
 
             using var transaction = conn.BeginTransaction();
@@ -529,21 +529,100 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 扫描目录
+    /// 扫描所有配置目录
     /// </summary>
     [HttpPost("scan")]
+    public IActionResult ScanAll()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 读取启用的扫描目录
+            var dirs = new List<(string id, string path, string videoTypes, bool recursive)>();
+            using (var dirCmd = new SqliteCommand(
+                "SELECT id, path, video_types, recursive FROM scan_directories WHERE is_enabled = 1", conn))
+            using (var reader = dirCmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    dirs.Add((
+                        reader["id"].ToString()!,
+                        reader["path"].ToString()!,
+                        reader["video_types"].ToString()!,
+                        Convert.ToInt32(reader["recursive"]) == 1));
+                }
+            }
+
+            if (dirs.Count == 0)
+            {
+                return Ok(new { success = false, message = "没有配置扫描目录" });
+            }
+
+            // 读取启用的视频类型
+            var types = new List<(string name, string extensions)>();
+            using (var typeCmd = new SqliteCommand(
+                "SELECT name, extensions FROM video_types ORDER BY sort_order", conn))
+            using (var reader = typeCmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    types.Add((reader["name"].ToString()!, reader["extensions"].ToString()!));
+                }
+            }
+
+            if (types.Count == 0)
+            {
+                return Ok(new { success = false, message = "没有配置视频类型" });
+            }
+
+            // 创建扫描任务
+            var taskId = 0;
+            var insertTaskSql = @"
+                INSERT INTO scan_tasks (task_type, status, target_path, started_at)
+                VALUES ('all', 'pending', @targetPath, @startedAt);
+                SELECT last_insert_rowid();";
+            using (var taskCmd = new SqliteCommand(insertTaskSql, conn))
+            {
+                taskCmd.Parameters.Add(new SqliteParameter("@targetPath", "all"));
+                taskCmd.Parameters.Add(new SqliteParameter("@startedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                taskId = Convert.ToInt32(taskCmd.ExecuteScalar());
+            }
+
+            // 异步执行扫描
+            _ = Task.Run(() => ScanAllDirectoriesAsync(dirs, types, taskId));
+
+            return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ScanAll failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 扫描单个目录
+    /// </summary>
+    [HttpPost("scan-directory")]
     public IActionResult ScanDirectory([FromBody] ScanRequest req)
     {
         try
         {
+            if (string.IsNullOrEmpty(req.TargetPath) || !Directory.Exists(req.TargetPath))
+            {
+                return Ok(new { success = false, message = "扫描目录不存在" });
+            }
+
+            using var conn = GetConnection();
+            conn.Open();
+
             var taskId = 0;
             var sql = @"
                 INSERT INTO scan_tasks (task_type, status, target_path, started_at)
                 VALUES ('manual', 'pending', @targetPath, @startedAt);
                 SELECT last_insert_rowid();";
-            
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
-            conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@targetPath", req.TargetPath));
@@ -551,9 +630,8 @@ public class VideoController : ControllerBase
             
             taskId = Convert.ToInt32(cmd.ExecuteScalar());
 
-            // TODO: 启动后台扫描任务（用 Task.Run 或 Hangfire）
-            // 这里为了简化，先同步执行扫描
-            ScanDirectoryAsync(req.TargetPath, req.Recursive, taskId);
+            // 异步执行扫描
+            _ = Task.Run(() => ScanDirectoryAsync(req.TargetPath, req.Recursive, taskId));
 
             return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
         }
@@ -573,7 +651,7 @@ public class VideoController : ControllerBase
         try
         {
             var sql = "SELECT * FROM scan_tasks WHERE id = @taskId";
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
@@ -615,9 +693,8 @@ public class VideoController : ControllerBase
     {
         try
         {
-            // 1. 从数据库获取文件路径
             var sql = "SELECT file_path FROM videos WHERE id = @id";
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
@@ -627,7 +704,6 @@ public class VideoController : ControllerBase
             if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))
                 return NotFound(new { success = false, message = "视频文件不存在" });
 
-            // 2. 返回文件流（支持 Range）
             var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             var response = File(fileStream, "video/mp4", enableRangeProcessing: true);
             return response;
@@ -648,7 +724,7 @@ public class VideoController : ControllerBase
         try
         {
             var sql = "SELECT cover_path FROM videos WHERE id = @id";
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            using var conn = GetConnection();
             conn.Open();
             
             using var cmd = new SqliteCommand(sql, conn);
@@ -670,9 +746,36 @@ public class VideoController : ControllerBase
 
     #region 私有方法
 
+    private object ReadVideoRow(SqliteDataReader reader, bool withSeriesName = false)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["id"] = reader["id"].ToString(),
+            ["code"] = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
+            ["title"] = reader["title"].ToString(),
+            ["year"] = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
+            ["category"] = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
+            ["country"] = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
+            ["hasCover"] = reader["has_cover"] == DBNull.Value ? 0 : Convert.ToInt32(reader["has_cover"]),
+            ["filePath"] = reader["file_path"].ToString(),
+            ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+            ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+            ["addedAt"] = reader["added_at"].ToString(),
+            ["note"] = reader["note"] == DBNull.Value ? null : reader["note"].ToString(),
+            ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString()
+        };
+
+        if (withSeriesName)
+        {
+            result["seriesName"] = reader["series_name"] == DBNull.Value ? null : reader["series_name"].ToString();
+        }
+
+        return result;
+    }
+
     private object? ExecuteScalar(string sql, SqliteParameter[] parameters)
     {
-        using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+        using var conn = GetConnection();
         conn.Open();
         
         using var cmd = new SqliteCommand(sql, conn);
@@ -681,20 +784,127 @@ public class VideoController : ControllerBase
         return cmd.ExecuteScalar();
     }
 
+    private void ScanAllDirectoriesAsync(List<(string id, string path, string videoTypes, bool recursive)> dirs, 
+        List<(string name, string extensions)> types, int taskId)
+    {
+        try
+        {
+            var totalFilesFound = 0;
+            var totalFilesAdded = 0;
+            var totalFilesUpdated = 0;
+            var errors = new List<string>();
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 先更新任务状态为 running
+            using (var cmd = new SqliteCommand("UPDATE scan_tasks SET status = 'running' WHERE id = @taskId", conn))
+            {
+                cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+                cmd.ExecuteNonQuery();
+            }
+
+            foreach (var dir in dirs)
+            {
+                if (!Directory.Exists(dir.path)) continue;
+
+                // 解析该目录要扫描的视频类型扩展名
+                var typeNames = dir.videoTypes.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(t => t.Trim()).ToList();
+                var extensions = types
+                    .Where(t => typeNames.Contains(t.name, StringComparer.OrdinalIgnoreCase))
+                    .SelectMany(t => t.extensions.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(e => e.Trim().ToLowerInvariant()))
+                    .Distinct()
+                    .ToList();
+
+                if (extensions.Count == 0) continue;
+
+                var enumOpts = new EnumerationOptions
+                {
+                    RecurseSubdirectories = dir.recursive,
+                    IgnoreInaccessible = true
+                };
+
+                var allFiles = new List<string>();
+                foreach (var ext in extensions)
+                {
+                    try
+                    {
+                        var pattern = $"*{ext}";
+                        allFiles.AddRange(Directory.GetFiles(dir.path, pattern, enumOpts));
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"扫描目录 {dir.path} 扩展名 {ext} 失败: {ex.Message}");
+                    }
+                }
+
+                allFiles = allFiles.Distinct().ToList();
+                totalFilesFound += allFiles.Count;
+
+                foreach (var filePath in allFiles)
+                {
+                    if (Path.GetFileName(filePath).StartsWith("._")) continue;
+
+                    try
+                    {
+                        var (added, updated) = UpsertVideoFromFile(filePath, conn);
+                        if (added) totalFilesAdded++;
+                        if (updated) totalFilesUpdated++;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"{filePath}: {ex.Message}");
+                    }
+                }
+            }
+
+            // 更新任务状态为完成
+            var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
+                                    files_found = @filesFound, files_added = @filesAdded, 
+                                    files_updated = @filesUpdated, errors = @errors 
+                                    WHERE id = @taskId";
+            using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
+            {
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", totalFilesFound));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", totalFilesAdded));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", totalFilesUpdated));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+                updateTaskCmd.ExecuteNonQuery();
+            }
+        }
+        catch (Exception ex)
+        {
+            UpdateScanTaskFailed(taskId, ex.Message);
+            _logger.LogError(ex, "ScanAllDirectoriesAsync failed");
+        }
+    }
+
     private void ScanDirectoryAsync(string targetPath, bool recursive, int taskId)
     {
         try
         {
+            using var conn = GetConnection();
+            conn.Open();
+
+            using (var cmd = new SqliteCommand("UPDATE scan_tasks SET status = 'running' WHERE id = @taskId", conn))
+            {
+                cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+                cmd.ExecuteNonQuery();
+            }
+
             var filesFound = 0;
             var filesAdded = 0;
             var filesUpdated = 0;
             var errors = new List<string>();
 
-            // 1. 遍历目录，查找 .mp4 文件（忽略无权限的子目录）
             var enumOpts = new EnumerationOptions
             {
                 RecurseSubdirectories = recursive,
-                IgnoreInaccessible = true  // 关键：跳过无权限的目录
+                IgnoreInaccessible = true
             };
             var mp4Files = Array.Empty<string>();
             try
@@ -708,65 +918,15 @@ public class VideoController : ControllerBase
 
             filesFound = mp4Files.Length;
 
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
-            conn.Open();
-
             foreach (var filePath in mp4Files)
             {
-                // 跳过 macOS 元数据文件（._ 开头）
                 if (Path.GetFileName(filePath).StartsWith("._")) continue;
 
                 try
                 {
-                    var fileName = Path.GetFileNameWithoutExtension(filePath);
-                    var fileInfo = new FileInfo(filePath);
-                    var coverPath = Path.ChangeExtension(filePath, ".jpg");
-                    
-                    // 检查封面是否存在
-                    var coverExists = System.IO.File.Exists(coverPath);
-
-                    // 检查数据库中是否已存在
-                    var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
-                    using var checkCmd = new SqliteCommand(checkSql, conn);
-                    checkCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-                    var exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
-
-                    if (exists)
-                    {
-                        // 更新
-                        var updateSql = @"UPDATE videos SET file_size = @fileSize, cover_path = @coverPath, has_cover = @hasCover, samba_dir = @sambaDir WHERE file_path = @filePath";
-                        using var updateCmd = new SqliteCommand(updateSql, conn);
-                        updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-                        updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
-                        updateCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
-                        updateCmd.Parameters.Add(new SqliteParameter("@sambaDir", targetPath));
-                        updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-                        updateCmd.ExecuteNonQuery();
-                        filesUpdated++;
-                    }
-                    else
-                    {
-                        // 新增
-                        var id = Guid.NewGuid().ToString();
-                        var category = DetermineCategory(filePath);
-                        var year = ExtractYear(fileName);
-
-                        var insertSql = @"INSERT INTO videos (id, title, year, category, file_path, file_size, cover_path, has_cover, samba_dir, added_at) 
-                                        VALUES (@id, @title, @year, @category, @filePath, @fileSize, @coverPath, @hasCover, @sambaDir, @addedAt)";
-                        using var insertCmd = new SqliteCommand(insertSql, conn);
-                        insertCmd.Parameters.Add(new SqliteParameter("@id", id));
-                        insertCmd.Parameters.Add(new SqliteParameter("@title", fileName));
-                        insertCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
-                        insertCmd.Parameters.Add(new SqliteParameter("@category", category));
-                        insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-                        insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-                        insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
-                        insertCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
-                        insertCmd.Parameters.Add(new SqliteParameter("@sambaDir", targetPath));
-                        insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-                        insertCmd.ExecuteNonQuery();
-                        filesAdded++;
-                    }
+                    var (added, updated) = UpsertVideoFromFile(filePath, conn);
+                    if (added) filesAdded++;
+                    if (updated) filesUpdated++;
                 }
                 catch (Exception ex)
                 {
@@ -774,42 +934,105 @@ public class VideoController : ControllerBase
                 }
             }
 
-            // 更新任务状态
             var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
                                     files_found = @filesFound, files_added = @filesAdded, 
                                     files_updated = @filesUpdated, errors = @errors 
                                     WHERE id = @taskId";
-            using var updateTaskCmd = new SqliteCommand(updateTaskSql, conn);
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", filesFound));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", filesAdded));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", filesUpdated));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-            updateTaskCmd.ExecuteNonQuery();
+            using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
+            {
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", filesFound));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", filesAdded));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesUpdated", filesUpdated));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
+                updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
+                updateTaskCmd.ExecuteNonQuery();
+            }
         }
         catch (Exception ex)
         {
-            // 更新任务状态为失败
-            using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+            UpdateScanTaskFailed(taskId, ex.Message);
+            _logger.LogError(ex, "ScanDirectoryAsync failed");
+        }
+    }
+
+    private (bool Added, bool Updated) UpsertVideoFromFile(string filePath, SqliteConnection conn)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        var fileInfo = new FileInfo(filePath);
+        var coverPath = Path.ChangeExtension(filePath, ".jpg");
+        var coverExists = System.IO.File.Exists(coverPath);
+        var category = DetermineCategory(filePath);
+        var year = ExtractYear(fileName);
+
+        var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
+        using var checkCmd = new SqliteCommand(checkSql, conn);
+        checkCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+        var exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+
+        if (exists)
+        {
+            var updateSql = @"UPDATE videos SET 
+                file_size = @fileSize, 
+                cover_path = @coverPath, 
+                has_cover = @hasCover,
+                category = @category,
+                year = @year
+                WHERE file_path = @filePath";
+            using var updateCmd = new SqliteCommand(updateSql, conn);
+            updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
+            updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+            updateCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
+            updateCmd.Parameters.Add(new SqliteParameter("@category", category));
+            updateCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
+            updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+            updateCmd.ExecuteNonQuery();
+            return (false, true);
+        }
+        else
+        {
+            var id = Guid.NewGuid().ToString();
+            var insertSql = @"INSERT INTO videos (id, title, year, category, country, file_path, file_size, cover_path, has_cover, added_at) 
+                            VALUES (@id, @title, @year, @category, @country, @filePath, @fileSize, @coverPath, @hasCover, @addedAt)";
+            using var insertCmd = new SqliteCommand(insertSql, conn);
+            insertCmd.Parameters.Add(new SqliteParameter("@id", id));
+            insertCmd.Parameters.Add(new SqliteParameter("@title", fileName));
+            insertCmd.Parameters.Add(new SqliteParameter("@year", year.HasValue ? (object)year.Value : (object)DBNull.Value));
+            insertCmd.Parameters.Add(new SqliteParameter("@category", category));
+            insertCmd.Parameters.Add(new SqliteParameter("@country", ""));
+            insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+            insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
+            insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+            insertCmd.Parameters.Add(new SqliteParameter("@hasCover", coverExists ? 1 : 0));
+            insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            insertCmd.ExecuteNonQuery();
+            return (true, false);
+        }
+    }
+
+    private void UpdateScanTaskFailed(int taskId, string error)
+    {
+        try
+        {
+            using var conn = GetConnection();
             conn.Open();
             
             var updateTaskSql = @"UPDATE scan_tasks SET status = 'failed', completed_at = @completedAt, errors = @errors 
                                     WHERE id = @taskId";
             using var updateTaskCmd = new SqliteCommand(updateTaskSql, conn);
             updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", ex.Message));
+            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", error));
             updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
             updateTaskCmd.ExecuteNonQuery();
-            
-            _logger.LogError(ex, "ScanDirectoryAsync failed");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateScanTaskFailed failed");
         }
     }
 
     private string DetermineCategory(string filePath)
     {
-        // 简化：根据目录结构判断分类
-        // 假设目录结构为：/Volumes/wdc4t/电影/xxx.mp4
         var parts = filePath.Split('/', '\\');
         foreach (var part in parts)
         {
@@ -837,6 +1060,7 @@ public class VideoController : ControllerBase
 
 public class AddVideoRequest
 {
+    public string? Code { get; set; }
     public string Title { get; set; } = "";
     public int? Year { get; set; }
     public string Category { get; set; } = "";
@@ -846,11 +1070,12 @@ public class AddVideoRequest
     public string? CoverPath { get; set; }
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
-    public string? SambaDir { get; set; }
+    public string? SeriesId { get; set; }
 }
 
 public class UpdateVideoRequest
 {
+    public string? Code { get; set; }
     public string Title { get; set; } = "";
     public int? Year { get; set; }
     public string Category { get; set; } = "";
@@ -859,13 +1084,7 @@ public class UpdateVideoRequest
     public string? CoverPath { get; set; }
     public string? Note { get; set; }
     public List<string>? ActorIds { get; set; }
-    public string? SambaDir { get; set; }
-}
-
-public class VideoMetaRequest
-{
-    public string? Category { get; set; }
-    public string? Country { get; set; }
+    public string? SeriesId { get; set; }
 }
 
 public class ScanRequest

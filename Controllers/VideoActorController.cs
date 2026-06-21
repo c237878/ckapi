@@ -30,24 +30,25 @@ public class VideoActorController : ControllerBase
         try
         {
             var sql = @"
-                SELECT a.* FROM Actor a
-                INNER JOIN VideoActor va ON a.id = va.actorid
-                WHERE va.videoid = @videoId
+                SELECT a.* FROM actors a
+                INNER JOIN video_actors va ON a.id = va.actor_id
+                WHERE va.video_id = @videoId
                 ORDER BY a.name";
 
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@videoId", videoId));
 
-            var actors = new List<Actor>();
+            var actors = new List<object>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
-                actors.Add(new Actor
+                actors.Add(new
                 {
                     Id = row["id"]?.ToString(),
                     Name = row["name"]?.ToString(),
                     Alias = row["alias"]?.ToString(),
                     Country = row["country"]?.ToString(),
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString()
+                    AvatarPath = row["avatar_path"]?.ToString(),
+                    Bio = row["bio"]?.ToString(),
+                    AddedAt = row["added_at"]?.ToString()
                 });
             }
 
@@ -69,30 +70,30 @@ public class VideoActorController : ControllerBase
         try
         {
             var sql = @"
-                SELECT v.* FROM Video v
-                INNER JOIN VideoActor va ON v.id = va.videoid
-                WHERE va.actorid = @actorId
-                ORDER BY v.sortorder ASC, v.ctime DESC";
+                SELECT v.* FROM videos v
+                INNER JOIN video_actors va ON v.id = va.video_id
+                WHERE va.actor_id = @actorId
+                ORDER BY v.added_at DESC";
 
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@actorId", actorId));
 
-            var videos = new List<Video>();
+            var videos = new List<object>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
-                videos.Add(new Video
+                videos.Add(new
                 {
                     Id = row["id"]?.ToString(),
                     Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
+                    Title = row["title"]?.ToString(),
+                    Category = row["category"]?.ToString(),
                     Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
+                    FilePath = row["file_path"]?.ToString(),
+                    FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
+                    CoverPath = row["cover_path"]?.ToString(),
+                    HasCover = row["has_cover"] != DBNull.Value ? Convert.ToInt32(row["has_cover"]) : 0,
+                    Year = row["year"] != DBNull.Value ? (int?)Convert.ToInt32(row["year"]) : null,
                     SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString()
+                    AddedAt = row["added_at"]?.ToString()
                 });
             }
 
@@ -109,7 +110,7 @@ public class VideoActorController : ControllerBase
     /// 添加视频-演员关联
     /// </summary>
     [HttpPost]
-    public IActionResult AddRelation([FromBody] VideoActor relation)
+    public IActionResult AddRelation([FromBody] VideoActorRelation relation)
     {
         try
         {
@@ -118,8 +119,7 @@ public class VideoActorController : ControllerBase
                 return Ok(new { success = false, message = "视频ID和演员ID不能为空" });
             }
 
-            // 检查是否已存在
-            var checkSql = "SELECT COUNT(*) FROM VideoActor WHERE videoid = @videoId AND actorid = @actorId";
+            var checkSql = "SELECT COUNT(*) FROM video_actors WHERE video_id = @videoId AND actor_id = @actorId";
             var exists = Convert.ToInt32(_db.ExecuteScalar(checkSql,
                 new SqliteParameter("@videoId", relation.VideoId),
                 new SqliteParameter("@actorId", relation.ActorId))) > 0;
@@ -129,23 +129,17 @@ public class VideoActorController : ControllerBase
                 return Ok(new { success = false, message = "该关联已存在" });
             }
 
-            relation.Id = Guid.NewGuid().ToString();
-            relation.CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            relation.UTime = relation.CTime;
-
             var sql = @"
-                INSERT INTO VideoActor (id, videoid, actorid, ctime, utime)
-                VALUES (@id, @videoId, @actorId, @ctime, @utime)";
+                INSERT OR IGNORE INTO video_actors (video_id, actor_id, created_at)
+                VALUES (@videoId, @actorId, @createdAt)";
 
             _db.ExecuteNonQuery(sql,
-                new SqliteParameter("@id", relation.Id),
                 new SqliteParameter("@videoId", relation.VideoId),
                 new SqliteParameter("@actorId", relation.ActorId),
-                new SqliteParameter("@ctime", relation.CTime),
-                new SqliteParameter("@utime", relation.UTime)
+                new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
             );
 
-            return Ok(new { success = true, data = relation, message = "添加成功" });
+            return Ok(new { success = true, message = "添加成功" });
         }
         catch (Exception ex)
         {
@@ -157,14 +151,15 @@ public class VideoActorController : ControllerBase
     /// <summary>
     /// 删除视频-演员关联
     /// </summary>
-    [HttpDelete("{id}")]
-    public IActionResult DeleteRelation(string id)
+    [HttpDelete]
+    public IActionResult DeleteRelation([FromQuery] string videoId, [FromQuery] string actorId)
     {
         try
         {
             var rows = _db.ExecuteNonQuery(
-                "DELETE FROM VideoActor WHERE id = @id",
-                new SqliteParameter("@id", id));
+                "DELETE FROM video_actors WHERE video_id = @videoId AND actor_id = @actorId",
+                new SqliteParameter("@videoId", videoId),
+                new SqliteParameter("@actorId", actorId));
 
             if (rows > 0)
             {
@@ -188,7 +183,7 @@ public class VideoActorController : ControllerBase
         try
         {
             var rows = _db.ExecuteNonQuery(
-                "DELETE FROM VideoActor WHERE videoid = @videoId",
+                "DELETE FROM video_actors WHERE video_id = @videoId",
                 new SqliteParameter("@videoId", videoId));
 
             return Ok(new { success = true, message = $"已删除{rows}个关联" });
@@ -208,35 +203,22 @@ public class VideoActorController : ControllerBase
     {
         try
         {
-            // 先删除旧的关联
             _db.ExecuteNonQuery(
-                "DELETE FROM VideoActor WHERE videoid = @videoId",
+                "DELETE FROM video_actors WHERE video_id = @videoId",
                 new SqliteParameter("@videoId", videoId));
 
-            // 添加新的关联
             if (actorIds != null && actorIds.Count > 0)
             {
                 foreach (var actorId in actorIds)
                 {
-                    var relation = new VideoActor
-                    {
-                        Id = Guid.NewGuid().ToString(),
-                        VideoId = videoId,
-                        ActorId = actorId,
-                        CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-                        UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-                    };
-
                     var sql = @"
-                        INSERT INTO VideoActor (id, videoid, actorid, ctime, utime)
-                        VALUES (@id, @videoId, @actorId, @ctime, @utime)";
+                        INSERT OR IGNORE INTO video_actors (video_id, actor_id, created_at)
+                        VALUES (@videoId, @actorId, @createdAt)";
 
                     _db.ExecuteNonQuery(sql,
-                        new SqliteParameter("@id", relation.Id),
-                        new SqliteParameter("@videoId", relation.VideoId),
-                        new SqliteParameter("@actorId", relation.ActorId),
-                        new SqliteParameter("@ctime", relation.CTime),
-                        new SqliteParameter("@utime", relation.UTime)
+                        new SqliteParameter("@videoId", videoId),
+                        new SqliteParameter("@actorId", actorId),
+                        new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
                     );
                 }
             }
@@ -249,4 +231,13 @@ public class VideoActorController : ControllerBase
             return Ok(new { success = false, message = "设置失败: " + ex.Message });
         }
     }
+}
+
+/// <summary>
+/// 视频-演员关联请求模型
+/// </summary>
+public class VideoActorRelation
+{
+    public string VideoId { get; set; }
+    public string ActorId { get; set; }
 }

@@ -74,6 +74,8 @@ public class ActorController : ControllerBase
                     {
                         id = reader["id"].ToString(),
                         name = reader["name"].ToString(),
+                        alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                        country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                         avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
@@ -114,6 +116,8 @@ public class ActorController : ControllerBase
             {
                 id = reader["id"].ToString(),
                 name = reader["name"].ToString(),
+                alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                 avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                 addedAt = reader["added_at"]?.ToString()
@@ -153,10 +157,12 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, avatar_path, bio, added_at) VALUES (@id, @name, @avatarPath, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, alias, country, avatar_path, bio, added_at) VALUES (@id, @name, @alias, @country, @avatarPath, @bio, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
+            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
@@ -182,10 +188,12 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"UPDATE actors SET name = @name, avatar_path = @avatarPath, bio = @bio WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, alias = @alias, country = @country, avatar_path = @avatarPath, bio = @bio WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
+            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
 
@@ -296,6 +304,8 @@ public class ActorController : ControllerBase
 public class AddActorRequest
 {
     public string Name { get; set; } = "";
+    public string? Alias { get; set; }
+    public string? Country { get; set; }
     public string? AvatarPath { get; set; }
     public string? Bio { get; set; }
 }
@@ -303,6 +313,8 @@ public class AddActorRequest
 public class UpdateActorRequest
 {
     public string? Name { get; set; }
+    public string? Alias { get; set; }
+    public string? Country { get; set; }
     public string? AvatarPath { get; set; }
     public string? Bio { get; set; }
 }
