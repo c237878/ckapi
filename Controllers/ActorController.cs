@@ -56,9 +56,9 @@ public class ActorController : ControllerBase
                 var sql = $@"
                     SELECT a.*, 
                         (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count,
-                        (SELECT COALESCE(SUM(vl.like_count), 0) FROM video_actors va2 
+                        (SELECT COUNT(*) FROM video_actors va2 
                          JOIN videos v ON va2.video_id = v.id 
-                         LEFT JOIN video_likes vl ON v.id = vl.video_id 
+                         JOIN video_likes vl ON v.id = vl.video_id 
                          WHERE va2.actor_id = a.id) as like_count
                     FROM actors a
                     {whereClause}
