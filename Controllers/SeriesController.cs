@@ -64,8 +64,8 @@ public class SeriesController : ControllerBase
                     Alias = row["alias"]?.ToString(),
                     Link = row["link"]?.ToString(),
                     Country = row["country"]?.ToString(),
-                    CTime = row["created_at"]?.ToString(),
-                    UTime = row["updated_at"]?.ToString(),
+                    CTime = row["ctime"]?.ToString(),
+                    UTime = row["utime"]?.ToString(),
                     VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0,
                     LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0
                 });
@@ -103,8 +103,8 @@ public class SeriesController : ControllerBase
                 Alias = row["alias"]?.ToString(),
                 Link = row["link"]?.ToString(),
                 Country = row["country"]?.ToString(),
-                CTime = row["created_at"]?.ToString(),
-                UTime = row["updated_at"]?.ToString()
+                CTime = row["ctime"]?.ToString(),
+                UTime = row["utime"]?.ToString()
             };
 
             return Ok(new { success = true, data = series });
@@ -206,7 +206,7 @@ public class SeriesController : ControllerBase
             series.UTime = now;
 
             var sql = @"
-                INSERT INTO video_series (id, name, alias, link, country, created_at, updated_at)
+                INSERT INTO video_series (id, name, alias, link, country, ctime, utime)
                 VALUES (@id, @name, @alias, @link, @country, @ctime, @utime)";
 
             _db.ExecuteNonQuery(sql,
@@ -242,7 +242,7 @@ public class SeriesController : ControllerBase
                     alias = @alias,
                     link = @link,
                     country = @country,
-                    updated_at = @utime
+                    utime = @utime
                 WHERE id = @id";
 
             var result = _db.ExecuteNonQuery(sql,
