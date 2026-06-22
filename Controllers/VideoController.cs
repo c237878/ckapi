@@ -74,7 +74,8 @@ public class VideoController : ControllerBase
 
             // 获取列表
             var sql = $@"
-                SELECT v.*, s.name as series_name
+                SELECT v.*, s.name as series_name,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) as like_count
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
@@ -779,12 +780,27 @@ public class VideoController : ControllerBase
             ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString()
         };
 
+        if (HasColumn(reader, "like_count"))
+        {
+            result["likeCount"] = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]);
+        }
+
         if (withSeriesName)
         {
             result["seriesName"] = reader["series_name"] == DBNull.Value ? null : reader["series_name"].ToString();
         }
 
         return result;
+    }
+
+    private bool HasColumn(SqliteDataReader reader, string columnName)
+    {
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            if (reader.GetName(i).Equals(columnName, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private object? ExecuteScalar(string sql, SqliteParameter[] parameters)

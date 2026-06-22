@@ -43,7 +43,9 @@ public class SeriesController : ControllerBase
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT s.*, (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count
+                SELECT s.*, 
+                       (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count,
+                       (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count
                 FROM video_series s
                 {whereClause}
                 ORDER BY s.name ASC
@@ -64,7 +66,8 @@ public class SeriesController : ControllerBase
                     Country = row["country"]?.ToString(),
                     CTime = row["created_at"]?.ToString(),
                     UTime = row["updated_at"]?.ToString(),
-                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
+                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0,
+                    LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0
                 });
             }
 

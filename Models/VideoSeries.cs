@@ -44,4 +44,9 @@ public class VideoSeries
     /// 关联影片数量
     /// </summary>
     public int VideoCount { get; set; }
+
+    /// <summary>
+    /// 获赞总数
+    /// </summary>
+    public int LikeCount { get; set; }
 }
