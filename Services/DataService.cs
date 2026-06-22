@@ -169,8 +169,8 @@ public class DataService : IDataService
             path        TEXT    NOT NULL,
             category    TEXT    DEFAULT '',
             recursive   INTEGER DEFAULT 1,
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -195,8 +195,8 @@ public class DataService : IDataService
             name        TEXT    NOT NULL UNIQUE,
             extensions  TEXT    NOT NULL,
             sort_order  INTEGER DEFAULT 0,
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -227,7 +227,7 @@ public class DataService : IDataService
             try
             {
                 _db.ExecuteNonQuery(@"
-                    INSERT OR IGNORE INTO video_types (id, name, extensions, sort_order, created_at, updated_at)
+                    INSERT OR IGNORE INTO video_types (id, name, extensions, sort_order, ctime, utime)
                     VALUES (@id, @name, @ext, @sort, @ctime, @utime)",
                     new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()),
                     new SqliteParameter("@name", name),
@@ -255,8 +255,8 @@ public class DataService : IDataService
             alias       TEXT,
             link        TEXT,
             country     TEXT,
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -308,7 +308,7 @@ public class DataService : IDataService
             id          TEXT    NOT NULL    PRIMARY KEY,
             video_id    TEXT    NOT NULL,
             actor_id    TEXT    NOT NULL,
-            created_at  TEXT    NOT NULL
+            ctime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))

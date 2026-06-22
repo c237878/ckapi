@@ -332,12 +332,12 @@ public class VideoController : ControllerBase
             {
                 foreach (var actorId in req.ActorIds)
                 {
-                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
+                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, ctime) VALUES (@id, @videoId, @actorId, @ctime)";
                     using var relCmd = new SqliteCommand(relSql, conn);
                     relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
-                    relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                    relCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                     relCmd.ExecuteNonQuery();
                 }
             }
@@ -404,12 +404,12 @@ public class VideoController : ControllerBase
                 // 重新添加
                 foreach (var actorId in req.ActorIds)
                 {
-                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, created_at) VALUES (@id, @videoId, @actorId, @createdAt)";
+                    var relSql = "INSERT OR IGNORE INTO video_actors (id, video_id, actor_id, ctime) VALUES (@id, @videoId, @actorId, @ctime)";
                     using var relCmd = new SqliteCommand(relSql, conn);
                     relCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
                     relCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     relCmd.Parameters.Add(new SqliteParameter("@actorId", actorId));
-                    relCmd.Parameters.Add(new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                    relCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
                     relCmd.ExecuteNonQuery();
                 }
             }

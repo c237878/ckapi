@@ -35,7 +35,7 @@ public class ScanDirectoryController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"SELECT * FROM scan_directories ORDER BY created_at DESC";
+            var sql = @"SELECT * FROM scan_directories ORDER BY ctime DESC";
             using var cmd = new SqliteCommand(sql, conn);
             using var reader = cmd.ExecuteReader();
 
@@ -129,16 +129,16 @@ public class ScanDirectoryController : ControllerBase
             var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
-                INSERT INTO scan_directories (id, path, category, recursive, created_at, updated_at)
-                VALUES (@id, @path, @category, @recursive, @createdAt, @updatedAt)";
+                INSERT INTO scan_directories (id, path, category, recursive, ctime, utime)
+                VALUES (@id, @path, @category, @recursive, @ctime, @utime)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@createdAt", now));
-            cmd.Parameters.Add(new SqliteParameter("@updatedAt", now));
+            cmd.Parameters.Add(new SqliteParameter("@ctime", now));
+            cmd.Parameters.Add(new SqliteParameter("@utime", now));
             cmd.ExecuteNonQuery();
 
             return Ok(new { success = true, data = new { id } });
@@ -169,7 +169,7 @@ public class ScanDirectoryController : ControllerBase
                     path = @path,
                     category = @category,
                     recursive = @recursive,
-                    updated_at = @updatedAt
+                    utime = @utime
                 WHERE id = @id";
 
             using var cmd = new SqliteCommand(sql, conn);
@@ -177,7 +177,7 @@ public class ScanDirectoryController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@updatedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            cmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
 
             if (cmd.ExecuteNonQuery() > 0)
                 return Ok(new { success = true, message = "更新成功" });
@@ -224,8 +224,8 @@ public class ScanDirectoryController : ControllerBase
             path = reader["path"].ToString(),
             category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
             recursive = Convert.ToInt32(reader["recursive"]) == 1,
-            createdAt = reader["created_at"]?.ToString(),
-            updatedAt = reader["updated_at"]?.ToString()
+            ctime = reader["ctime"]?.ToString(),
+            utime = reader["utime"]?.ToString()
         };
     }
 }

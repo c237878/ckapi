@@ -128,13 +128,13 @@ public class VideoActorController : ControllerBase
             }
 
             var sql = @"
-                INSERT OR IGNORE INTO video_actors (video_id, actor_id, created_at)
-                VALUES (@videoId, @actorId, @createdAt)";
+                INSERT OR IGNORE INTO video_actors (video_id, actor_id, ctime)
+                VALUES (@videoId, @actorId, @ctime)";
 
             _db.ExecuteNonQuery(sql,
                 new SqliteParameter("@videoId", relation.VideoId),
                 new SqliteParameter("@actorId", relation.ActorId),
-                new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+                new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
             );
 
             return Ok(new { success = true, message = "添加成功" });
@@ -210,13 +210,13 @@ public class VideoActorController : ControllerBase
                 foreach (var actorId in actorIds)
                 {
                     var sql = @"
-                        INSERT OR IGNORE INTO video_actors (video_id, actor_id, created_at)
-                        VALUES (@videoId, @actorId, @createdAt)";
+                        INSERT OR IGNORE INTO video_actors (video_id, actor_id, ctime)
+                        VALUES (@videoId, @actorId, @ctime)";
 
                     _db.ExecuteNonQuery(sql,
                         new SqliteParameter("@videoId", videoId),
                         new SqliteParameter("@actorId", actorId),
-                        new SqliteParameter("@createdAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+                        new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
                     );
                 }
             }

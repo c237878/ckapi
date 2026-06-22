@@ -99,16 +99,16 @@ public class VideoTypeController : ControllerBase
             var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
-                INSERT INTO video_types (id, name, extensions, sort_order, created_at, updated_at)
-                VALUES (@id, @name, @extensions, @sortOrder, @createdAt, @updatedAt)";
+                INSERT INTO video_types (id, name, extensions, sort_order, ctime, utime)
+                VALUES (@id, @name, @extensions, @sortOrder, @ctime, @utime)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@extensions", req.Extensions ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@sortOrder", req.SortOrder));
-            cmd.Parameters.Add(new SqliteParameter("@createdAt", now));
-            cmd.Parameters.Add(new SqliteParameter("@updatedAt", now));
+            cmd.Parameters.Add(new SqliteParameter("@ctime", now));
+            cmd.Parameters.Add(new SqliteParameter("@utime", now));
             cmd.ExecuteNonQuery();
 
             return Ok(new { success = true, data = new { id } });
@@ -139,7 +139,7 @@ public class VideoTypeController : ControllerBase
                     name = @name,
                     extensions = @extensions,
                     sort_order = @sortOrder,
-                    updated_at = @updatedAt
+                    utime = @utime
                 WHERE id = @id";
 
             using var cmd = new SqliteCommand(sql, conn);
@@ -147,7 +147,7 @@ public class VideoTypeController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@extensions", req.Extensions ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@sortOrder", req.SortOrder));
-            cmd.Parameters.Add(new SqliteParameter("@updatedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            cmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
 
             if (cmd.ExecuteNonQuery() > 0)
                 return Ok(new { success = true, message = "更新成功" });
@@ -194,8 +194,8 @@ public class VideoTypeController : ControllerBase
             name = reader["name"].ToString(),
             extensions = reader["extensions"].ToString(),
             sortOrder = reader["sort_order"] == DBNull.Value ? 0 : Convert.ToInt32(reader["sort_order"]),
-            createdAt = reader["created_at"]?.ToString(),
-            updatedAt = reader["updated_at"]?.ToString()
+            ctime = reader["ctime"]?.ToString(),
+            utime = reader["utime"]?.ToString()
         };
     }
 }
