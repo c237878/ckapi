@@ -76,7 +76,8 @@ public class VideoController : ControllerBase
             // 获取列表
             var sql = $@"
                 SELECT v.*, s.name as series_name,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) as like_count
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) as like_count,
+                       (SELECT GROUP_CONCAT(a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
@@ -785,6 +786,11 @@ public class VideoController : ControllerBase
         if (withSeriesName)
         {
             result["seriesName"] = reader["series_name"] == DBNull.Value ? null : reader["series_name"].ToString();
+        }
+
+        if (HasColumn(reader, "actor_names") && reader["actor_names"] != DBNull.Value)
+        {
+            result["actorNames"] = reader["actor_names"].ToString();
         }
 
         return result;
