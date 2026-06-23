@@ -77,7 +77,7 @@ public class VideoController : ControllerBase
             var sql = $@"
                 SELECT v.*, s.name as series_name,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) as like_count,
-                       (SELECT GROUP_CONCAT(a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
