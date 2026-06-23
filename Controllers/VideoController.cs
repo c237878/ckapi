@@ -47,7 +47,7 @@ public class VideoController : ControllerBase
 
             if (!string.IsNullOrEmpty(category))
             {
-                whereClause += " AND category = @category";
+                whereClause += " AND v.category = @category";
                 parameters.Add(new SqliteParameter("@category", category));
             }
 
@@ -59,13 +59,13 @@ public class VideoController : ControllerBase
 
             if (!string.IsNullOrEmpty(seriesId))
             {
-                whereClause += " AND seriesid = @seriesId";
+                whereClause += " AND v.seriesid = @seriesId";
                 parameters.Add(new SqliteParameter("@seriesId", seriesId));
             }
 
             if (!string.IsNullOrEmpty(country))
             {
-                whereClause += " AND country = @country";
+                whereClause += " AND v.country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
