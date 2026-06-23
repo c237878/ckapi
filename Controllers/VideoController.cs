@@ -53,7 +53,7 @@ public class VideoController : ControllerBase
 
             if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND (name LIKE @keyword OR code LIKE @keyword)";
+                whereClause += " AND (v.name LIKE @keyword OR v.code LIKE @keyword)";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
@@ -70,7 +70,7 @@ public class VideoController : ControllerBase
             }
 
             // 获取总数
-            var countSql = $"SELECT COUNT(*) FROM videos {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM videos v {whereClause}";
             var total = Convert.ToInt32(ExecuteScalar(countSql, parameters.ToArray()));
 
             // 获取列表
