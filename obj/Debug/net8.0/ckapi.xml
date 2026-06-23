@@ -9,7 +9,7 @@
             演员相关接口
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.ActorController.GetActors(System.Int32,System.Int32,System.String)">
+        <member name="M:ckapi.Controllers.ActorController.GetActors(System.Int32,System.Int32,System.String,System.String)">
             <summary>
             获取演员列表
             </summary>

@@ -39,7 +39,7 @@ public class SeriesController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            var countSql = $"SELECT COUNT(*) FROM video_series {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM video_series s {whereClause}";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"

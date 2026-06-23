@@ -29,7 +29,7 @@ public class ActorController : ControllerBase
     /// 获取演员列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null)
+    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] string? country = null)
     {
         try
         {
@@ -41,6 +41,12 @@ public class ActorController : ControllerBase
             {
                 whereClause += " AND name LIKE @keyword";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
+            }
+
+            if (!string.IsNullOrEmpty(country))
+            {
+                whereClause += " AND country = @country";
+                parameters.Add(new SqliteParameter("@country", country));
             }
 
             using var conn = GetConnection();
