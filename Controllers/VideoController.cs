@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.IO;
 
 namespace ckapi.Controllers;
@@ -1112,26 +1113,43 @@ public class VideoController : ControllerBase
 
 public class AddVideoRequest
 {
+    [JsonPropertyName("code")]
     public string? Code { get; set; }
+    [JsonPropertyName("name")]
     public string Name { get; set; } = "";
+    [JsonPropertyName("category")]
     public string Category { get; set; } = "";
+    [JsonPropertyName("country")]
     public string Country { get; set; } = "";
+    [JsonPropertyName("filePath")]
     public string FilePath { get; set; } = "";
+    [JsonPropertyName("fileSize")]
     public long? FileSize { get; set; }
+    [JsonPropertyName("coverPath")]
     public string? CoverPath { get; set; }
+    [JsonPropertyName("actorIds")]
     public List<string>? ActorIds { get; set; }
+    [JsonPropertyName("seriesId")]
     public string? SeriesId { get; set; }
 }
 
 public class UpdateVideoRequest
 {
+    [JsonPropertyName("code")]
     public string? Code { get; set; }
+    [JsonPropertyName("name")]
     public string Name { get; set; } = "";
+    [JsonPropertyName("category")]
     public string Category { get; set; } = "";
+    [JsonPropertyName("country")]
     public string Country { get; set; } = "";
+    [JsonPropertyName("filePath")]
     public string FilePath { get; set; } = "";
+    [JsonPropertyName("coverPath")]
     public string? CoverPath { get; set; }
+    [JsonPropertyName("actorIds")]
     public List<string>? ActorIds { get; set; }
+    [JsonPropertyName("seriesId")]
     public string? SeriesId { get; set; }
 }
 

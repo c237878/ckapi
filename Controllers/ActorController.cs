@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using System.Text.Json.Serialization;
 
 namespace ckapi.Controllers;
 
@@ -307,18 +308,30 @@ public class ActorController : ControllerBase
 
 public class AddActorRequest
 {
+    [JsonPropertyName("name")]
     public string Name { get; set; } = "";
+    [JsonPropertyName("alias")]
     public string? Alias { get; set; }
+    [JsonPropertyName("country")]
     public string? Country { get; set; }
+    [JsonPropertyName("avatarPath")]
     public string? AvatarPath { get; set; }
+    [JsonPropertyName("bio")]
     public string? Bio { get; set; }
 }
 
 public class UpdateActorRequest
 {
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    [JsonPropertyName("name")]
     public string? Name { get; set; }
+    [JsonPropertyName("alias")]
     public string? Alias { get; set; }
+    [JsonPropertyName("country")]
     public string? Country { get; set; }
+    [JsonPropertyName("avatarPath")]
     public string? AvatarPath { get; set; }
+    [JsonPropertyName("bio")]
     public string? Bio { get; set; }
 }

@@ -389,11 +389,6 @@
             影视系列模型
             </summary>
         </member>
-        <member name="P:ckapi.Models.VideoSeries.Id">
-            <summary>
-            主键ID
-            </summary>
-        </member>
         <member name="P:ckapi.Models.VideoSeries.Name">
             <summary>
             名称
