@@ -1114,9 +1114,10 @@ public class VideoController : ControllerBase
             // 跳过手动添加的占位路径
             if (filePath.StartsWith("manual://")) continue;
 
-            // 检查文件路径是否在某个扫描目录下
+            // 统一转小写比较路径
+            var filePathLower = filePath.ToLowerInvariant();
             var inScanDir = scanDirPaths.Any(scanPath => 
-                filePath.StartsWith(scanPath, StringComparison.OrdinalIgnoreCase));
+                filePathLower.StartsWith(scanPath.ToLowerInvariant()));
 
             if (!inScanDir)
             {
