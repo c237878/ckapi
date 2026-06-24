@@ -116,7 +116,11 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = "SELECT * FROM actors WHERE id = @id";
+            var sql = @"SELECT a.*, 
+                        (SELECT COUNT(*) FROM video_likes vl 
+                         JOIN video_actors va ON vl.video_id = va.video_id 
+                         WHERE va.actor_id = a.id) as like_count
+                        FROM actors a WHERE a.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             using var reader = cmd.ExecuteReader();
@@ -132,7 +136,8 @@ public class ActorController : ControllerBase
                 country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                 avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                addedAt = reader["added_at"]?.ToString()
+                addedAt = reader["added_at"]?.ToString(),
+                likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
             };
 
             return Ok(new { success = true, data = actor });

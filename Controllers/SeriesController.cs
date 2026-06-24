@@ -88,7 +88,9 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM video_series WHERE id = @id";
+            var sql = @"SELECT s.*, 
+                        (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count
+                        FROM video_series s WHERE s.id = @id";
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
             if (dt.Rows.Count == 0)
             {
@@ -104,7 +106,8 @@ public class SeriesController : ControllerBase
                 Link = row["link"]?.ToString(),
                 Country = row["country"]?.ToString(),
                 CTime = row["ctime"]?.ToString(),
-                UTime = row["utime"]?.ToString()
+                UTime = row["utime"]?.ToString(),
+                LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0
             };
 
             return Ok(new { success = true, data = series });
