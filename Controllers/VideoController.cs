@@ -539,8 +539,8 @@ public class VideoController : ControllerBase
                 return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
 
             // 读取扫描目录（含分类属性）
-            var dirs = new List<(string path, string category, bool recursive)>();
-            using (var dirCmd = new SqliteCommand("SELECT path, category, recursive FROM scan_directories", conn))
+            var dirs = new List<(string path, string category, bool recursive, bool autoCreateSeries)>();
+            using (var dirCmd = new SqliteCommand("SELECT path, category, recursive, auto_create_series FROM scan_directories", conn))
             using (var reader = dirCmd.ExecuteReader())
             {
                 while (reader.Read())
@@ -548,7 +548,8 @@ public class VideoController : ControllerBase
                     dirs.Add((
                         reader["path"].ToString()!,
                         reader["category"] == DBNull.Value ? "" : reader["category"].ToString()!,
-                        Convert.ToInt32(reader["recursive"]) == 1));
+                        Convert.ToInt32(reader["recursive"]) == 1,
+                        reader["auto_create_series"] == DBNull.Value ? false : Convert.ToInt32(reader["auto_create_series"]) == 1));
                 }
             }
 
@@ -607,13 +608,18 @@ public class VideoController : ControllerBase
             if (string.IsNullOrEmpty(scanType))
                 return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
 
-            // 读取该目录的分类
+            // 读取该目录的分类和自动创建系列设置
             var category = "";
-            using (var catCmd = new SqliteCommand("SELECT category FROM scan_directories WHERE path = @path", conn))
+            var autoCreateSeries = false;
+            using (var catCmd = new SqliteCommand("SELECT category, auto_create_series FROM scan_directories WHERE path = @path", conn))
             {
                 catCmd.Parameters.Add(new SqliteParameter("@path", req.TargetPath));
-                var catResult = catCmd.ExecuteScalar();
-                category = catResult?.ToString() ?? "";
+                using var reader = catCmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString();
+                    autoCreateSeries = reader["auto_create_series"] != DBNull.Value && Convert.ToInt32(reader["auto_create_series"]) == 1;
+                }
             }
 
             var taskId = 0;
@@ -628,7 +634,7 @@ public class VideoController : ControllerBase
             taskId = Convert.ToInt32(cmd.ExecuteScalar());
 
             // 异步执行扫描
-            _ = Task.Run(() => ScanSingleDirectoryAsync(req.TargetPath, req.Recursive, category, scanType, taskId));
+            _ = Task.Run(() => ScanSingleDirectoryAsync(req.TargetPath, req.Recursive, category, autoCreateSeries, scanType, taskId));
 
             return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
         }
@@ -817,7 +823,7 @@ public class VideoController : ControllerBase
         return cmd.ExecuteScalar();
     }
 
-    private void ScanAllDirectoriesAsync(List<(string path, string category, bool recursive)> dirs, 
+    private void ScanAllDirectoriesAsync(List<(string path, string category, bool recursive, bool autoCreateSeries)> dirs, 
         string scanType, int taskId)
     {
         try
@@ -843,8 +849,8 @@ public class VideoController : ControllerBase
                 cmd.ExecuteNonQuery();
             }
 
-            // 第一遍：收集所有文件路径及对应的目录分类
-            var pathToCategory = new Dictionary<string, string>();
+            // 第一遍：收集所有文件路径及对应的目录信息
+            var pathToInfo = new Dictionary<string, (string category, bool autoCreateSeries)>();
             foreach (var dir in dirs)
             {
                 if (!Directory.Exists(dir.path)) continue;
@@ -862,7 +868,7 @@ public class VideoController : ControllerBase
                         var files = Directory.GetFiles(dir.path, $"*{ext}", enumOpts)
                             .Where(f => !Path.GetFileName(f).StartsWith("._"));
                         foreach (var file in files)
-                            pathToCategory[file] = dir.category;
+                            pathToInfo[file] = (dir.category, dir.autoCreateSeries);
                     }
                     catch (Exception ex)
                     {
@@ -871,16 +877,16 @@ public class VideoController : ControllerBase
                 }
             }
 
-            totalFilesFound = pathToCategory.Count;
+            totalFilesFound = pathToInfo.Count;
 
             // 第二遍：先清空不在扫描目录的旧记录，再插入/更新
-            totalFilesCleared = ClearMissingPaths(conn, pathToCategory.Keys.ToHashSet());
+            totalFilesCleared = ClearMissingPaths(conn, pathToInfo.Keys.ToHashSet());
 
-            foreach (var kvp in pathToCategory)
+            foreach (var kvp in pathToInfo)
             {
                 try
                 {
-                    if (UpsertVideoFromFile(kvp.Key, kvp.Value, conn))
+                    if (UpsertVideoFromFile(kvp.Key, kvp.Value.category, kvp.Value.autoCreateSeries, conn))
                         totalFilesAdded++;
                 }
                 catch (Exception ex)
@@ -911,7 +917,7 @@ public class VideoController : ControllerBase
         }
     }
 
-    private void ScanSingleDirectoryAsync(string targetPath, bool recursive, string category, string scanType, int taskId)
+    private void ScanSingleDirectoryAsync(string targetPath, bool recursive, string category, bool autoCreateSeries, string scanType, int taskId)
     {
         try
         {
@@ -962,7 +968,7 @@ public class VideoController : ControllerBase
 
                 try
                 {
-                    if (UpsertVideoFromFile(filePath, category, conn))
+                    if (UpsertVideoFromFile(filePath, category, autoCreateSeries, conn))
                         filesAdded++;
                 }
                 catch (Exception ex)
@@ -995,7 +1001,7 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 插入或更新视频记录，返回 true 表示新增
     /// </summary>
-    private bool UpsertVideoFromFile(string filePath, string dirCategory, SqliteConnection conn)
+    private bool UpsertVideoFromFile(string filePath, string dirCategory, bool autoCreateSeries, SqliteConnection conn)
     {
         var videoName = ExtractVideoName(filePath);
         var fileInfo = new FileInfo(filePath);
@@ -1006,6 +1012,13 @@ public class VideoController : ControllerBase
         using var checkCmd = new SqliteCommand(checkSql, conn);
         checkCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
         var exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+
+        // 自动创建系列
+        string? seriesId = null;
+        if (autoCreateSeries && !string.IsNullOrEmpty(videoName))
+        {
+            seriesId = GetOrCreateSeries(videoName, conn);
+        }
 
         if (exists)
         {
@@ -1024,8 +1037,8 @@ public class VideoController : ControllerBase
         else
         {
             var id = Guid.NewGuid().ToString("N").ToUpper();
-            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, added_at) 
-                            VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt)";
+            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, seriesid, added_at) 
+                            VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @seriesid, @addedAt)";
             using var insertCmd = new SqliteCommand(insertSql, conn);
             insertCmd.Parameters.Add(new SqliteParameter("@id", id));
             insertCmd.Parameters.Add(new SqliteParameter("@name", videoName));
@@ -1034,10 +1047,42 @@ public class VideoController : ControllerBase
             insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
             insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+            insertCmd.Parameters.Add(new SqliteParameter("@seriesid", seriesId != null ? seriesId : (object)DBNull.Value));
             insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             insertCmd.ExecuteNonQuery();
             return true;
         }
+    }
+
+    /// <summary>
+    /// 获取或创建系列，返回系列ID
+    /// </summary>
+    private string? GetOrCreateSeries(string seriesName, SqliteConnection conn)
+    {
+        // 先查找是否存在
+        var checkSql = "SELECT id FROM video_series WHERE name = @name";
+        using (var checkCmd = new SqliteCommand(checkSql, conn))
+        {
+            checkCmd.Parameters.Add(new SqliteParameter("@name", seriesName));
+            var result = checkCmd.ExecuteScalar();
+            if (result != null && result != DBNull.Value)
+            {
+                return result.ToString();
+            }
+        }
+
+        // 不存在则创建
+        var id = Guid.NewGuid().ToString("N").ToUpper();
+        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var insertSql = "INSERT INTO video_series (id, name, ctime, utime) VALUES (@id, @name, @ctime, @utime)";
+        using var insertCmd = new SqliteCommand(insertSql, conn);
+        insertCmd.Parameters.Add(new SqliteParameter("@id", id));
+        insertCmd.Parameters.Add(new SqliteParameter("@name", seriesName));
+        insertCmd.Parameters.Add(new SqliteParameter("@ctime", now));
+        insertCmd.Parameters.Add(new SqliteParameter("@utime", now));
+        insertCmd.ExecuteNonQuery();
+        
+        return id;
     }
 
     /// <summary>

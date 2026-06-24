@@ -269,9 +269,14 @@
             封面代理
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.UpsertVideoFromFile(System.String,System.String,Microsoft.Data.Sqlite.SqliteConnection)">
+        <member name="M:ckapi.Controllers.VideoController.UpsertVideoFromFile(System.String,System.String,System.Boolean,Microsoft.Data.Sqlite.SqliteConnection)">
             <summary>
             插入或更新视频记录，返回 true 表示新增
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetOrCreateSeries(System.String,Microsoft.Data.Sqlite.SqliteConnection)">
+            <summary>
+            获取或创建系列，返回系列ID
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.ClearMissingPaths(Microsoft.Data.Sqlite.SqliteConnection,System.Collections.Generic.HashSet{System.String})">
