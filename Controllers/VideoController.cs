@@ -1118,7 +1118,16 @@ public class VideoController : ControllerBase
             var inScanDir = scanDirPaths.Any(scanPath => 
                 filePath.StartsWith(scanPath, StringComparison.OrdinalIgnoreCase));
 
-            if (inScanDir && !allFoundPaths.Contains(filePath))
+            if (!inScanDir)
+            {
+                // 文件路径不在任何扫描目录下，清空路径
+                using var clearCmd = new SqliteCommand(
+                    "UPDATE videos SET file_path = '' WHERE id = @id", conn);
+                clearCmd.Parameters.Add(new SqliteParameter("@id", id));
+                clearCmd.ExecuteNonQuery();
+                cleared++;
+            }
+            else if (!allFoundPaths.Contains(filePath))
             {
                 // 文件路径在扫描目录下但文件不存在了，清空路径
                 using var clearCmd = new SqliteCommand(
