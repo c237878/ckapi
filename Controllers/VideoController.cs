@@ -437,6 +437,11 @@ public class VideoController : ControllerBase
             delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
             delRelCmd.ExecuteNonQuery();
 
+            // 删除点赞记录
+            using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn);
+            delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+            delLikesCmd.ExecuteNonQuery();
+
             // 删除视频
             using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn);
             delCmd.Parameters.Add(new SqliteParameter("@id", id));
@@ -480,6 +485,11 @@ public class VideoController : ControllerBase
                     using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn, transaction);
                     delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     delRelCmd.ExecuteNonQuery();
+
+                    // 删除点赞记录
+                    using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn, transaction);
+                    delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
+                    delLikesCmd.ExecuteNonQuery();
 
                     // 删除视频
                     using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn, transaction);
