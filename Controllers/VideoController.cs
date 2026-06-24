@@ -1121,7 +1121,7 @@ public class VideoController : ControllerBase
 
             if (!inScanDir)
             {
-                // 文件路径不在任何扫描目录下，清空路径（设为NULL避免唯一约束冲突）
+                // 文件路径不在任何扫描目录下，清空路径
                 using var clearCmd = new SqliteCommand(
                     "UPDATE videos SET file_path = NULL WHERE id = @id", conn);
                 clearCmd.Parameters.Add(new SqliteParameter("@id", id));

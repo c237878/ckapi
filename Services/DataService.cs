@@ -66,7 +66,7 @@ public class DataService : IDataService
             code        TEXT,
             category    TEXT    NOT NULL,
             country     TEXT,
-            file_path   TEXT    UNIQUE NOT NULL,
+            file_path   TEXT    UNIQUE,
             file_size   INTEGER,
             cover_path  TEXT,
             added_at    TEXT    NOT NULL,
