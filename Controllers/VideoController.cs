@@ -37,8 +37,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? category = null,
         [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
-        [FromQuery] string? seriesId = null,
-        [FromQuery] bool? hasFile = null)
+        [FromQuery] string? seriesId = null)
     {
         try
         {
@@ -70,18 +69,8 @@ public class VideoController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            // 过滤有/无文件的影片
-            if (hasFile.HasValue)
-            {
-                if (hasFile.Value)
-                {
-                    whereClause += " AND v.file_size > 0";
-                }
-                else
-                {
-                    whereClause += " AND (v.file_size IS NULL OR v.file_size <= 0)";
-                }
-            }
+            // 默认只显示有文件的影片（file_size > 0）
+            whereClause += " AND v.file_size > 0";
 
             // 获取总数
             var countSql = $"SELECT COUNT(*) FROM videos v {whereClause}";
