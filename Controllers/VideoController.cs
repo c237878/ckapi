@@ -81,7 +81,7 @@ public class VideoController : ControllerBase
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
-                ORDER BY v.added_at DESC
+                ORDER BY v.ctime DESC
                 LIMIT @pageSize OFFSET @offset";
             
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
@@ -307,7 +307,7 @@ public class VideoController : ControllerBase
         {
             var id = Guid.NewGuid().ToString("N").ToUpper();
             var sql = @"
-                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, added_at, seriesid)
+                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid)
                 VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId)";
             
             using var conn = GetConnection();
@@ -790,7 +790,7 @@ public class VideoController : ControllerBase
             ["filePath"] = reader["file_path"].ToString(),
             ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
             ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-            ["addedAt"] = reader["added_at"].ToString(),
+            ["addedAt"] = reader["ctime"].ToString(),
             ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString()
         };
 
@@ -1047,7 +1047,7 @@ public class VideoController : ControllerBase
         else
         {
             var id = Guid.NewGuid().ToString("N").ToUpper();
-            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, seriesid, added_at) 
+            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, seriesid, ctime) 
                             VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @seriesid, @addedAt)";
             using var insertCmd = new SqliteCommand(insertSql, conn);
             insertCmd.Parameters.Add(new SqliteParameter("@id", id));
