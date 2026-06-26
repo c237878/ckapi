@@ -69,7 +69,7 @@ public class DataService : IDataService
             file_path   TEXT    UNIQUE,
             file_size   INTEGER,
             cover_path  TEXT,
-            added_at    TEXT    NOT NULL,
+            ctime       TEXT,
             seriesid    TEXT
         ";
 
@@ -283,7 +283,7 @@ public class DataService : IDataService
             country     TEXT,
             avatar_path TEXT,
             bio         TEXT,
-            added_at    TEXT    NOT NULL
+            ctime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))

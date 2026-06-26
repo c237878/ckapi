@@ -91,7 +91,7 @@ public class ActorController : ControllerBase
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
                         likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-                        addedAt = reader["added_at"]?.ToString()
+                        addedAt = reader["ctime"]?.ToString()
                     });
                 }
 
@@ -136,7 +136,7 @@ public class ActorController : ControllerBase
                 country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                 avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                addedAt = reader["added_at"]?.ToString(),
+                addedAt = reader["ctime"]?.ToString(),
                 likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
             };
 
@@ -174,7 +174,7 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, alias, country, avatar_path, bio, added_at) VALUES (@id, @name, @alias, @country, @avatarPath, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, alias, country, avatar_path, bio, ctime) VALUES (@id, @name, @alias, @country, @avatarPath, @bio, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
@@ -283,7 +283,7 @@ public class ActorController : ControllerBase
                     SELECT v.* FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
                     WHERE va.actor_id = @actorId
-                    ORDER BY v.added_at DESC
+                    ORDER BY v.ctime DESC
                     LIMIT @pageSize OFFSET @offset";
                 using var cmd = new SqliteCommand(sql, conn);
                 cmd.Parameters.Add(new SqliteParameter("@actorId", id));
@@ -302,7 +302,7 @@ public class ActorController : ControllerBase
                         filePath = reader["file_path"]?.ToString(),
                         fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
                         coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                        addedAt = reader["added_at"]?.ToString()
+                        addedAt = reader["ctime"]?.ToString()
                     });
                 }
 
