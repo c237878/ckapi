@@ -204,7 +204,7 @@
             影片控制器
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String,System.String,System.String)">
+        <member name="M:ckapi.Controllers.VideoController.GetList(System.Int32,System.Int32,System.String,System.String,System.String,System.String,System.Nullable{System.Boolean})">
             <summary>
             获取视频列表
             </summary>
@@ -232,6 +232,11 @@
         <member name="M:ckapi.Controllers.VideoController.UpdateVideo(System.String,ckapi.Controllers.UpdateVideoRequest)">
             <summary>
             更新视频
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.ResetFileSize(System.String)">
+            <summary>
+            重置视频文件大小
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.DeleteVideo(System.String)">

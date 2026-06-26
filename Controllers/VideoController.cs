@@ -37,7 +37,8 @@ public class VideoController : ControllerBase
         [FromQuery] string? category = null,
         [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
-        [FromQuery] string? seriesId = null)
+        [FromQuery] string? seriesId = null,
+        [FromQuery] bool? hasFile = null)
     {
         try
         {
@@ -67,6 +68,19 @@ public class VideoController : ControllerBase
             {
                 whereClause += " AND v.country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
+            }
+
+            // 过滤有/无文件的影片
+            if (hasFile.HasValue)
+            {
+                if (hasFile.Value)
+                {
+                    whereClause += " AND v.file_size > 0";
+                }
+                else
+                {
+                    whereClause += " AND (v.file_size IS NULL OR v.file_size <= 0)";
+                }
             }
 
             // 获取总数
@@ -417,6 +431,48 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateVideo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 重置视频文件大小
+    /// </summary>
+    [HttpPost("{id}/reset-file-size")]
+    public IActionResult ResetFileSize(string id)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 获取视频信息
+            using var getCmd = new SqliteCommand("SELECT file_path FROM videos WHERE id = @id", conn);
+            getCmd.Parameters.Add(new SqliteParameter("@id", id));
+            var filePath = getCmd.ExecuteScalar() as string;
+
+            if (string.IsNullOrEmpty(filePath))
+                return NotFound(new { success = false, message = "视频不存在或文件路径为空" });
+
+            // 检查文件是否存在
+            if (!System.IO.File.Exists(filePath))
+                return BadRequest(new { success = false, message = "文件不存在: " + filePath });
+
+            // 获取文件大小
+            var fileInfo = new System.IO.FileInfo(filePath);
+            var fileSize = fileInfo.Length;
+
+            // 更新数据库
+            using var updateCmd = new SqliteCommand("UPDATE videos SET file_size = @fileSize WHERE id = @id", conn);
+            updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileSize));
+            updateCmd.Parameters.Add(new SqliteParameter("@id", id));
+            updateCmd.ExecuteNonQuery();
+
+            return Ok(new { success = true, data = new { fileSize } });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ResetFileSize failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
