@@ -485,28 +485,75 @@ public class VideoController : ControllerBase
     {
         try
         {
-            using var conn = GetConnection();
-            conn.Open();
+            // 先查询记录，获取文件路径
+            string? filePath = null;
+            string? coverPath = null;
+            using (var conn = GetConnection())
+            {
+                conn.Open();
+                using var queryCmd = new SqliteCommand("SELECT file_path, cover_path FROM videos WHERE id = @id", conn);
+                queryCmd.Parameters.Add(new SqliteParameter("@id", id));
+                using var reader = queryCmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    filePath = reader["file_path"]?.ToString();
+                    coverPath = reader["cover_path"]?.ToString();
+                }
+            }
+
+            using var conn2 = GetConnection();
+            conn2.Open();
 
             // 删除演员关联
-            using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn);
+            using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn2);
             delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
             delRelCmd.ExecuteNonQuery();
 
             // 删除点赞记录
-            using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn);
+            using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2);
             delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
             delLikesCmd.ExecuteNonQuery();
 
             // 删除视频
-            using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn);
+            using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn2);
             delCmd.Parameters.Add(new SqliteParameter("@id", id));
             var rows = delCmd.ExecuteNonQuery();
 
             if (rows == 0)
                 return NotFound(new { success = false, message = "视频不存在" });
 
-            return Ok(new { success = true, message = "删除成功" });
+            // 删除文件（数据库操作成功后再删除）
+            var deletedFiles = new List<string>();
+            if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+            {
+                try
+                {
+                    System.IO.File.Delete(filePath);
+                    deletedFiles.Add(filePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "删除视频文件失败: {FilePath}", filePath);
+                }
+            }
+            if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
+            {
+                try
+                {
+                    System.IO.File.Delete(coverPath);
+                    deletedFiles.Add(coverPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "删除封面文件失败: {CoverPath}", coverPath);
+                }
+            }
+
+            return Ok(new { 
+                success = true, 
+                message = "删除成功",
+                deletedFiles = deletedFiles
+            });
         }
         catch (Exception ex)
         {
@@ -526,10 +573,28 @@ public class VideoController : ControllerBase
             if (req.Ids == null || req.Ids.Count == 0)
                 return BadRequest(new { success = false, message = "ids 不能为空" });
 
-            using var conn = GetConnection();
-            conn.Open();
+            // 先查询所有要删除的记录的文件路径
+            var filesToDelete = new List<(string id, string? filePath, string? coverPath)>();
+            using (var conn = GetConnection())
+            {
+                conn.Open();
+                var ids = string.Join(",", req.Ids.Select(id => $"'{id}'"));
+                using var queryCmd = new SqliteCommand($"SELECT id, file_path, cover_path FROM videos WHERE id IN ({ids})", conn);
+                using var reader = queryCmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    filesToDelete.Add((
+                        reader["id"].ToString()!,
+                        reader["file_path"]?.ToString(),
+                        reader["cover_path"]?.ToString()
+                    ));
+                }
+            }
 
-            using var transaction = conn.BeginTransaction();
+            using var conn2 = GetConnection();
+            conn2.Open();
+
+            using var transaction = conn2.BeginTransaction();
             var deleted = 0;
             var failed = 0;
 
@@ -538,17 +603,17 @@ public class VideoController : ControllerBase
                 try
                 {
                     // 删除演员关联
-                    using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn, transaction);
+                    using var delRelCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn2, transaction);
                     delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     delRelCmd.ExecuteNonQuery();
 
                     // 删除点赞记录
-                    using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn, transaction);
+                    using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2, transaction);
                     delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     delLikesCmd.ExecuteNonQuery();
 
                     // 删除视频
-                    using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn, transaction);
+                    using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn2, transaction);
                     delCmd.Parameters.Add(new SqliteParameter("@id", id));
                     var rows = delCmd.ExecuteNonQuery();
 
@@ -565,13 +630,44 @@ public class VideoController : ControllerBase
 
             transaction.Commit();
 
+            // 删除文件（数据库操作成功后再删除）
+            var deletedFiles = new List<string>();
+            foreach (var (id, filePath, coverPath) in filesToDelete)
+            {
+                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                {
+                    try
+                    {
+                        System.IO.File.Delete(filePath);
+                        deletedFiles.Add(filePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除视频文件失败: {FilePath}", filePath);
+                    }
+                }
+                if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
+                {
+                    try
+                    {
+                        System.IO.File.Delete(coverPath);
+                        deletedFiles.Add(coverPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除封面文件失败: {CoverPath}", coverPath);
+                    }
+                }
+            }
+
             return Ok(new
             {
                 success = true,
                 data = new
                 {
                     deleted = deleted,
-                    failed = failed
+                    failed = failed,
+                    deletedFiles = deletedFiles
                 }
             });
         }
