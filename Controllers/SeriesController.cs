@@ -14,11 +14,18 @@ public class SeriesController : ControllerBase
 {
     private readonly ILogger<SeriesController> _logger;
     private readonly SQLiteHelper _db;
+    private readonly IConfiguration _config;
 
-    public SeriesController(ILogger<SeriesController> logger, SQLiteHelper db)
+    public SeriesController(ILogger<SeriesController> logger, SQLiteHelper db, IConfiguration config)
     {
         _logger = logger;
         _db = db;
+        _config = config;
+    }
+
+    private SqliteConnection GetConnection()
+    {
+        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
     /// <summary>
@@ -134,50 +141,54 @@ public class SeriesController : ControllerBase
         try
         {
             var offset = (page - 1) * pageSize;
+            using var conn = GetConnection();
+            conn.Open();
 
             var countSql = "SELECT COUNT(*) FROM videos WHERE seriesid = @seriesid";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@seriesid", id)));
-
-            var sql = @"
-                SELECT v.*, 
-                    (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
-                    (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
-                     INNER JOIN video_actors va ON a.id = va.actor_id 
-                     WHERE va.video_id = v.id) as actor_names
-                FROM videos v 
-                WHERE v.seriesid = @seriesid
-                ORDER BY v.ctime DESC
-                LIMIT @pageSize OFFSET @offset";
-            var dt = _db.ExecuteDataTable(sql,
-                new SqliteParameter("@seriesid", id),
-                new SqliteParameter("@pageSize", pageSize),
-                new SqliteParameter("@offset", offset));
-
-            var videos = new List<object>();
-            foreach (System.Data.DataRow row in dt.Rows)
+            using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                var videoId = row["id"]?.ToString();
-                var likeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0;
-                var actorNames = row["actor_names"]?.ToString();
+                countCmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                videos.Add(new
+                var sql = @"
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
+                        (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
+                         INNER JOIN video_actors va ON a.id = va.actor_id 
+                         WHERE va.video_id = v.id) as actor_names
+                    FROM videos v 
+                    WHERE v.seriesid = @seriesid
+                    ORDER BY v.ctime DESC
+                    LIMIT @pageSize OFFSET @offset";
+
+                using var cmd = new SqliteCommand(sql, conn);
+                cmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
+                cmd.Parameters.Add(new SqliteParameter("@offset", offset));
+
+                using var reader = cmd.ExecuteReader();
+                var videos = new List<object>();
+                while (reader.Read())
                 {
-                    Id = videoId,
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Category = row["category"]?.ToString(),
-                    Country = row["country"] == DBNull.Value ? "" : row["country"].ToString(),
-                    CoverPath = row["cover_path"] == DBNull.Value ? null : row["cover_path"].ToString(),
-                    FilePath = row["file_path"]?.ToString(),
-                    FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
-                    SeriesId = row["seriesid"]?.ToString(),
-                    Ctime = row["ctime"]?.ToString(),
-                    LikeCount = likeCount,
-                    ActorNames = actorNames
-                });
-            }
+                    videos.Add(new
+                    {
+                        Id = reader["id"].ToString(),
+                        Code = reader["code"]?.ToString(),
+                        Name = reader["name"].ToString(),
+                        Category = reader["category"]?.ToString(),
+                        Country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
+                        CoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                        FilePath = reader["file_path"]?.ToString(),
+                        FileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                        SeriesId = reader["seriesid"]?.ToString(),
+                        Ctime = reader["ctime"]?.ToString(),
+                        LikeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
+                        ActorNames = reader["actor_names"]?.ToString()
+                    });
+                }
 
-            return Ok(new { success = true, data = videos, total, page, pageSize });
+                return Ok(new { success = true, data = videos, total, page, pageSize });
+            }
         }
         catch (Exception ex)
         {

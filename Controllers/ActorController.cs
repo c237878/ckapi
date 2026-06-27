@@ -280,7 +280,7 @@ public class ActorController : ControllerBase
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
                 var sql = @"
-                    SELECT v.*, 
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
                         s.name as series_name,
                         (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
