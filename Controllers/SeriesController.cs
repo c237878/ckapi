@@ -134,7 +134,10 @@ public class SeriesController : ControllerBase
 
             var sql = @"
                 SELECT v.*, 
-                    (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
+                    (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
+                    (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
+                     INNER JOIN video_actors va ON a.id = va.actor_id 
+                     WHERE va.video_id = v.id) as actor_names
                 FROM videos v 
                 WHERE v.seriesid = @seriesid
                 ORDER BY v.ctime DESC
@@ -149,20 +152,7 @@ public class SeriesController : ControllerBase
             {
                 var videoId = row["id"]?.ToString();
                 var likeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0;
-
-                var actorSql = @"SELECT a.id, a.name, a.alias, a.country FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
-                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", videoId));
-                var actors = new List<object>();
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
-                {
-                    actors.Add(new
-                    {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Alias = actorRow["alias"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
-                    });
-                }
+                var actorNames = row["actor_names"]?.ToString();
 
                 videos.Add(new
                 {
@@ -177,7 +167,7 @@ public class SeriesController : ControllerBase
                     SeriesId = row["seriesid"]?.ToString(),
                     Ctime = row["ctime"]?.ToString(),
                     LikeCount = likeCount,
-                    Actors = actors
+                    ActorNames = actorNames
                 });
             }
 

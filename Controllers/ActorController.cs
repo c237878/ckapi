@@ -282,7 +282,10 @@ public class ActorController : ControllerBase
                 var sql = @"
                     SELECT v.*, 
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
-                        s.name as series_name
+                        s.name as series_name,
+                        (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
+                         INNER JOIN video_actors va ON a.id = va.actor_id 
+                         WHERE va.video_id = v.id) as actor_names
                     FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
                     LEFT JOIN video_series s ON v.seriesid = s.id
@@ -311,6 +314,7 @@ public class ActorController : ControllerBase
                         seriesId = reader["seriesid"]?.ToString(),
                         seriesName = reader["series_name"]?.ToString(),
                         likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
+                        actorNames = reader["actor_names"]?.ToString(),
                         addedAt = reader["ctime"]?.ToString()
                     });
                 }
