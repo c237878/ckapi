@@ -135,7 +135,7 @@ public class SeriesController : ControllerBase
             var sql = @"
                 SELECT * FROM videos 
                 WHERE seriesid = @seriesid
-                ORDER BY added_at DESC
+                ORDER BY ctime DESC
                 LIMIT @pageSize OFFSET @offset";
             var dt = _db.ExecuteDataTable(sql,
                 new SqliteParameter("@seriesid", id),
@@ -172,7 +172,7 @@ public class SeriesController : ControllerBase
                     FilePath = row["file_path"]?.ToString(),
                     FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
                     SeriesId = row["seriesid"]?.ToString(),
-                    AddedAt = row["added_at"]?.ToString(),
+                    Ctime = row["ctime"]?.ToString(),
                     Actors = actors
                 });
             }
