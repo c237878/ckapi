@@ -133,9 +133,11 @@ public class SeriesController : ControllerBase
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@seriesid", id)));
 
             var sql = @"
-                SELECT * FROM videos 
-                WHERE seriesid = @seriesid
-                ORDER BY ctime DESC
+                SELECT v.*, 
+                    (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
+                FROM videos v 
+                WHERE v.seriesid = @seriesid
+                ORDER BY v.ctime DESC
                 LIMIT @pageSize OFFSET @offset";
             var dt = _db.ExecuteDataTable(sql,
                 new SqliteParameter("@seriesid", id),
@@ -146,8 +148,9 @@ public class SeriesController : ControllerBase
             foreach (System.Data.DataRow row in dt.Rows)
             {
                 var videoId = row["id"]?.ToString();
+                var likeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0;
 
-                var actorSql = @"SELECT a.* FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
+                var actorSql = @"SELECT a.id, a.name, a.alias, a.country FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
                 var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", videoId));
                 var actors = new List<object>();
                 foreach (System.Data.DataRow actorRow in actorDt.Rows)
@@ -173,6 +176,7 @@ public class SeriesController : ControllerBase
                     FileSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
                     SeriesId = row["seriesid"]?.ToString(),
                     Ctime = row["ctime"]?.ToString(),
+                    LikeCount = likeCount,
                     Actors = actors
                 });
             }

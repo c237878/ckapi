@@ -280,8 +280,12 @@ public class ActorController : ControllerBase
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
                 var sql = @"
-                    SELECT v.* FROM videos v
+                    SELECT v.*, 
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
+                        s.name as series_name
+                    FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
+                    LEFT JOIN video_series s ON v.seriesid = s.id
                     WHERE va.actor_id = @actorId
                     ORDER BY v.ctime DESC
                     LIMIT @pageSize OFFSET @offset";
@@ -297,11 +301,16 @@ public class ActorController : ControllerBase
                     videos.Add(new
                     {
                         id = reader["id"].ToString(),
+                        code = reader["code"]?.ToString(),
                         name = reader["name"].ToString(),
                         category = reader["category"]?.ToString(),
+                        country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
                         filePath = reader["file_path"]?.ToString(),
                         fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
                         coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                        seriesId = reader["seriesid"]?.ToString(),
+                        seriesName = reader["series_name"]?.ToString(),
+                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
                         addedAt = reader["ctime"]?.ToString()
                     });
                 }
