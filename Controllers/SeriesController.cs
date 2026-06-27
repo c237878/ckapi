@@ -25,7 +25,7 @@ public class SeriesController : ControllerBase
     /// 获取系列列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null)
+    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? keyword = null)
     {
         try
         {
@@ -37,6 +37,12 @@ public class SeriesController : ControllerBase
             {
                 whereClause += " AND country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
+            }
+
+            if (!string.IsNullOrEmpty(keyword))
+            {
+                whereClause += " AND (name LIKE @keyword OR alias LIKE @keyword)";
+                parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
             var countSql = $"SELECT COUNT(*) FROM video_series s {whereClause}";

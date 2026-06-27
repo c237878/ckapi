@@ -104,7 +104,7 @@
             影视系列相关接口
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.SeriesController.GetSeriesList(System.Int32,System.Int32,System.String)">
+        <member name="M:ckapi.Controllers.SeriesController.GetSeriesList(System.Int32,System.Int32,System.String,System.String)">
             <summary>
             获取系列列表
             </summary>
