@@ -37,7 +37,8 @@ public class VideoController : ControllerBase
         [FromQuery] string? category = null,
         [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
-        [FromQuery] string? seriesId = null)
+        [FromQuery] string? seriesId = null,
+        [FromQuery] bool? hasFile = null)
     {
         try
         {
@@ -69,8 +70,18 @@ public class VideoController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            // 默认只显示有文件的影片（file_size > 0）
-            whereClause += " AND v.file_size > 0";
+            // 根据 hasFile 参数过滤
+            if (hasFile.HasValue)
+            {
+                if (hasFile.Value)
+                {
+                    whereClause += " AND v.file_size > 0";
+                }
+                else
+                {
+                    whereClause += " AND (v.file_size IS NULL OR v.file_size <= 0)";
+                }
+            }
 
             // 获取总数
             var countSql = $"SELECT COUNT(*) FROM videos v {whereClause}";
@@ -1060,38 +1071,51 @@ public class VideoController : ControllerBase
     {
         var videoName = ExtractVideoName(filePath);
         var fileInfo = new FileInfo(filePath);
-        var coverPath = Path.ChangeExtension(filePath, ".jpg");
-        var coverExists = System.IO.File.Exists(coverPath);
-
-        var checkSql = "SELECT COUNT(*) FROM videos WHERE file_path = @filePath";
-        using var checkCmd = new SqliteCommand(checkSql, conn);
-        checkCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-        var exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
-
-        // 自动创建系列
-        string? seriesId = null;
-        if (autoCreateSeries && !string.IsNullOrEmpty(videoName))
+        
+        // 查询是否存在 name 或 code 与文件名一致的记录
+        var checkSql = @"SELECT id FROM videos WHERE name = @videoName OR code = @videoName";
+        string? existingId = null;
+        using (var checkCmd = new SqliteCommand(checkSql, conn))
         {
-            seriesId = GetOrCreateSeries(videoName, conn);
+            checkCmd.Parameters.Add(new SqliteParameter("@videoName", videoName));
+            var result = checkCmd.ExecuteScalar();
+            if (result != null && result != DBNull.Value)
+            {
+                existingId = result.ToString();
+            }
         }
-
-        if (exists)
+        
+        // 计算 cover_path
+        var coverPath = FindCoverPath(filePath, videoName);
+        
+        if (existingId != null)
         {
-            // 已存在只更新文件大小和封面
+            // 已存在记录，更新 file_path、file_size、cover_path
             var updateSql = @"UPDATE videos SET 
+                file_path = @filePath, 
                 file_size = @fileSize, 
-                cover_path = @coverPath
-                WHERE file_path = @filePath";
+                cover_path = COALESCE(@coverPath, cover_path)
+                WHERE id = @id";
             using var updateCmd = new SqliteCommand(updateSql, conn);
-            updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-            updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
             updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+            updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
+            updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath != null ? coverPath : (object)DBNull.Value));
+            updateCmd.Parameters.Add(new SqliteParameter("@id", existingId));
             updateCmd.ExecuteNonQuery();
-            return false;
+            return false; // 更新而非新增
         }
         else
         {
+            // 不存在记录，新增
             var id = Guid.NewGuid().ToString("N").ToUpper();
+            
+            // 自动创建系列
+            string? seriesId = null;
+            if (autoCreateSeries && !string.IsNullOrEmpty(videoName))
+            {
+                seriesId = GetOrCreateSeries(videoName, conn);
+            }
+            
             var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, seriesid, ctime) 
                             VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @seriesid, @addedAt)";
             using var insertCmd = new SqliteCommand(insertSql, conn);
@@ -1101,11 +1125,11 @@ public class VideoController : ControllerBase
             insertCmd.Parameters.Add(new SqliteParameter("@country", ""));
             insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-            insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverExists ? coverPath : (object)DBNull.Value));
+            insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath != null ? coverPath : (object)DBNull.Value));
             insertCmd.Parameters.Add(new SqliteParameter("@seriesid", seriesId != null ? seriesId : (object)DBNull.Value));
             insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             insertCmd.ExecuteNonQuery();
-            return true;
+            return true; // 新增成功
         }
     }
 
@@ -1138,6 +1162,45 @@ public class VideoController : ControllerBase
         insertCmd.ExecuteNonQuery();
         
         return id;
+    }
+
+    /// <summary>
+    /// 查找封面路径
+    /// 优先级：1. 同目录下同名.jpg  2. 磁盘根目录/cover/{filename}.jpg
+    /// </summary>
+    private string? FindCoverPath(string filePath, string videoName)
+    {
+        // 1. 同目录下同名.jpg
+        var sameDirCover = Path.ChangeExtension(filePath, ".jpg");
+        if (System.IO.File.Exists(sameDirCover))
+        {
+            return sameDirCover;
+        }
+        
+        // 2. 磁盘根目录/cover/{filename}.jpg
+        try
+        {
+            var directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                var root = Directory.GetDirectoryRoot(directory);
+                var coverDir = Path.Combine(root, "cover");
+                if (Directory.Exists(coverDir))
+                {
+                    var coverFile = Path.Combine(coverDir, videoName + ".jpg");
+                    if (System.IO.File.Exists(coverFile))
+                    {
+                        return coverFile;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 忽略路径解析错误
+        }
+        
+        return null;
     }
 
     /// <summary>
@@ -1178,7 +1241,7 @@ public class VideoController : ControllerBase
             {
                 // 文件路径不在任何扫描目录下，清空路径
                 using var clearCmd = new SqliteCommand(
-                    "UPDATE videos SET file_path = NULL WHERE id = @id", conn);
+                    "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
                 clearCmd.Parameters.Add(new SqliteParameter("@id", id));
                 clearCmd.ExecuteNonQuery();
                 cleared++;
@@ -1187,7 +1250,7 @@ public class VideoController : ControllerBase
             {
                 // 文件路径在扫描目录下但文件不存在了，清空路径
                 using var clearCmd = new SqliteCommand(
-                    "UPDATE videos SET file_path = NULL WHERE id = @id", conn);
+                    "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
                 clearCmd.Parameters.Add(new SqliteParameter("@id", id));
                 clearCmd.ExecuteNonQuery();
                 cleared++;
