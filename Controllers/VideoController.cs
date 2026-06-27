@@ -1091,15 +1091,23 @@ public class VideoController : ControllerBase
         if (existingId != null)
         {
             // 已存在记录，更新 file_path、file_size、cover_path
-            var updateSql = @"UPDATE videos SET 
-                file_path = @filePath, 
-                file_size = @fileSize, 
-                cover_path = COALESCE(@coverPath, cover_path)
-                WHERE id = @id";
+            var updateSql = coverPath != null 
+                ? @"UPDATE videos SET 
+                    file_path = @filePath, 
+                    file_size = @fileSize, 
+                    cover_path = @coverPath
+                    WHERE id = @id"
+                : @"UPDATE videos SET 
+                    file_path = @filePath, 
+                    file_size = @fileSize
+                    WHERE id = @id";
             using var updateCmd = new SqliteCommand(updateSql, conn);
             updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
             updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-            updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath != null ? coverPath : (object)DBNull.Value));
+            if (coverPath != null)
+            {
+                updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath));
+            }
             updateCmd.Parameters.Add(new SqliteParameter("@id", existingId));
             updateCmd.ExecuteNonQuery();
             return false; // 更新而非新增
@@ -1178,13 +1186,28 @@ public class VideoController : ControllerBase
         }
         
         // 2. 磁盘根目录/cover/{filename}.jpg
+        // macOS: /Volumes/diskname/... → 提取 /Volumes/diskname
         try
         {
-            var directory = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directory))
+            string? mountPoint = null;
+            if (filePath.StartsWith("/Volumes/"))
             {
-                var root = Directory.GetDirectoryRoot(directory);
-                var coverDir = Path.Combine(root, "cover");
+                // 提取 /Volumes/xxx
+                var parts = filePath.Split('/');
+                if (parts.Length >= 3)
+                {
+                    mountPoint = "/" + parts[1] + "/" + parts[2]; // /Volumes/diskname
+                }
+            }
+            else
+            {
+                // 非 /Volumes 路径，使用文件系统根目录
+                mountPoint = Directory.GetDirectoryRoot(filePath);
+            }
+            
+            if (!string.IsNullOrEmpty(mountPoint))
+            {
+                var coverDir = Path.Combine(mountPoint, "cover");
                 if (Directory.Exists(coverDir))
                 {
                     var coverFile = Path.Combine(coverDir, videoName + ".jpg");
