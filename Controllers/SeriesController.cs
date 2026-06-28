@@ -47,7 +47,7 @@ public class SeriesController : ControllerBase
                 "name" => "s.name ASC",
                 "likecount" => "like_count DESC",
                 "videocount" => "video_count DESC",
-                _ => "s.ctime DESC"
+                _ => "like_count DESC"
             };
 
             if (!string.IsNullOrEmpty(country))

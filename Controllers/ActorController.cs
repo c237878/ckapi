@@ -44,7 +44,7 @@ public class ActorController : ControllerBase
                 "name" => "a.name ASC",
                 "likecount" => "like_count DESC",
                 "videocount" => "video_count DESC",
-                _ => "a.ctime DESC"
+                _ => "like_count DESC"
             };
 
             if (!string.IsNullOrEmpty(keyword))
