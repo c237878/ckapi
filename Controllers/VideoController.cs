@@ -619,7 +619,8 @@ public class VideoController : ControllerBase
                 videoName = reader["name"]?.ToString();
                 videoCode = reader["code"]?.ToString();
                 videoCategory = reader["category"]?.ToString();
-                currentFilePath = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
+                var rawFp = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
+                currentFilePath = rawFp?.StartsWith("manual://") == true ? null : rawFp;
                 currentCoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"]?.ToString();
             }
 
@@ -661,11 +662,11 @@ public class VideoController : ControllerBase
                 }
                 else
                 {
-                    messages.Add($"文件路径存在但文件不存在: {currentFilePath}");
+                    messages.Add("文件路径存在但文件不存在: " + currentFilePath?.Replace("manual://", "") ?? "(空)");
                     // 尝试找回
                     var found = TryFindVideoFile(conn, id, videoName, videoCode, scanDirs, extensions, ref newFilePath, ref newFileSize);
                     if (found) messages.Add("已在扫描目录中找到并更新文件路径");
-                    else { messages.Add("在扫描目录中未找到匹配文件"); newFilePath = currentFilePath; }
+                    else messages.Add("在扫描目录中未找到匹配文件");
                 }
             }
             else
@@ -674,7 +675,7 @@ public class VideoController : ControllerBase
                 messages.Add("未配置文件路径，开始搜索同分类目录...");
                 var found = TryFindVideoFile(conn, id, videoName, videoCode, scanDirs, extensions, ref newFilePath, ref newFileSize);
                 if (found) messages.Add("在扫描目录中找到匹配文件");
-                else { messages.Add("在扫描目录中未找到匹配文件"); newFilePath = currentFilePath; }
+                else messages.Add("在扫描目录中未找到匹配文件");
             }
 
             // ===== 2. 处理 cover_path =====
