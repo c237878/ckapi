@@ -32,13 +32,23 @@ public class SeriesController : ControllerBase
     /// 获取系列列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? keyword = null)
+    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? keyword = null,
+        [FromQuery] string? sortBy = null)
     {
         try
         {
             var offset = (page - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
+
+            // 排序
+            var orderBy = sortBy?.ToLower() switch
+            {
+                "name" => "s.name ASC",
+                "likecount" => "like_count DESC",
+                "videocount" => "video_count DESC",
+                _ => "s.ctime DESC"
+            };
 
             if (!string.IsNullOrEmpty(country))
             {
@@ -61,7 +71,7 @@ public class SeriesController : ControllerBase
                        (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count
                 FROM video_series s
                 {whereClause}
-                ORDER BY s.name ASC
+                ORDER BY " + orderBy + @"
                 LIMIT @pageSize OFFSET @offset";
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));

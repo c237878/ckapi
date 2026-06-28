@@ -29,13 +29,23 @@ public class ActorController : ControllerBase
     /// 获取演员列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] string? country = null)
+    public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] string? country = null,
+        [FromQuery] string? sortBy = null)
     {
         try
         {
             var offset = (page - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
+
+            // 排序
+            var orderBy = sortBy?.ToLower() switch
+            {
+                "name" => "a.name ASC",
+                "likecount" => "like_count DESC",
+                "videocount" => "video_count DESC",
+                _ => "a.ctime DESC"
+            };
 
             if (!string.IsNullOrEmpty(keyword))
             {
@@ -69,7 +79,7 @@ public class ActorController : ControllerBase
                          WHERE va2.actor_id = a.id) as like_count
                     FROM actors a
                     {whereClause}
-                    ORDER BY a.name ASC
+                    ORDER BY " + orderBy + @"
                     LIMIT @pageSize OFFSET @offset";
 
                 using var cmd = new SqliteCommand(sql, conn);

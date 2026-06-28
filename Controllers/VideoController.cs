@@ -38,13 +38,23 @@ public class VideoController : ControllerBase
         [FromQuery] string? country = null,
         [FromQuery] string? keyword = null,
         [FromQuery] string? seriesId = null,
-        [FromQuery] bool? hasFile = null)
+        [FromQuery] bool? hasFile = null,
+        [FromQuery] string? sortBy = null)
     {
         try
         {
             var offset = (pageIndex - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
+
+            // 排序
+            var orderBy = sortBy?.ToLower() switch
+            {
+                "code" => "v.code ASC",
+                "name" => "v.name ASC",
+                "likecount" => "like_count DESC",
+                _ => "v.ctime DESC"
+            };
 
             if (!string.IsNullOrEmpty(category))
             {
@@ -95,7 +105,7 @@ public class VideoController : ControllerBase
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
-                ORDER BY v.ctime DESC
+                ORDER BY " + orderBy + @"
                 LIMIT @pageSize OFFSET @offset";
             
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
