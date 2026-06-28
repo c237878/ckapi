@@ -300,6 +300,11 @@
             清空不在扫描目录中的视频路径，返回清除数量
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.GetLikeStats(System.Nullable{System.Int32},System.Nullable{System.Int32})">
+            <summary>
+            获取点赞日历统计
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.VideoTypeController">
             <summary>
             视频类型管理控制器

@@ -1550,6 +1550,88 @@ public class VideoController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 获取点赞日历统计
+    /// </summary>
+    [HttpGet("likes/stats")]
+    public IActionResult GetLikeStats([FromQuery] int? year, [FromQuery] int? month)
+    {
+        try
+        {
+            var now = DateTime.Now;
+            int targetYear = year ?? now.Year;
+            int targetMonth = month ?? now.Month;
+
+            var startDate = new DateTime(targetYear, targetMonth, 1).ToString("yyyy-MM-dd");
+            var endDate = new DateTime(targetYear, targetMonth, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 获取当月每日点赞数
+            var dailySql = @"
+                SELECT DATE(liked_at) as like_date, COUNT(*) as cnt
+                FROM video_likes
+                WHERE DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
+                GROUP BY DATE(liked_at)
+                ORDER BY like_date";
+            using var dailyCmd = new SqliteCommand(dailySql, conn);
+            dailyCmd.Parameters.Add(new SqliteParameter("@startDate", startDate));
+            dailyCmd.Parameters.Add(new SqliteParameter("@endDate", endDate));
+
+            var dailyStats = new Dictionary<string, int>();
+            using (var reader = dailyCmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    dailyStats[reader.GetString(0)] = reader.GetInt32(1);
+                }
+            }
+
+            // 当月总点赞数
+            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+            using var monthTotalCmd = new SqliteCommand(monthTotalSql, conn);
+            monthTotalCmd.Parameters.Add(new SqliteParameter("@s", startDate));
+            monthTotalCmd.Parameters.Add(new SqliteParameter("@e", endDate));
+            int monthTotal = Convert.ToInt32(monthTotalCmd.ExecuteScalar());
+
+            // 历史总点赞数
+            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes", conn);
+            int total = Convert.ToInt32(totalCmd.ExecuteScalar());
+
+            // 最近12个月每月统计
+            var monthlyStats = new List<object>();
+            for (int i = 11; i >= 0; i--)
+            {
+                var m = now.AddMonths(-i);
+                var mStart = new DateTime(m.Year, m.Month, 1).ToString("yyyy-MM-dd");
+                var mEnd = new DateTime(m.Year, m.Month, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
+                var mSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+                using var mCmd = new SqliteCommand(mSql, conn);
+                mCmd.Parameters.Add(new SqliteParameter("@s", mStart));
+                mCmd.Parameters.Add(new SqliteParameter("@e", mEnd));
+                monthlyStats.Add(new { year = m.Year, month = m.Month, count = Convert.ToInt32(mCmd.ExecuteScalar()) });
+            }
+
+            return Ok(new {
+                success = true,
+                year = targetYear,
+                month = targetMonth,
+                daily = dailyStats,
+                monthTotal,
+                monthDays = DateTime.DaysInMonth(targetYear, targetMonth),
+                total,
+                monthly = monthlyStats
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetLikeStats failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+
     #endregion
 }
 
