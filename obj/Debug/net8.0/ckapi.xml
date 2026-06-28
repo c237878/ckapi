@@ -74,6 +74,16 @@
             删除友情链接
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.HighlightsController.GetPosters">
+            <summary>
+            获取精彩瞬间海报列表（default 文件夹）
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.HighlightsController.GetPoster(System.String)">
+            <summary>
+            获取精彩瞬间海报图片
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.ScanDirectoryController">
             <summary>
             扫描目录管理控制器
