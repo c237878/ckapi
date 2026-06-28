@@ -244,6 +244,16 @@
             重置视频文件大小
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.TryFindVideoFile(Microsoft.Data.Sqlite.SqliteConnection,System.String,System.String,System.String,System.Collections.Generic.List{System.ValueTuple{System.String,System.String}},System.Collections.Generic.List{System.String},System.String@,System.Nullable{System.Int64}@)">
+            <summary>
+            在同分类扫描目录中搜索匹配的视频文件
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.TryFindCover(Microsoft.Data.Sqlite.SqliteConnection,System.String,System.String,System.String,System.String,System.Collections.Generic.List{System.ValueTuple{System.String,System.String}},System.String@)">
+            <summary>
+            搜索封面路径：同目录 + /cover/ 目录
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.DeleteVideo(System.String)">
             <summary>
             删除视频
