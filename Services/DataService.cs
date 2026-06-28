@@ -70,7 +70,8 @@ public class DataService : IDataService
             file_size   INTEGER,
             cover_path  TEXT,
             ctime       TEXT,
-            seriesid    TEXT
+            seriesid    TEXT,
+            media_attr_flags INTEGER DEFAULT 0
         ";
 
         if (!_db.TableExists(tableName))
@@ -116,6 +117,13 @@ public class DataService : IDataService
             {
                 _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN seriesid TEXT");
                 _logger.LogInformation("添加 seriesid 列到 videos 表");
+            }
+
+            // 添加 media_attr_flags 列
+            if (!columnNames.Contains("media_attr_flags"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN media_attr_flags INTEGER DEFAULT 0");
+                _logger.LogInformation("添加 media_attr_flags 列到 videos 表");
             }
         }
         catch (Exception ex)

@@ -39,6 +39,16 @@
             获取演员的影片列表
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.ActorController.GetPosters(System.String)">
+            <summary>
+            获取演员海报列表
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.ActorController.GetPoster(System.String,System.String)">
+            <summary>
+            获取演员海报图片
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.FriendLinkController">
             <summary>
             友情链接控制器

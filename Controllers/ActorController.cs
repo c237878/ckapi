@@ -338,6 +338,88 @@ public class ActorController : ControllerBase
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
+    /// <summary>
+    /// 获取演员海报列表
+    /// </summary>
+    [HttpGet("{id}/posters")]
+    public IActionResult GetPosters(string id)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
+            var posterDir = cmd.ExecuteScalar()?.ToString();
+
+            if (string.IsNullOrEmpty(posterDir))
+            {
+                return Ok(new { success = true, data = new string[0], message = "未配置海报墙目录" });
+            }
+
+            var actorDir = Path.Combine(posterDir, id);
+            if (!Directory.Exists(actorDir))
+            {
+                return Ok(new { success = true, data = new string[0], message = "该演员无海报" });
+            }
+
+            var files = Directory.GetFiles(actorDir, "*.*")
+                .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
+                .Select(f => Path.GetFileName(f))
+                .ToList();
+
+            return Ok(new { success = true, data = files });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取演员海报失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 获取演员海报图片
+    /// </summary>
+    [HttpGet("{id}/poster/{fileName}")]
+    public IActionResult GetPoster(string id, string fileName)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
+            var posterDir = cmd.ExecuteScalar()?.ToString();
+
+            if (string.IsNullOrEmpty(posterDir))
+            {
+                return NotFound();
+            }
+
+            var filePath = Path.Combine(posterDir, id, fileName);
+            if (!System.IO.File.Exists(filePath))
+            {
+                return NotFound();
+            }
+
+            var ext = Path.GetExtension(fileName).ToLower();
+            var contentType = ext switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                _ => "application/octet-stream"
+            };
+
+            return PhysicalFile(filePath, contentType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取海报图片失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
 }
 
 public class AddActorRequest
