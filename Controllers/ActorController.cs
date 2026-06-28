@@ -49,7 +49,7 @@ public class ActorController : ControllerBase
 
             if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND name LIKE @keyword";
+                whereClause += " AND (name LIKE @keyword OR alias LIKE @keyword)";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
