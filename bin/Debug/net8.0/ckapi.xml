@@ -179,6 +179,21 @@
             删除设置
             </summary>
         </member>
+        <member name="T:ckapi.Controllers.UploadController">
+            <summary>
+            文件上传接口
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.UploadController.UploadVideo(System.String,Microsoft.AspNetCore.Http.IFormFile)">
+            <summary>
+            上传视频文件
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.UploadController.UploadCover(System.String,Microsoft.AspNetCore.Http.IFormFile)">
+            <summary>
+            上传封面图片
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.VideoActorController">
             <summary>
             视频-演员关联控制器
