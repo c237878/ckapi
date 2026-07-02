@@ -4,6 +4,11 @@ using Microsoft.Extensions.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 配置 Kestrel 支持大文件上传（无限制）
+builder.WebHost.ConfigureKestrel(options => {
+    options.Limits.MaxRequestBodySize = null; // 无限制
+});
+
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

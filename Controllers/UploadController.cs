@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Data.Sqlite;
 using System.Text.Json.Serialization;
 
@@ -9,6 +10,7 @@ namespace ckapi.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
+[DisableRequestSizeLimit]
 public class UploadController : ControllerBase
 {
     private readonly ILogger<UploadController> _logger;
