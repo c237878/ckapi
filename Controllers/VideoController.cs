@@ -698,6 +698,48 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
+    /// 更新视频的文件路径和大小（上传成功后调用）
+    /// </summary>
+    [HttpPut("{id}/file-info")]
+    public IActionResult UpdateFileInfo(string id, [FromBody] UpdateFileInfoRequest req)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            long? newFileSize = null;
+            if (!string.IsNullOrEmpty(req.FilePath) && System.IO.File.Exists(req.FilePath))
+            {
+                var fi = new System.IO.FileInfo(req.FilePath);
+                newFileSize = fi.Length;
+            }
+
+            using var cmd = new SqliteCommand(@"
+                UPDATE videos SET
+                    file_path = COALESCE(@fp, file_path),
+                    cover_path = COALESCE(@cp, cover_path),
+                    file_size = COALESCE(@fs, file_size)
+                WHERE id = @id", conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.AddWithValue("@fp", (object?)req.FilePath ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@cp", (object?)req.CoverPath ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@fs", (object?)newFileSize ?? DBNull.Value);
+            var rows = cmd.ExecuteNonQuery();
+
+            if (rows == 0)
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            return Ok(new { success = true, data = new { filePath = req.FilePath, fileSize = newFileSize, coverPath = req.CoverPath }, message = "文件信息已更新" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateFileInfo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 在同分类扫描目录中搜索匹配的视频文件
     /// </summary>
     private bool TryFindVideoFile(SqliteConnection conn, string videoId, string? name, string? code,
@@ -1900,6 +1942,12 @@ public class ScanRequest
 public class BatchDeleteRequest
 {
     public List<string> Ids { get; set; } = new List<string>();
+}
+
+public class UpdateFileInfoRequest
+{
+    public string? FilePath { get; set; }
+    public string? CoverPath { get; set; }
 }
 
 #endregion

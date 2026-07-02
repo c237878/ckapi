@@ -8,6 +8,7 @@ var builder = WebApplication.CreateBuilder(args);
 // 配置 Kestrel 支持大文件上传（无限制）
 builder.WebHost.ConfigureKestrel(options => {
     options.Limits.MaxRequestBodySize = null; // 无限制
+    options.ListenAnyIP(5033);
 });
 
 // 解除 multipart 上传大小限制
