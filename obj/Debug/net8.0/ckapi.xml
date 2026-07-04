@@ -350,6 +350,21 @@
             清空不在扫描目录中的视频路径，返回清除数量
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.GetLatestAdded(System.Int32)">
+            <summary>
+            首页 - 最新添加
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetRecentlyLiked(System.Int32)">
+            <summary>
+            首页 - 最近点赞（同一视频多次点赞只取最新那次）
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetTopLiked(System.Int32)">
+            <summary>
+            首页 - 高赞影片（点赞数相同取点赞时间最新的）
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.GetLikeStats(System.Nullable{System.Int32},System.Nullable{System.Int32})">
             <summary>
             获取点赞日历统计

@@ -180,7 +180,21 @@ public class VideoController : ControllerBase
                 }
             }
 
-            return Ok(new { success = true, categories, countries, series });
+            // 首页配置
+            string homePageCategories = "", homePageCategoryCount = "12";
+            using (var sCmd = new SqliteCommand("SELECT name, content FROM system_settings WHERE name IN ('homePageCategories','homePageCategoryCount')", conn))
+            using (var sReader = sCmd.ExecuteReader())
+            {
+                while (sReader.Read())
+                {
+                    var n = sReader.GetString(0);
+                    var v = sReader.GetString(1);
+                    if (n == "homePageCategories") homePageCategories = v;
+                    if (n == "homePageCategoryCount") homePageCategoryCount = v;
+                }
+            }
+
+            return Ok(new { success = true, categories, countries, series, homePageCategories, homePageCategoryCount });
         }
         catch (Exception ex)
         {
@@ -1801,6 +1815,115 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateScanTaskFailed failed");
+        }
+    }
+
+    /// <summary>
+    /// 首页 - 最新添加
+    /// </summary>
+    [HttpGet("latest-added")]
+    public IActionResult GetLatestAdded([FromQuery] int count = 12)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            var sql = @"
+                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                       v.seriesid, v.ctime, v.like_count,
+                       s.name AS series_name
+                FROM videos v
+                LEFT JOIN video_series s ON v.seriesid = s.id
+                WHERE v.file_size > 0
+                ORDER BY v.ctime DESC
+                LIMIT @limit";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@limit", count);
+            var list = new List<object>();
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) list.Add(ReadVideoRow(reader));
+            }
+            return Ok(new { success = true, data = list });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetLatestAdded failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 首页 - 最近点赞（同一视频多次点赞只取最新那次）
+    /// </summary>
+    [HttpGet("recently-liked")]
+    public IActionResult GetRecentlyLiked([FromQuery] int count = 12)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            var sql = @"
+                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                       v.seriesid, v.ctime, v.like_count,
+                       MAX(vl.liked_at) as lastLikedAt
+                FROM video_likes vl
+                JOIN videos v ON vl.video_id = v.id
+                LEFT JOIN video_series s ON v.seriesid = s.id
+                WHERE v.file_size > 0
+                GROUP BY v.id
+                ORDER BY lastLikedAt DESC
+                LIMIT @limit";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@limit", count);
+            var list = new List<object>();
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) list.Add(ReadVideoRow(reader));
+            }
+            return Ok(new { success = true, data = list });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetRecentlyLiked failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 首页 - 高赞影片（点赞数相同取点赞时间最新的）
+    /// </summary>
+    [HttpGet("top-liked")]
+    public IActionResult GetTopLiked([FromQuery] int count = 12)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            var sql = @"
+                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                       v.seriesid, v.ctime, v.like_count,
+                       MAX(vl.liked_at) as lastLikedAt
+                FROM video_likes vl
+                JOIN videos v ON vl.video_id = v.id
+                LEFT JOIN video_series s ON v.seriesid = s.id
+                WHERE v.file_size > 0
+                GROUP BY v.id
+                ORDER BY v.like_count DESC, lastLikedAt DESC
+                LIMIT @limit";
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.AddWithValue("@limit", count);
+            var list = new List<object>();
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read()) list.Add(ReadVideoRow(reader));
+            }
+            return Ok(new { success = true, data = list });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetTopLiked failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
