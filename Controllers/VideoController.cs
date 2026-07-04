@@ -788,20 +788,13 @@ public class VideoController : ControllerBase
                         outFilePath = found;
                         outFileSize = fi.Length;
 
-                        // 更新前检查路径是否已被其他视频占用
-                        using var dupCmd = new SqliteCommand(
-                            "SELECT COUNT(*) FROM videos WHERE file_path = @fp AND id != @id", conn);
-                        dupCmd.Parameters.AddWithValue("@fp", found);
-                        dupCmd.Parameters.AddWithValue("@id", videoId);
-                        if (Convert.ToInt32(dupCmd.ExecuteScalar()) == 0)
-                        {
-                            using var updCmd = new SqliteCommand(
-                                "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
-                            updCmd.Parameters.Add(new SqliteParameter("@fp", found));
-                            updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
-                            updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-                            updCmd.ExecuteNonQuery();
-                        }
+                        // 直接更新（UNIQUE 约束兜底；同一视频重复执行则为幂等操作）
+                        using var updCmd = new SqliteCommand(
+                            "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
+                        updCmd.Parameters.Add(new SqliteParameter("@fp", found));
+                        updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
+                        updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
+                        updCmd.ExecuteNonQuery();
                         return true;
                     }
                 }
