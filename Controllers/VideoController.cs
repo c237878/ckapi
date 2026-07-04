@@ -547,17 +547,16 @@ public class VideoController : ControllerBase
     {
         try
         {
+            // 只有传入真实文件路径时才更新 file_path（避免 manual:// 占位符触发 UNIQUE 约束）
+            bool hasRealFilePath = !string.IsNullOrEmpty(req.FilePath) && !req.FilePath.StartsWith("manual://");
             var sql = @"
                 UPDATE videos SET 
                     code = @code,
-                    name = @name, 
-
-                    category = @category, 
+                    name = @name,
+                    category = @category,
                     country = @country,
-                    file_path = @filePath, 
+                    " + (hasRealFilePath ? "file_path = @filePath," : "") + @"
                     cover_path = @coverPath,
-
-
                     seriesid = @seriesId
                 WHERE id = @id";
 
