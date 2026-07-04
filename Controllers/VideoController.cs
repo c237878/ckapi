@@ -1830,7 +1830,8 @@ public class VideoController : ControllerBase
             conn.Open();
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.like_count,
+                       v.seriesid, v.ctime,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
                        s.name AS series_name
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
@@ -1865,14 +1866,14 @@ public class VideoController : ControllerBase
             conn.Open();
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.like_count,
-                       MAX(vl.liked_at) as lastLikedAt
+                       v.seriesid, v.ctime,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.file_size > 0
                 GROUP BY v.id
-                ORDER BY lastLikedAt DESC
+                ORDER BY MAX(vl.liked_at) DESC
                 LIMIT @limit";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@limit", count);
@@ -1902,14 +1903,14 @@ public class VideoController : ControllerBase
             conn.Open();
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.like_count,
-                       MAX(vl.liked_at) as lastLikedAt
+                       v.seriesid, v.ctime,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.file_size > 0
                 GROUP BY v.id
-                ORDER BY v.like_count DESC, lastLikedAt DESC
+                ORDER BY like_count DESC, MAX(vl.liked_at) DESC
                 LIMIT @limit";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@limit", count);
