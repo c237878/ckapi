@@ -507,9 +507,7 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
-            // 文件路径为空时生成唯一占位，避免 UNIQUE 约束冲突
-            var filePath = string.IsNullOrEmpty(req.FilePath) ? $"manual://{Guid.NewGuid().ToString("N").ToUpper()}" : req.FilePath;
-            cmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
+            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@fileSize", req.FileSize ?? 0));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
@@ -547,15 +545,13 @@ public class VideoController : ControllerBase
     {
         try
         {
-            // 只有传入真实文件路径时才更新 file_path（避免 manual:// 占位符触发 UNIQUE 约束）
-            bool hasRealFilePath = !string.IsNullOrEmpty(req.FilePath) && !req.FilePath.StartsWith("manual://");
             var sql = @"
-                UPDATE videos SET 
+                UPDATE videos SET
                     code = @code,
                     name = @name,
                     category = @category,
                     country = @country,
-                    " + (hasRealFilePath ? "file_path = @filePath," : "") + @"
+                    file_path = @filePath,
                     cover_path = @coverPath,
                     seriesid = @seriesId
                 WHERE id = @id";
@@ -633,7 +629,7 @@ public class VideoController : ControllerBase
                 videoCode = reader["code"]?.ToString();
                 videoCategory = reader["category"]?.ToString();
                 var rawFp = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
-                currentFilePath = rawFp?.StartsWith("manual://") == true ? null : rawFp;
+                currentFilePath = rawFp;
                 currentCoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"]?.ToString();
             }
 
@@ -675,7 +671,7 @@ public class VideoController : ControllerBase
                 }
                 else
                 {
-                    messages.Add("文件路径存在但文件不存在: " + currentFilePath?.Replace("manual://", "") ?? "(空)");
+                    messages.Add("文件路径存在但文件不存在: " + (currentFilePath ?? "(空)"));
                     // 尝试找回
                     var found = TryFindVideoFile(conn, id, videoName, videoCode, scanDirs, extensions, ref newFilePath, ref newFileSize);
                     if (found) messages.Add("已在扫描目录中找到并更新文件路径");
@@ -728,12 +724,12 @@ public class VideoController : ControllerBase
                 newFileSize = fi.Length;
             }
 
-            // 只有传入真实文件路径时才更新 file_path（避免 manual:// 占位符触发 UNIQUE 约束）
-            bool updateFilePath = !string.IsNullOrEmpty(req.FilePath) && !req.FilePath.StartsWith("manual://");
-            var sql = updateFilePath
-                ? @"UPDATE videos SET file_path = @fp, cover_path = COALESCE(@cp, cover_path), file_size = COALESCE(@fs, file_size) WHERE id = @id"
-                : @"UPDATE videos SET cover_path = COALESCE(@cp, cover_path), file_size = COALESCE(@fs, file_size) WHERE id = @id";
-            using var cmd = new SqliteCommand(sql, conn);
+            using var cmd = new SqliteCommand(@"
+                UPDATE videos SET
+                    file_path = @fp,
+                    cover_path = COALESCE(@cp, cover_path),
+                    file_size = COALESCE(@fs, file_size)
+                WHERE id = @id", conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.AddWithValue("@fp", (object?)req.FilePath ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@cp", (object?)req.CoverPath ?? DBNull.Value);
@@ -1766,7 +1762,7 @@ public class VideoController : ControllerBase
         foreach (var (id, filePath) in videosWithPath)
         {
             // 跳过手动添加的占位路径
-            if (filePath.StartsWith("manual://")) continue;
+            if (string.IsNullOrEmpty(filePath)) continue;
 
             // 统一转小写比较路径
             var filePathLower = filePath.ToLowerInvariant();
