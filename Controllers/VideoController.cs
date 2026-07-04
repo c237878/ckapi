@@ -728,12 +728,12 @@ public class VideoController : ControllerBase
                 newFileSize = fi.Length;
             }
 
-            using var cmd = new SqliteCommand(@"
-                UPDATE videos SET
-                    file_path = COALESCE(@fp, file_path),
-                    cover_path = COALESCE(@cp, cover_path),
-                    file_size = COALESCE(@fs, file_size)
-                WHERE id = @id", conn);
+            // 只有传入真实文件路径时才更新 file_path（避免 manual:// 占位符触发 UNIQUE 约束）
+            bool updateFilePath = !string.IsNullOrEmpty(req.FilePath) && !req.FilePath.StartsWith("manual://");
+            var sql = updateFilePath
+                ? @"UPDATE videos SET file_path = @fp, cover_path = COALESCE(@cp, cover_path), file_size = COALESCE(@fs, file_size) WHERE id = @id"
+                : @"UPDATE videos SET cover_path = COALESCE(@cp, cover_path), file_size = COALESCE(@fs, file_size) WHERE id = @id";
+            using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.AddWithValue("@fp", (object?)req.FilePath ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@cp", (object?)req.CoverPath ?? DBNull.Value);
@@ -788,13 +788,20 @@ public class VideoController : ControllerBase
                         outFilePath = found;
                         outFileSize = fi.Length;
 
-                        // 更新数据库
-                        using var updCmd = new SqliteCommand(
-                            "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
-                        updCmd.Parameters.Add(new SqliteParameter("@fp", found));
-                        updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
-                        updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-                        updCmd.ExecuteNonQuery();
+                        // 更新前检查路径是否已被其他视频占用
+                        using var dupCmd = new SqliteCommand(
+                            "SELECT COUNT(*) FROM videos WHERE file_path = @fp AND id != @id", conn);
+                        dupCmd.Parameters.AddWithValue("@fp", found);
+                        dupCmd.Parameters.AddWithValue("@id", videoId);
+                        if (Convert.ToInt32(dupCmd.ExecuteScalar()) == 0)
+                        {
+                            using var updCmd = new SqliteCommand(
+                                "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
+                            updCmd.Parameters.Add(new SqliteParameter("@fp", found));
+                            updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
+                            updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
+                            updCmd.ExecuteNonQuery();
+                        }
                         return true;
                     }
                 }
