@@ -279,6 +279,11 @@
             重置视频文件大小
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.DeleteVideoFile(System.String)">
+            <summary>
+            删除视频文件（置空路径和大小，不动封面）
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.UpdateFileInfo(System.String,ckapi.Controllers.UpdateFileInfoRequest)">
             <summary>
             更新视频的文件路径和大小（上传成功后调用）
@@ -350,7 +355,7 @@
             清空不在扫描目录中的视频路径，返回清除数量
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetLatestAdded(System.Int32)">
+        <member name="M:ckapi.Controllers.VideoController.GetDailyRecommend(System.Int32)">
             <summary>
             首页 - 最新添加
             </summary>

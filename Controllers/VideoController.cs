@@ -707,6 +707,69 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
+    /// 删除视频文件（置空路径和大小，不动封面）
+    /// </summary>
+    [HttpDelete("{id}/file")]
+    public IActionResult DeleteVideoFile(string id)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 获取当前文件路径
+            string? currentFilePath = null;
+            using (var getCmd = new SqliteCommand("SELECT file_path FROM videos WHERE id = @id", conn))
+            {
+                getCmd.Parameters.Add(new SqliteParameter("@id", id));
+                var result = getCmd.ExecuteScalar();
+                if (result != null && result != DBNull.Value)
+                    currentFilePath = result.ToString();
+            }
+
+            // 删除物理文件
+            string message = "";
+            if (!string.IsNullOrEmpty(currentFilePath) && currentFilePath.StartsWith("/"))
+            {
+                if (System.IO.File.Exists(currentFilePath))
+                {
+                    try
+                    {
+                        System.IO.File.Delete(currentFilePath);
+                        message = "文件已删除";
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除文件失败: {path}", currentFilePath);
+                        message = "文件删除失败（可能被其他程序占用）";
+                    }
+                }
+                else
+                {
+                    message = "文件不存在，无需删除";
+                }
+            }
+            else
+            {
+                message = "无有效文件路径";
+            }
+
+            // 置空 file_path 和 file_size
+            using var updCmd = new SqliteCommand(
+                "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
+            updCmd.Parameters.Add(new SqliteParameter("@id", id));
+            updCmd.ExecuteNonQuery();
+
+            return Ok(new { success = true, message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "DeleteVideoFile failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 更新视频的文件路径和大小（上传成功后调用）
     /// </summary>
     [HttpPut("{id}/file-info")]
@@ -1816,25 +1879,41 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 首页 - 最新添加
     /// </summary>
-    [HttpGet("latest-added")]
-    public IActionResult GetLatestAdded([FromQuery] int count = 12)
+    [HttpGet("daily-recommend")]
+    public IActionResult GetDailyRecommend([FromQuery] int count = 12)
     {
         try
         {
             using var conn = GetConnection();
             conn.Open();
+
+            // 获取有文件的视频总数
+            using var countCmd = new SqliteCommand(
+                "SELECT COUNT(*) FROM videos WHERE file_size > 0", conn);
+            int total = Convert.ToInt32(countCmd.ExecuteScalar());
+            if (total == 0)
+                return Ok(new { success = true, data = new List<object>() });
+
+            // 基于日期做种子随机，每天固定展示同一批推荐
+            var today = DateTime.Now;
+            var seed = today.Year * 10000 + today.Month * 100 + today.Day;
+            var rng = new Random(seed);
+            int offset = total <= count ? 0 : rng.Next(total - count);
+
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
-                       s.name AS series_name
+                       s.name AS series_name,
+                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.file_size > 0
-                ORDER BY v.ctime DESC
-                LIMIT @limit";
+                ORDER BY v.id
+                LIMIT @limit OFFSET @offset";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@limit", count);
+            cmd.Parameters.AddWithValue("@offset", offset);
             var list = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
@@ -1844,7 +1923,7 @@ public class VideoController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "GetLatestAdded failed");
+            _logger.LogError(ex, "GetDailyRecommend failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
@@ -1862,7 +1941,9 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       s.name AS series_name,
+                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
@@ -1899,7 +1980,9 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       s.name AS series_name,
+                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id

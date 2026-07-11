@@ -300,7 +300,7 @@ public class ActorController : ControllerBase
                     INNER JOIN video_actors va ON v.id = va.video_id
                     LEFT JOIN video_series s ON v.seriesid = s.id
                     WHERE va.actor_id = @actorId
-                    ORDER BY v.code ASC
+                    ORDER BY v.name ASC, v.code ASC
                     LIMIT @pageSize OFFSET @offset";
                 using var cmd = new SqliteCommand(sql, conn);
                 cmd.Parameters.Add(new SqliteParameter("@actorId", id));
