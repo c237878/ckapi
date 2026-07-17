@@ -254,7 +254,7 @@
             获取视频列表
             </summary>
         </member>
-        <member name="M:ckapi.Controllers.VideoController.GetMeta">
+        <member name="M:ckapi.Controllers.VideoController.GetAutoCode">
             <summary>
             获取所有已有的分类、国家、系列（用于表单下拉）
             </summary>

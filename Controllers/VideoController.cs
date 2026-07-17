@@ -147,6 +147,50 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 获取所有已有的分类、国家、系列（用于表单下拉）
     /// </summary>
+    [HttpGet("autocode")]
+    public IActionResult GetAutoCode()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            // 查找最大的 AUTOCODE-xxx 编号
+            var sql = "SELECT code FROM videos WHERE code LIKE 'AUTOCODE-%' ORDER BY code DESC LIMIT 1";
+            using var cmd = new SqliteCommand(sql, conn);
+            var result = cmd.ExecuteScalar()?.ToString();
+            int next = 1;
+            if (!string.IsNullOrEmpty(result))
+            {
+                // 提取数字部分
+                var parts = result.Split('-');
+                if (parts.Length >= 2 && int.TryParse(parts[1], out int num))
+                {
+                    next = num + 1;
+                }
+            }
+            // 循环检查确保编号不存在
+            string code;
+            do
+            {
+                code = $"AUTOCODE-{next:D3}";
+                using var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM videos WHERE code = @code", conn);
+                checkCmd.Parameters.Add(new SqliteParameter("@code", code));
+                if (Convert.ToInt32(checkCmd.ExecuteScalar()) > 0)
+                {
+                    next++;
+                    continue;
+                }
+                break;
+            } while (true);
+            return Ok(new { success = true, code });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "生成自动编号失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
     [HttpGet("meta")]
     public IActionResult GetMeta()
     {
