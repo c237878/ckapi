@@ -317,4 +317,28 @@ public class SeriesController : ControllerBase
             return Ok(new { success = false, message = "删除系列失败" });
         }
     }
+
+    /// <summary>
+    /// 获取所有现有地区列表（去重）
+    /// </summary>
+    [HttpGet("countries")]
+    public IActionResult GetCountries()
+    {
+        try
+        {
+            var dt = _db.ExecuteDataTable(
+                "SELECT DISTINCT country FROM video_series WHERE country IS NOT NULL AND country != '' ORDER BY country");
+            var countries = new List<string>();
+            foreach (System.Data.DataRow row in dt.Rows)
+            {
+                countries.Add(row["country"].ToString());
+            }
+            return Ok(new { success = true, data = countries });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取地区列表失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
 }

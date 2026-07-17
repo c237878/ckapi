@@ -272,6 +272,33 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
+    /// 获取所有现有地区列表（去重）
+    /// </summary>
+    [HttpGet("countries")]
+    public IActionResult GetCountries()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            var sql = "SELECT DISTINCT country FROM actors WHERE country IS NOT NULL AND country != '' ORDER BY country";
+            using var cmd = new SqliteCommand(sql, conn);
+            var countries = new List<string>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                countries.Add(reader.GetString(0));
+            }
+            return Ok(new { success = true, data = countries });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取地区列表失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 获取演员的影片列表
     /// </summary>
     [HttpGet("{id}/videos")]

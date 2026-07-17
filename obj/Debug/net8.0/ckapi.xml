@@ -34,6 +34,11 @@
             删除演员
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.ActorController.GetCountries">
+            <summary>
+            获取所有现有地区列表（去重）
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.ActorController.GetActorVideos(System.String,System.Int32,System.Int32)">
             <summary>
             获取演员的影片列表
@@ -152,6 +157,11 @@
         <member name="M:ckapi.Controllers.SeriesController.DeleteSeries(System.String)">
             <summary>
             删除系列
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.SeriesController.GetCountries">
+            <summary>
+            获取所有现有地区列表（去重）
             </summary>
         </member>
         <member name="T:ckapi.Controllers.SystemSettingController">
