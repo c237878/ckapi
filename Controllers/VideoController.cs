@@ -741,6 +741,12 @@ public class VideoController : ControllerBase
                     messages.Add("未找到封面");
             }
 
+            // 更新 ctime 为当前时间，使其排在前面
+            using var timeCmd = new SqliteCommand("UPDATE videos SET ctime = @ctime WHERE id = @id", conn);
+            timeCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            timeCmd.Parameters.Add(new SqliteParameter("@id", id));
+            timeCmd.ExecuteNonQuery();
+
             return Ok(new { success = true, data = new { filePath = newFilePath, fileSize = newFileSize, coverPath = newCoverPath }, message = string.Join("；", messages) });
         }
         catch (Exception ex)
