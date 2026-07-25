@@ -1435,6 +1435,107 @@ public class VideoController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 检查字幕是否存在
+    /// </summary>
+    [HttpGet("{id}/subtitle/check")]
+    public IActionResult CheckSubtitle(string id)
+    {
+        try
+        {
+            var sql = "SELECT file_path, name FROM videos WHERE id = @id";
+            using var conn = GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read())
+                return NotFound(new { success = false, message = "视频不存在" });
+            var filePath = reader["file_path"]?.ToString();
+            var videoName = reader["name"]?.ToString() ?? "";
+            if (string.IsNullOrEmpty(filePath))
+                return Ok(new { success = true, hasSubtitle = false });
+
+            var subPath = FindSubtitleFile(filePath);
+            if (subPath != null)
+            {
+                var ext = Path.GetExtension(subPath).ToLower();
+                var ct = ext == ".vtt" ? "text/vtt" : "text/plain";
+                return Ok(new { success = true, hasSubtitle = true, url = $"/api/video/{id}/subtitle", contentType = ct, ext });
+            }
+            return Ok(new { success = true, hasSubtitle = false });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "CheckSubtitle failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 字幕流代理
+    /// </summary>
+    [HttpGet("{id}/subtitle")]
+    public IActionResult GetSubtitle(string id)
+    {
+        try
+        {
+            var sql = "SELECT file_path FROM videos WHERE id = @id";
+            using var conn = GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            var filePath = cmd.ExecuteScalar()?.ToString();
+            if (string.IsNullOrEmpty(filePath))
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            var subPath = FindSubtitleFile(filePath);
+            if (subPath == null || !System.IO.File.Exists(subPath))
+                return NotFound(new { success = false, message = "字幕不存在" });
+
+            var ext = Path.GetExtension(subPath).ToLower();
+            var contentType = ext == ".vtt" ? "text/vtt" : "text/plain";
+            var fileStream = new FileStream(subPath, FileMode.Open, FileAccess.Read);
+            return File(fileStream, contentType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetSubtitle failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 根据视频路径查找字幕文件：../subtitle/同名.*
+    /// </summary>
+    private string? FindSubtitleFile(string videoFilePath)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(videoFilePath);
+            if (string.IsNullOrEmpty(dir)) return null;
+            // 父目录的兄弟目录 subtitle
+            var parentDir = Path.GetDirectoryName(dir);
+            if (string.IsNullOrEmpty(parentDir)) return null;
+            var subDir = Path.Combine(parentDir, "subtitle");
+            if (!Directory.Exists(subDir)) return null;
+
+            var baseName = Path.GetFileNameWithoutExtension(videoFilePath);
+            var extensions = new[] { ".srt", ".ass", ".ssa", ".vtt", ".sub" };
+            foreach (var ext in extensions)
+            {
+                var candidate = Path.Combine(subDir, baseName + ext);
+                if (System.IO.File.Exists(candidate)) return candidate;
+            }
+            // 也尝试不带扩展名的同名文件
+            var direct = Path.Combine(subDir, baseName);
+            if (System.IO.File.Exists(direct)) return direct;
+            return null;
+        }
+        catch { return null; }
+    }
+
+
     #region 私有方法
 
     private List<string> ParseScanType(string scanType)

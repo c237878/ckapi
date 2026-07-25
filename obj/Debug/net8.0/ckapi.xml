@@ -344,6 +344,21 @@
             封面代理
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.CheckSubtitle(System.String)">
+            <summary>
+            检查字幕是否存在
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.GetSubtitle(System.String)">
+            <summary>
+            字幕流代理
+            </summary>
+        </member>
+        <member name="M:ckapi.Controllers.VideoController.FindSubtitleFile(System.String)">
+            <summary>
+            根据视频路径查找字幕文件：../subtitle/同名.*
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.UpsertVideoFromFile(System.String,System.String,System.Boolean,Microsoft.Data.Sqlite.SqliteConnection)">
             <summary>
             插入或更新视频记录，返回 true 表示新增
