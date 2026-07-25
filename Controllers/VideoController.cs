@@ -1930,7 +1930,7 @@ public class VideoController : ControllerBase
     /// 首页 - 最新添加
     /// </summary>
     [HttpGet("daily-recommend")]
-    public IActionResult GetDailyRecommend([FromQuery] int count = 12)
+    public IActionResult GetDailyRecommend([FromQuery] int count = 12, [FromQuery] bool refresh = false)
     {
         try
         {
@@ -1944,11 +1944,23 @@ public class VideoController : ControllerBase
             if (total == 0)
                 return Ok(new { success = true, data = new List<object>() });
 
-            // 基于日期做种子随机，每天固定展示同一批推荐
-            var today = DateTime.Now;
-            var seed = today.Year * 10000 + today.Month * 100 + today.Day;
+            // 种子：refresh 模式用时间戳，否则用日期
+            int seed;
+            if (refresh)
+            {
+                seed = (int)(DateTime.Now.Ticks % int.MaxValue);
+            }
+            else
+            {
+                var today = DateTime.Now;
+                seed = today.Year * 10000 + today.Month * 100 + today.Day;
+            }
             var rng = new Random(seed);
-            int offset = total <= count ? 0 : rng.Next(total - count);
+
+            // 优先获取点赞数少的影片：按 like_count 升序，加随机偏移
+            // 取前 total*0.6 条中随机选 count 条（确保候选池足够大）
+            int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
+            int offset = total <= poolSize ? 0 : rng.Next(total - poolSize);
 
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
@@ -1959,17 +1971,23 @@ public class VideoController : ControllerBase
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.file_size > 0
-                ORDER BY v.id
+                ORDER BY like_count ASC, v.id
                 LIMIT @limit OFFSET @offset";
             using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.AddWithValue("@limit", count);
+            cmd.Parameters.AddWithValue("@limit", poolSize);
             cmd.Parameters.AddWithValue("@offset", offset);
-            var list = new List<object>();
+            var pool = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) list.Add(ReadVideoRow(reader));
+                while (reader.Read()) pool.Add(ReadVideoRow(reader));
             }
-            return Ok(new { success = true, data = list });
+
+            // 从候选池中随机选 count 条
+            var selected = new List<object>();
+            var indices = Enumerable.Range(0, pool.Count).OrderBy(_ => rng.Next()).Take(Math.Min(count, pool.Count)).ToList();
+            foreach (var i in indices) selected.Add(pool[i]);
+
+            return Ok(new { success = true, data = selected });
         }
         catch (Exception ex)
         {
