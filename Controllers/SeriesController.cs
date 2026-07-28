@@ -169,7 +169,7 @@ public class SeriesController : ControllerBase
                          WHERE va.video_id = v.id) as actor_names
                     FROM videos v 
                     WHERE v.seriesid = @seriesid
-                    ORDER BY v.sort_order ASC, v.name ASC, v.code ASC
+                    ORDER BY v.sort_order ASC, v.code ASC
                     LIMIT @pageSize OFFSET @offset";
 
                 using var cmd = new SqliteCommand(sql, conn);
