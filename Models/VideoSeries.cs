@@ -55,4 +55,10 @@ public class VideoSeries
     /// 获赞总数
     /// </summary>
     public int LikeCount { get; set; }
+
+    /// <summary>
+    /// 未下载影片数量
+    /// </summary>
+    [JsonPropertyName("unloadedCount")]
+    public int UnloadedCount { get; set; }
 }

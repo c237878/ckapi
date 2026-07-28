@@ -69,7 +69,8 @@ public class SeriesController : ControllerBase
             var sql = $@"
                 SELECT s.*, 
                        (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count,
-                       (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count
+                       (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count,
+                       (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id AND (v.file_size IS NULL OR v.file_size = 0)) as unloaded_count
                 FROM video_series s
                 {whereClause}
                 ORDER BY " + orderBy + @"
@@ -91,7 +92,8 @@ public class SeriesController : ControllerBase
                     CTime = row["ctime"]?.ToString(),
                     UTime = row["utime"]?.ToString(),
                     VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0,
-                    LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0
+                    LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0,
+                    UnloadedCount = row["unloaded_count"] != DBNull.Value ? Convert.ToInt32(row["unloaded_count"]) : 0
                 });
             }
 

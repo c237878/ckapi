@@ -555,6 +555,11 @@
             获赞总数
             </summary>
         </member>
+        <member name="P:ckapi.Models.VideoSeries.UnloadedCount">
+            <summary>
+            未下载影片数量
+            </summary>
+        </member>
         <member name="T:ckapi.Results.StreamForwardResult">
             <summary>
             将 HttpContent 流式转发到响应体，支持大文件
