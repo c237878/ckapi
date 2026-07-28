@@ -71,7 +71,8 @@ public class DataService : IDataService
             cover_path  TEXT,
             ctime       TEXT,
             seriesid    TEXT,
-            media_attr_flags INTEGER DEFAULT 0
+            media_attr_flags INTEGER DEFAULT 0,
+            sort_order  INTEGER DEFAULT 0
         ";
 
         if (!_db.TableExists(tableName))
@@ -124,6 +125,13 @@ public class DataService : IDataService
             {
                 _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN media_attr_flags INTEGER DEFAULT 0");
                 _logger.LogInformation("添加 media_attr_flags 列到 videos 表");
+            }
+
+            // 添加 sort_order 列
+            if (!columnNames.Contains("sort_order"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN sort_order INTEGER DEFAULT 0");
+                _logger.LogInformation("添加 sort_order 列到 videos 表");
             }
         }
         catch (Exception ex)

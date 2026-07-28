@@ -2,6 +2,7 @@ using ckapi.Models;
 using ckapi.Utils;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using System.Text.Json.Serialization;
 
 namespace ckapi.Controllers;
 
@@ -168,7 +169,7 @@ public class SeriesController : ControllerBase
                          WHERE va.video_id = v.id) as actor_names
                     FROM videos v 
                     WHERE v.seriesid = @seriesid
-                    ORDER BY v.name ASC, v.code ASC
+                    ORDER BY v.sort_order ASC, v.name ASC, v.code ASC
                     LIMIT @pageSize OFFSET @offset";
 
                 using var cmd = new SqliteCommand(sql, conn);
@@ -341,4 +342,52 @@ public class SeriesController : ControllerBase
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
+
+    /// <summary>
+    /// 更新系列中影片的排序
+    /// </summary>
+    [HttpPost("{id}/sort")]
+    public IActionResult UpdateVideoSort(string id, [FromBody] UpdateVideoSortRequest req)
+    {
+        try
+        {
+            if (req?.VideoIds == null || req.VideoIds.Count == 0)
+                return Ok(new { success = false, message = "排序列表为空" });
+
+            using var conn = GetConnection();
+            conn.Open();
+            using var transaction = conn.BeginTransaction();
+            try
+            {
+                for (int i = 0; i < req.VideoIds.Count; i++)
+                {
+                    using var cmd = new SqliteCommand(
+                        "UPDATE videos SET sort_order = @order WHERE id = @vid AND seriesid = @sid",
+                        conn, transaction);
+                    cmd.Parameters.Add(new SqliteParameter("@order", i));
+                    cmd.Parameters.Add(new SqliteParameter("@vid", req.VideoIds[i]));
+                    cmd.Parameters.Add(new SqliteParameter("@sid", id));
+                    cmd.ExecuteNonQuery();
+                }
+                transaction.Commit();
+                return Ok(new { success = true, message = $"已更新 {req.VideoIds.Count} 个影片的排序" });
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "更新影片排序失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+}
+
+public class UpdateVideoSortRequest
+{
+    [JsonPropertyName("videoIds")]
+    public List<string> VideoIds { get; set; } = new();
 }

@@ -164,6 +164,11 @@
             获取所有现有地区列表（去重）
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.SeriesController.UpdateVideoSort(System.String,ckapi.Controllers.UpdateVideoSortRequest)">
+            <summary>
+            更新系列中影片的排序
+            </summary>
+        </member>
         <member name="T:ckapi.Controllers.SystemSettingController">
             <summary>
             系统设置控制器
