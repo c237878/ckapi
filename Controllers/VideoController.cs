@@ -39,6 +39,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? keyword = null,
         [FromQuery] string? seriesId = null,
         [FromQuery] bool? hasFile = null,
+        [FromQuery] int? mediaAttrFlags = null,
         [FromQuery] string? sortBy = null)
     {
         try
@@ -91,6 +92,13 @@ public class VideoController : ControllerBase
                 {
                     whereClause += " AND (v.file_size IS NULL OR v.file_size <= 0)";
                 }
+            }
+
+            // 根据 mediaAttrFlags 过滤
+            if (mediaAttrFlags.HasValue)
+            {
+                whereClause += " AND v.media_attr_flags = @mediaAttrFlags";
+                parameters.Add(new SqliteParameter("@mediaAttrFlags", mediaAttrFlags.Value));
             }
 
             // 获取总数
