@@ -741,8 +741,8 @@ public class VideoController : ControllerBase
                     messages.Add("未找到封面");
             }
 
-            // 更新 ctime 为当前时间，使其排在前面
-            using var timeCmd = new SqliteCommand("UPDATE videos SET ctime = @ctime WHERE id = @id", conn);
+            // 更新 ctime 为当前时间，使其排在前面；同时重置 media_attr_flags 为 0
+            using var timeCmd = new SqliteCommand("UPDATE videos SET ctime = @ctime, media_attr_flags = 0 WHERE id = @id", conn);
             timeCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             timeCmd.Parameters.Add(new SqliteParameter("@id", id));
             timeCmd.ExecuteNonQuery();
@@ -857,6 +857,43 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateFileInfo failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 更新媒体属性标志（片源质量）
+    /// </summary>
+    [HttpPut("{id}/media-flags")]
+    public IActionResult UpdateMediaFlags(string id, [FromBody] UpdateMediaFlagsRequest req)
+    {
+        try
+        {
+            if (req.Flags < 0 || req.Flags > 3)
+                return Ok(new { success = false, message = "flags 值必须在 0~3 之间" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 检查当前值，如果已设置（非0）则不允许修改
+            using var checkCmd = new SqliteCommand("SELECT media_attr_flags FROM videos WHERE id = @id", conn);
+            checkCmd.Parameters.Add(new SqliteParameter("@id", id));
+            var current = Convert.ToInt32(checkCmd.ExecuteScalar() ?? 0);
+            if (current != 0)
+                return Ok(new { success = false, message = "片源质量已设置，不可修改。请先重置后再设置。" });
+
+            using var cmd = new SqliteCommand("UPDATE videos SET media_attr_flags = @flags WHERE id = @id", conn);
+            cmd.Parameters.Add(new SqliteParameter("@flags", req.Flags));
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            var rows = cmd.ExecuteNonQuery();
+            if (rows == 0)
+                return NotFound(new { success = false, message = "视频不存在" });
+
+            return Ok(new { success = true, message = "片源质量已更新", data = new { mediaAttrFlags = req.Flags } });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateMediaFlags failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
@@ -1570,7 +1607,8 @@ public class VideoController : ControllerBase
             ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
             ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
             ["addedAt"] = reader["ctime"].ToString(),
-            ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString()
+            ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString(),
+            ["mediaAttrFlags"] = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
         };
 
         if (HasColumn(reader, "like_count"))
@@ -2319,6 +2357,12 @@ public class UpdateFileInfoRequest
 {
     public string? FilePath { get; set; }
     public string? CoverPath { get; set; }
+}
+
+public class UpdateMediaFlagsRequest
+{
+    [JsonPropertyName("flags")]
+    public int Flags { get; set; }
 }
 
 #endregion

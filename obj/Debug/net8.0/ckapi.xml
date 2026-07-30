@@ -304,6 +304,11 @@
             更新视频的文件路径和大小（上传成功后调用）
             </summary>
         </member>
+        <member name="M:ckapi.Controllers.VideoController.UpdateMediaFlags(System.String,ckapi.Controllers.UpdateMediaFlagsRequest)">
+            <summary>
+            更新媒体属性标志（片源质量）
+            </summary>
+        </member>
         <member name="M:ckapi.Controllers.VideoController.TryFindVideoFile(Microsoft.Data.Sqlite.SqliteConnection,System.String,System.String,System.String,System.Collections.Generic.List{System.ValueTuple{System.String,System.String}},System.Collections.Generic.List{System.String},System.String@,System.Nullable{System.Int64}@)">
             <summary>
             在同分类扫描目录中搜索匹配的视频文件
