@@ -2118,7 +2118,7 @@ public class VideoController : ControllerBase
             var pool = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) pool.Add(ReadVideoRow(reader));
+                while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
             }
 
             // 从候选池中随机选 count 条
@@ -2163,7 +2163,7 @@ public class VideoController : ControllerBase
             var list = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) list.Add(ReadVideoRow(reader));
+                while (reader.Read()) list.Add(ReadVideoRow(reader, withSeriesName: true));
             }
             return Ok(new { success = true, data = list });
         }
@@ -2202,7 +2202,7 @@ public class VideoController : ControllerBase
             var list = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) list.Add(ReadVideoRow(reader));
+                while (reader.Read()) list.Add(ReadVideoRow(reader, withSeriesName: true));
             }
             return Ok(new { success = true, data = list });
         }
