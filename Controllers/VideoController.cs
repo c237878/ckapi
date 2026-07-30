@@ -367,7 +367,7 @@ public class VideoController : ControllerBase
             if (!string.IsNullOrEmpty(currentVideo.seriesId))
             {
                 var seriesSql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
                     FROM videos v
@@ -396,7 +396,7 @@ public class VideoController : ControllerBase
             {
                 var actorIdsParam = string.Join(",", currentVideo.actorIds.Select(a => $"'{a}'"));
                 var actorSql = $@"
-                    SELECT DISTINCT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
+                    SELECT DISTINCT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
                     FROM videos v
@@ -423,7 +423,7 @@ public class VideoController : ControllerBase
             if (recommendList.Count < limit)
             {
                 var randomSql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
                     FROM videos v
@@ -2103,7 +2103,7 @@ public class VideoController : ControllerBase
 
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime,
+                       v.seriesid, v.ctime, v.media_attr_flags,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
@@ -2147,7 +2147,7 @@ public class VideoController : ControllerBase
             conn.Open();
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime,
+                       v.seriesid, v.ctime, v.media_attr_flags,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
@@ -2186,7 +2186,7 @@ public class VideoController : ControllerBase
             conn.Open();
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime,
+                       v.seriesid, v.ctime, v.media_attr_flags,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
