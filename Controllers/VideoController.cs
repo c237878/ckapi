@@ -1608,7 +1608,7 @@ public class VideoController : ControllerBase
             ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
             ["addedAt"] = reader["ctime"].ToString(),
             ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString(),
-            ["mediaAttrFlags"] = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
+            ["mediaAttrFlags"] = HasColumn(reader, "media_attr_flags") ? (reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])) : 0
         };
 
         if (HasColumn(reader, "like_count"))
