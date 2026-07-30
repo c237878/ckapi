@@ -47,13 +47,13 @@ public class VideoController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            // 排序
+            // 排序：优先 media_attr_flags=0 的影片
             var orderBy = sortBy?.ToLower() switch
             {
-                "code" => "v.code ASC",
-                "name" => "v.name ASC",
-                "likecount" => "like_count DESC",
-                _ => "v.ctime DESC"
+                "code" => "v.media_attr_flags ASC, v.code ASC",
+                "name" => "v.media_attr_flags ASC, v.name ASC",
+                "likecount" => "v.media_attr_flags ASC, like_count DESC",
+                _ => "v.media_attr_flags ASC, v.ctime DESC"
             };
 
             if (!string.IsNullOrEmpty(category))
@@ -2097,28 +2097,68 @@ public class VideoController : ControllerBase
             var rng = new Random(seed);
 
             // 优先获取点赞数少的影片：按 like_count 升序，加随机偏移
-            // 取前 total*0.6 条中随机选 count 条（确保候选池足够大）
-            int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
-            int offset = total <= poolSize ? 0 : rng.Next(total - poolSize);
+            // 优先选 media_attr_flags=0 的影片，不够再用非0补
+            using var flagsCountCmd = new SqliteCommand(
+                "SELECT COUNT(*) FROM videos WHERE file_size > 0 AND media_attr_flags = 0", conn);
+            int zeroFlagsCount = Convert.ToInt32(flagsCountCmd.ExecuteScalar());
 
-            var sql = @"
-                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
-                       s.name AS series_name,
-                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
-                FROM videos v
-                LEFT JOIN video_series s ON v.seriesid = s.id
-                WHERE v.file_size > 0
-                ORDER BY like_count ASC, v.id
-                LIMIT @limit OFFSET @offset";
-            using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.AddWithValue("@limit", poolSize);
-            cmd.Parameters.AddWithValue("@offset", offset);
             var pool = new List<object>();
-            using (var reader = cmd.ExecuteReader())
+
+            // 第一轮：从 media_attr_flags=0 的池子中随机选
+            if (zeroFlagsCount > 0)
             {
-                while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
+                int zeroPoolSize = Math.Min(zeroFlagsCount, Math.Max(count * 3, (int)(zeroFlagsCount * 0.6)));
+                int zeroOffset = zeroFlagsCount <= zeroPoolSize ? 0 : rng.Next(zeroFlagsCount - zeroPoolSize);
+
+                var zeroSql = @"
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                           v.seriesid, v.ctime, v.media_attr_flags,
+                           (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                           s.name AS series_name,
+                           (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                    FROM videos v
+                    LEFT JOIN video_series s ON v.seriesid = s.id
+                    WHERE v.file_size > 0 AND v.media_attr_flags = 0
+                    ORDER BY like_count ASC, v.id
+                    LIMIT @limit OFFSET @offset";
+                using var zeroCmd = new SqliteCommand(zeroSql, conn);
+                zeroCmd.Parameters.AddWithValue("@limit", zeroPoolSize);
+                zeroCmd.Parameters.AddWithValue("@offset", zeroOffset);
+                using (var reader = zeroCmd.ExecuteReader())
+                {
+                    while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
+                }
+            }
+
+            // 如果 media_attr_flags=0 的不够 count 条，从非0的补充
+            if (pool.Count < count)
+            {
+                int need = count - pool.Count;
+                int nonZeroTotal = total - zeroFlagsCount;
+                if (nonZeroTotal > 0)
+                {
+                    int nonZeroPoolSize = Math.Min(nonZeroTotal, Math.Max(need * 3, (int)(nonZeroTotal * 0.6)));
+                    int nonZeroOffset = nonZeroTotal <= nonZeroPoolSize ? 0 : rng.Next(nonZeroTotal - nonZeroPoolSize);
+
+                    var nonZeroSql = @"
+                        SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                               v.seriesid, v.ctime, v.media_attr_flags,
+                               (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                               s.name AS series_name,
+                               (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                        FROM videos v
+                        LEFT JOIN video_series s ON v.seriesid = s.id
+                        WHERE v.file_size > 0 AND v.media_attr_flags != 0
+                        ORDER BY like_count ASC, v.id
+                        LIMIT @limit OFFSET @offset";
+                    using var nonZeroCmd = new SqliteCommand(nonZeroSql, conn);
+                    nonZeroCmd.Parameters.AddWithValue("@limit", nonZeroPoolSize);
+                    nonZeroCmd.Parameters.AddWithValue("@offset", nonZeroOffset);
+                    using (var reader = nonZeroCmd.ExecuteReader())
+                    {
+                        while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
+                    }
+                }
             }
 
             // 从候选池中随机选 count 条
