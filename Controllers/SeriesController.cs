@@ -164,7 +164,7 @@ public class SeriesController : ControllerBase
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
                 var sql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime,
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
                         (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
                          INNER JOIN video_actors va ON a.id = va.actor_id 
@@ -185,18 +185,19 @@ public class SeriesController : ControllerBase
                 {
                     videos.Add(new
                     {
-                        Id = reader["id"].ToString(),
-                        Code = reader["code"]?.ToString(),
-                        Name = reader["name"].ToString(),
-                        Category = reader["category"]?.ToString(),
-                        Country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-                        CoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                        FilePath = reader["file_path"]?.ToString(),
-                        FileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                        SeriesId = reader["seriesid"]?.ToString(),
-                        Ctime = reader["ctime"]?.ToString(),
-                        LikeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-                        ActorNames = reader["actor_names"]?.ToString()
+                        id = reader["id"].ToString(),
+                        code = reader["code"]?.ToString(),
+                        name = reader["name"].ToString(),
+                        category = reader["category"]?.ToString(),
+                        country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
+                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                        filePath = reader["file_path"]?.ToString(),
+                        fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                        seriesId = reader["seriesid"]?.ToString(),
+                        ctime = reader["ctime"]?.ToString(),
+                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
+                        actorNames = reader["actor_names"]?.ToString(),
+                        mediaAttrFlags = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
                     });
                 }
 
