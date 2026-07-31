@@ -670,8 +670,9 @@ public class VideoController : ControllerBase
             // 获取视频完整信息
             string? videoName = null, videoCode = null, videoCategory = null;
             string? currentFilePath = null, currentCoverPath = null;
+            long currentFileSize = 0;
             using (var getCmd = new SqliteCommand(
-                "SELECT name, code, category, file_path, cover_path FROM videos WHERE id = @id", conn))
+                "SELECT name, code, category, file_path, cover_path, file_size FROM videos WHERE id = @id", conn))
             {
                 getCmd.Parameters.Add(new SqliteParameter("@id", id));
                 using var reader = getCmd.ExecuteReader();
@@ -683,6 +684,7 @@ public class VideoController : ControllerBase
                 var rawFp = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
                 currentFilePath = rawFp;
                 currentCoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"]?.ToString();
+                currentFileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]);
             }
 
             // 获取扫描目录（含分类）
@@ -749,11 +751,23 @@ public class VideoController : ControllerBase
                     messages.Add("未找到封面");
             }
 
-            // 更新 ctime 为当前时间，使其排在前面；同时重置 media_attr_flags 为 0
-            using var timeCmd = new SqliteCommand("UPDATE videos SET ctime = @ctime, media_attr_flags = 0 WHERE id = @id", conn);
-            timeCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            timeCmd.Parameters.Add(new SqliteParameter("@id", id));
-            timeCmd.ExecuteNonQuery();
+            // 只有 file_size 发生变化时才更新 ctime，使其排在前面；同时重置 media_attr_flags 为 0
+            long finalFileSize = newFileSize ?? 0;
+            bool sizeChanged = finalFileSize != currentFileSize;
+            if (sizeChanged)
+            {
+                using var timeCmd = new SqliteCommand("UPDATE videos SET ctime = @ctime, media_attr_flags = 0 WHERE id = @id", conn);
+                timeCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+                timeCmd.Parameters.Add(new SqliteParameter("@id", id));
+                timeCmd.ExecuteNonQuery();
+            }
+            else
+            {
+                // file_size 未变化，只重置 media_attr_flags
+                using var flagsCmd = new SqliteCommand("UPDATE videos SET media_attr_flags = 0 WHERE id = @id", conn);
+                flagsCmd.Parameters.Add(new SqliteParameter("@id", id));
+                flagsCmd.ExecuteNonQuery();
+            }
 
             return Ok(new { success = true, data = new { filePath = newFilePath, fileSize = newFileSize, coverPath = newCoverPath }, message = string.Join("；", messages) });
         }
