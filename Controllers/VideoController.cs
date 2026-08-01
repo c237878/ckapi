@@ -40,6 +40,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? seriesId = null,
         [FromQuery] bool? hasFile = null,
         [FromQuery] int? mediaAttrFlags = null,
+        [FromQuery] bool? prioritizeUnrated = null,
         [FromQuery] string? sortBy = null)
     {
         try
@@ -48,13 +49,15 @@ public class VideoController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            // 排序
+            // 排序：首页分类板块优先 media_attr_flags=0，非0同等优先级
             var orderBy = sortBy?.ToLower() switch
             {
                 "code" => "v.code ASC",
                 "name" => "v.name ASC",
                 "likecount" => "like_count DESC",
-                _ => "v.ctime DESC"
+                _ => prioritizeUnrated == true
+                    ? "CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, v.ctime DESC"
+                    : "v.ctime DESC"
             };
 
             if (!string.IsNullOrEmpty(category))
