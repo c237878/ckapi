@@ -48,13 +48,14 @@ public class VideoController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            // 排序：优先 media_attr_flags=0 的影片
+            // 排序：优先 media_attr_flags=0 的影片，非0的同等优先级
+            var flagPriority = "CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END";
             var orderBy = sortBy?.ToLower() switch
             {
-                "code" => "v.media_attr_flags ASC, v.code ASC",
-                "name" => "v.media_attr_flags ASC, v.name ASC",
-                "likecount" => "v.media_attr_flags ASC, like_count DESC",
-                _ => "v.media_attr_flags ASC, v.ctime DESC"
+                "code" => $"{flagPriority}, v.code ASC",
+                "name" => $"{flagPriority}, v.name ASC",
+                "likecount" => $"{flagPriority}, like_count DESC",
+                _ => $"{flagPriority}, v.ctime DESC"
             };
 
             if (!string.IsNullOrEmpty(category))
