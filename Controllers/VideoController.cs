@@ -2091,7 +2091,7 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 首页 - 最新添加
+    /// 首页 - 今日推荐（按天缓存，优先 media_attr_flags=0）
     /// </summary>
     [HttpGet("daily-recommend")]
     public IActionResult GetDailyRecommend([FromQuery] int count = 12, [FromQuery] bool refresh = false)
@@ -2101,6 +2101,60 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            var cacheKey = $"daily_recommend_{today}";
+
+            // refresh=true 时清除当天缓存，重新获取
+            if (refresh)
+            {
+                using var delCmd = new SqliteCommand(
+                    "DELETE FROM system_settings WHERE name = @name", conn);
+                delCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
+                delCmd.ExecuteNonQuery();
+            }
+            else
+            {
+                // 尝试从缓存读取
+                using var cacheCmd = new SqliteCommand(
+                    "SELECT content FROM system_settings WHERE name = @name", conn);
+                cacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
+                var cached = cacheCmd.ExecuteScalar()?.ToString();
+                if (!string.IsNullOrEmpty(cached))
+                {
+                    var cachedIds = cached.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    if (cachedIds.Length > 0)
+                    {
+                        // 用缓存的 ID 列表查完整数据
+                        var placeholders = string.Join(",", cachedIds.Select((_, i) => $"@id{i}"));
+                        var sql = $@"
+                            SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                                   v.seriesid, v.ctime, v.media_attr_flags,
+                                   (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                                   s.name AS series_name,
+                                   (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                            FROM videos v
+                            LEFT JOIN video_series s ON v.seriesid = s.id
+                            WHERE v.id IN ({placeholders})";
+                        using var cmd = new SqliteCommand(sql, conn);
+                        for (int i = 0; i < cachedIds.Length; i++)
+                            cmd.Parameters.Add(new SqliteParameter($"@id{i}", cachedIds[i]));
+                        // 按缓存顺序返回
+                        var dict = new Dictionary<string, object>();
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                                dict[reader["id"].ToString()] = ReadVideoRow(reader, withSeriesName: true);
+                        }
+                        var result = new List<object>();
+                        foreach (var id in cachedIds)
+                        {
+                            if (dict.ContainsKey(id)) result.Add(dict[id]);
+                        }
+                        return Ok(new { success = true, data = result, cached = true });
+                    }
+                }
+            }
+
             // 获取有文件的视频总数
             using var countCmd = new SqliteCommand(
                 "SELECT COUNT(*) FROM videos WHERE file_size > 0", conn);
@@ -2108,90 +2162,61 @@ public class VideoController : ControllerBase
             if (total == 0)
                 return Ok(new { success = true, data = new List<object>() });
 
-            // 种子：refresh 模式用时间戳，否则用日期
-            int seed;
-            if (refresh)
-            {
-                seed = (int)(DateTime.Now.Ticks % int.MaxValue);
-            }
-            else
-            {
-                var today = DateTime.Now;
-                seed = today.Year * 10000 + today.Month * 100 + today.Day;
-            }
+            // 随机种子
+            int seed = (int)(DateTime.Now.Ticks % int.MaxValue);
             var rng = new Random(seed);
 
-            // 优先获取点赞数少的影片：按 like_count 升序，加随机偏移
-            // 优先选 media_attr_flags=0 的影片，不够再用非0补
-            using var flagsCountCmd = new SqliteCommand(
-                "SELECT COUNT(*) FROM videos WHERE file_size > 0 AND media_attr_flags = 0", conn);
-            int zeroFlagsCount = Convert.ToInt32(flagsCountCmd.ExecuteScalar());
+            // 单条 SQL：CASE WHEN 二分排序，优先 media_attr_flags=0，非0同等优先级
+            // 候选池大小取 count*3 和 total*0.6 的较小值，不加 OFFSET 保证 flags=0 优先
+            int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
 
+            var sql2 = @"
+                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
+                       v.seriesid, v.ctime, v.media_attr_flags,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       s.name AS series_name,
+                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                FROM videos v
+                LEFT JOIN video_series s ON v.seriesid = s.id
+                WHERE v.file_size > 0
+                ORDER BY CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, like_count ASC, v.id
+                LIMIT @limit";
+            using var poolCmd = new SqliteCommand(sql2, conn);
+            poolCmd.Parameters.AddWithValue("@limit", poolSize);
             var pool = new List<object>();
-
-            // 第一轮：从 media_attr_flags=0 的池子中随机选
-            if (zeroFlagsCount > 0)
+            using (var reader = poolCmd.ExecuteReader())
             {
-                int zeroPoolSize = Math.Min(zeroFlagsCount, Math.Max(count * 3, (int)(zeroFlagsCount * 0.6)));
-                int zeroOffset = zeroFlagsCount <= zeroPoolSize ? 0 : rng.Next(zeroFlagsCount - zeroPoolSize);
-
-                var zeroSql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                           v.seriesid, v.ctime, v.media_attr_flags,
-                           (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
-                           s.name AS series_name,
-                           (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
-                    FROM videos v
-                    LEFT JOIN video_series s ON v.seriesid = s.id
-                    WHERE v.file_size > 0 AND v.media_attr_flags = 0
-                    ORDER BY like_count ASC, v.id
-                    LIMIT @limit OFFSET @offset";
-                using var zeroCmd = new SqliteCommand(zeroSql, conn);
-                zeroCmd.Parameters.AddWithValue("@limit", zeroPoolSize);
-                zeroCmd.Parameters.AddWithValue("@offset", zeroOffset);
-                using (var reader = zeroCmd.ExecuteReader())
-                {
-                    while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
-                }
-            }
-
-            // 如果 media_attr_flags=0 的不够 count 条，从非0的补充
-            if (pool.Count < count)
-            {
-                int need = count - pool.Count;
-                int nonZeroTotal = total - zeroFlagsCount;
-                if (nonZeroTotal > 0)
-                {
-                    int nonZeroPoolSize = Math.Min(nonZeroTotal, Math.Max(need * 3, (int)(nonZeroTotal * 0.6)));
-                    int nonZeroOffset = nonZeroTotal <= nonZeroPoolSize ? 0 : rng.Next(nonZeroTotal - nonZeroPoolSize);
-
-                    var nonZeroSql = @"
-                        SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                               v.seriesid, v.ctime, v.media_attr_flags,
-                               (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
-                               s.name AS series_name,
-                               (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
-                        FROM videos v
-                        LEFT JOIN video_series s ON v.seriesid = s.id
-                        WHERE v.file_size > 0 AND v.media_attr_flags != 0
-                        ORDER BY like_count ASC, v.id
-                        LIMIT @limit OFFSET @offset";
-                    using var nonZeroCmd = new SqliteCommand(nonZeroSql, conn);
-                    nonZeroCmd.Parameters.AddWithValue("@limit", nonZeroPoolSize);
-                    nonZeroCmd.Parameters.AddWithValue("@offset", nonZeroOffset);
-                    using (var reader = nonZeroCmd.ExecuteReader())
-                    {
-                        while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
-                    }
-                }
+                while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
             }
 
             // 从候选池中随机选 count 条
-            var selected = new List<object>();
             var indices = Enumerable.Range(0, pool.Count).OrderBy(_ => rng.Next()).Take(Math.Min(count, pool.Count)).ToList();
-            foreach (var i in indices) selected.Add(pool[i]);
+            var selected = new List<object>();
+            var selectedIds = new List<string>();
+            foreach (var i in indices)
+            {
+                selected.Add(pool[i]);
+                var dict = (Dictionary<string, object?>)pool[i];
+                selectedIds.Add(dict["id"].ToString()!);
+            }
 
-            return Ok(new { success = true, data = selected });
+            // 写入缓存（先删后插）
+            var cacheValue = string.Join(",", selectedIds);
+            using var delCacheCmd = new SqliteCommand(
+                "DELETE FROM system_settings WHERE name = @name", conn);
+            delCacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
+            delCacheCmd.ExecuteNonQuery();
+
+            using var insertCacheCmd = new SqliteCommand(
+                "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @name, @content, @ctime, @utime)", conn);
+            insertCacheCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
+            insertCacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
+            insertCacheCmd.Parameters.Add(new SqliteParameter("@content", cacheValue));
+            insertCacheCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            insertCacheCmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            insertCacheCmd.ExecuteNonQuery();
+
+            return Ok(new { success = true, data = selected, cached = false });
         }
         catch (Exception ex)
         {
