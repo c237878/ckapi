@@ -2090,70 +2090,29 @@ public class VideoController : ControllerBase
         }
     }
 
+    // 今日推荐内存缓存：按天缓存，refresh=true 清除
+    private static string? _dailyRecommendDate = null;
+    private static List<object>? _dailyRecommendCache = null;
+    private static readonly object _dailyRecommendLock = new();
+
     /// <summary>
-    /// 首页 - 今日推荐（按天缓存，优先 media_attr_flags=0）
+    /// 首页 - 今日推荐（内存缓存，优先 media_attr_flags=0）
     /// </summary>
     [HttpGet("daily-recommend")]
     public IActionResult GetDailyRecommend([FromQuery] int count = 12, [FromQuery] bool refresh = false)
     {
         try
         {
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+
+            // 非刷新模式且日期一致 → 直接返回缓存
+            if (!refresh && _dailyRecommendCache != null && _dailyRecommendDate == today)
+            {
+                return Ok(new { success = true, data = _dailyRecommendCache, cached = true });
+            }
+
             using var conn = GetConnection();
             conn.Open();
-
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
-            var cacheKey = $"daily_recommend_{today}";
-
-            // refresh=true 时清除当天缓存，重新获取
-            if (refresh)
-            {
-                using var delCmd = new SqliteCommand(
-                    "DELETE FROM system_settings WHERE name = @name", conn);
-                delCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
-                delCmd.ExecuteNonQuery();
-            }
-            else
-            {
-                // 尝试从缓存读取
-                using var cacheCmd = new SqliteCommand(
-                    "SELECT content FROM system_settings WHERE name = @name", conn);
-                cacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
-                var cached = cacheCmd.ExecuteScalar()?.ToString();
-                if (!string.IsNullOrEmpty(cached))
-                {
-                    var cachedIds = cached.Split(',', StringSplitOptions.RemoveEmptyEntries);
-                    if (cachedIds.Length > 0)
-                    {
-                        // 用缓存的 ID 列表查完整数据
-                        var placeholders = string.Join(",", cachedIds.Select((_, i) => $"@id{i}"));
-                        var sql = $@"
-                            SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                                   v.seriesid, v.ctime, v.media_attr_flags,
-                                   (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
-                                   s.name AS series_name,
-                                   (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
-                            FROM videos v
-                            LEFT JOIN video_series s ON v.seriesid = s.id
-                            WHERE v.id IN ({placeholders})";
-                        using var cmd = new SqliteCommand(sql, conn);
-                        for (int i = 0; i < cachedIds.Length; i++)
-                            cmd.Parameters.Add(new SqliteParameter($"@id{i}", cachedIds[i]));
-                        // 按缓存顺序返回
-                        var dict = new Dictionary<string, object>();
-                        using (var reader = cmd.ExecuteReader())
-                        {
-                            while (reader.Read())
-                                dict[reader["id"].ToString()] = ReadVideoRow(reader, withSeriesName: true);
-                        }
-                        var result = new List<object>();
-                        foreach (var id in cachedIds)
-                        {
-                            if (dict.ContainsKey(id)) result.Add(dict[id]);
-                        }
-                        return Ok(new { success = true, data = result, cached = true });
-                    }
-                }
-            }
 
             // 获取有文件的视频总数
             using var countCmd = new SqliteCommand(
@@ -2167,10 +2126,9 @@ public class VideoController : ControllerBase
             var rng = new Random(seed);
 
             // 单条 SQL：CASE WHEN 二分排序，优先 media_attr_flags=0，非0同等优先级
-            // 候选池大小取 count*3 和 total*0.6 的较小值，不加 OFFSET 保证 flags=0 优先
             int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
 
-            var sql2 = @"
+            var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime, v.media_attr_flags,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
@@ -2181,7 +2139,7 @@ public class VideoController : ControllerBase
                 WHERE v.file_size > 0
                 ORDER BY CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, like_count ASC, v.id
                 LIMIT @limit";
-            using var poolCmd = new SqliteCommand(sql2, conn);
+            using var poolCmd = new SqliteCommand(sql, conn);
             poolCmd.Parameters.AddWithValue("@limit", poolSize);
             var pool = new List<object>();
             using (var reader = poolCmd.ExecuteReader())
@@ -2192,29 +2150,14 @@ public class VideoController : ControllerBase
             // 从候选池中随机选 count 条
             var indices = Enumerable.Range(0, pool.Count).OrderBy(_ => rng.Next()).Take(Math.Min(count, pool.Count)).ToList();
             var selected = new List<object>();
-            var selectedIds = new List<string>();
-            foreach (var i in indices)
+            foreach (var i in indices) selected.Add(pool[i]);
+
+            // 写入内存缓存
+            lock (_dailyRecommendLock)
             {
-                selected.Add(pool[i]);
-                var dict = (Dictionary<string, object?>)pool[i];
-                selectedIds.Add(dict["id"].ToString()!);
+                _dailyRecommendDate = today;
+                _dailyRecommendCache = selected;
             }
-
-            // 写入缓存（先删后插）
-            var cacheValue = string.Join(",", selectedIds);
-            using var delCacheCmd = new SqliteCommand(
-                "DELETE FROM system_settings WHERE name = @name", conn);
-            delCacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
-            delCacheCmd.ExecuteNonQuery();
-
-            using var insertCacheCmd = new SqliteCommand(
-                "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @name, @content, @ctime, @utime)", conn);
-            insertCacheCmd.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
-            insertCacheCmd.Parameters.Add(new SqliteParameter("@name", cacheKey));
-            insertCacheCmd.Parameters.Add(new SqliteParameter("@content", cacheValue));
-            insertCacheCmd.Parameters.Add(new SqliteParameter("@ctime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            insertCacheCmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            insertCacheCmd.ExecuteNonQuery();
 
             return Ok(new { success = true, data = selected, cached = false });
         }

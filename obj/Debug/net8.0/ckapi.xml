@@ -392,7 +392,7 @@
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetDailyRecommend(System.Int32,System.Boolean)">
             <summary>
-            首页 - 今日推荐（按天缓存，优先 media_attr_flags=0）
+            首页 - 今日推荐（内存缓存，优先 media_attr_flags=0）
             </summary>
         </member>
         <member name="M:ckapi.Controllers.VideoController.GetRecentlyLiked(System.Int32)">
