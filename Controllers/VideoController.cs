@@ -2295,6 +2295,10 @@ public class VideoController : ControllerBase
             using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes", conn);
             int total = Convert.ToInt32(totalCmd.ExecuteScalar());
 
+            // 最后一次点赞日期
+            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes", conn);
+            var lastLikeDate = lastCmd.ExecuteScalar()?.ToString();
+
             // 最近12个月每月统计
             var monthlyStats = new List<object>();
             for (int i = 11; i >= 0; i--)
@@ -2317,6 +2321,7 @@ public class VideoController : ControllerBase
                 monthTotal,
                 monthDays = DateTime.DaysInMonth(targetYear, targetMonth),
                 total,
+                lastLikeDate,
                 monthly = monthlyStats
             });
         }
