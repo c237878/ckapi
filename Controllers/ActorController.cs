@@ -76,7 +76,10 @@ public class ActorController : ControllerBase
                         (SELECT COUNT(*) FROM video_actors va2 
                          JOIN videos v ON va2.video_id = v.id 
                          JOIN video_likes vl ON v.id = vl.video_id 
-                         WHERE va2.actor_id = a.id) as like_count
+                         WHERE va2.actor_id = a.id) as like_count,
+                        (SELECT COUNT(*) FROM video_actors va3 
+                         JOIN videos v2 ON va3.video_id = v2.id 
+                         WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count
                     FROM actors a
                     {whereClause}
                     ORDER BY " + orderBy + @"
@@ -101,6 +104,7 @@ public class ActorController : ControllerBase
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
                         likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
+                        unloadedCount = reader["unloaded_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["unloaded_count"]),
                         addedAt = reader["ctime"]?.ToString()
                     });
                 }
