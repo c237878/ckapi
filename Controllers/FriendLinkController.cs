@@ -29,7 +29,7 @@ public class FriendLinkController : ControllerBase
     {
         try
         {
-            var dt = _db.ExecuteDataTable("SELECT * FROM friend_links ORDER BY sort_order, id");
+            var dt = _db.ExecuteDataTable("SELECT * FROM friend_links ORDER BY sortorder, id");
             var list = new List<Dictionary<string, object?>>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
@@ -40,7 +40,7 @@ public class FriendLinkController : ControllerBase
                     ["link"] = row["link"]?.ToString(),
                     ["logo"] = row["logo"]?.ToString(),
                     ["description"] = row["description"]?.ToString(),
-                    ["sortOrder"] = row["sort_order"] != DBNull.Value ? Convert.ToInt32(row["sort_order"]) : 0,
+                    ["sortorder"] = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
                     ["ctime"] = row["ctime"]?.ToString(),
                     ["utime"] = row["utime"]?.ToString()
                 });
@@ -63,7 +63,7 @@ public class FriendLinkController : ControllerBase
         try
         {
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            var id = Guid.NewGuid().ToString();
+            var id = Guid.NewGuid().ToString("N").ToUpper();
             
             _db.ExecuteNonQuery(
                 "INSERT INTO friend_links (id, name, link, logo, description, sortorder, ctime, utime) VALUES (@id, @name, @link, @logo, @description, @sortorder, @ctime, @utime)",

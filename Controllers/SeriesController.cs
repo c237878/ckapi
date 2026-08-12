@@ -2,6 +2,7 @@ using ckapi.Models;
 using ckapi.Utils;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using System.Text.Json.Serialization;
 
 namespace ckapi.Controllers;
 
@@ -14,18 +15,26 @@ public class SeriesController : ControllerBase
 {
     private readonly ILogger<SeriesController> _logger;
     private readonly SQLiteHelper _db;
+    private readonly IConfiguration _config;
 
-    public SeriesController(ILogger<SeriesController> logger, SQLiteHelper db)
+    public SeriesController(ILogger<SeriesController> logger, SQLiteHelper db, IConfiguration config)
     {
         _logger = logger;
         _db = db;
+        _config = config;
+    }
+
+    private SqliteConnection GetConnection()
+    {
+        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
     /// <summary>
     /// 获取系列列表
     /// </summary>
     [HttpGet]
-    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null)
+    public IActionResult GetSeriesList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? country = null, [FromQuery] string? keyword = null,
+        [FromQuery] string? sortBy = null)
     {
         try
         {
@@ -33,20 +42,38 @@ public class SeriesController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
+            // 排序
+            var orderBy = sortBy?.ToLower() switch
+            {
+                "name" => "s.name ASC",
+                "likecount" => "like_count DESC",
+                "videocount" => "video_count DESC",
+                _ => "like_count DESC"
+            };
+
             if (!string.IsNullOrEmpty(country))
             {
                 whereClause += " AND country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            var countSql = $"SELECT COUNT(*) FROM video_series {whereClause}";
+            if (!string.IsNullOrEmpty(keyword))
+            {
+                whereClause += " AND (name LIKE @keyword OR alias LIKE @keyword)";
+                parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
+            }
+
+            var countSql = $"SELECT COUNT(*) FROM video_series s {whereClause}";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT s.*, (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count
+                SELECT s.*, 
+                       (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count,
+                       (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count,
+                       (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id AND (v.file_size IS NULL OR v.file_size = 0)) as unloaded_count
                 FROM video_series s
                 {whereClause}
-                ORDER BY s.name ASC
+                ORDER BY " + orderBy + @"
                 LIMIT @pageSize OFFSET @offset";
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
@@ -64,7 +91,9 @@ public class SeriesController : ControllerBase
                     Country = row["country"]?.ToString(),
                     CTime = row["ctime"]?.ToString(),
                     UTime = row["utime"]?.ToString(),
-                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0
+                    VideoCount = row["video_count"] != DBNull.Value ? Convert.ToInt32(row["video_count"]) : 0,
+                    LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0,
+                    UnloadedCount = row["unloaded_count"] != DBNull.Value ? Convert.ToInt32(row["unloaded_count"]) : 0
                 });
             }
 
@@ -85,7 +114,9 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM video_series WHERE id = @id";
+            var sql = @"SELECT s.*, 
+                        (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count
+                        FROM video_series s WHERE s.id = @id";
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
             if (dt.Rows.Count == 0)
             {
@@ -101,7 +132,8 @@ public class SeriesController : ControllerBase
                 Link = row["link"]?.ToString(),
                 Country = row["country"]?.ToString(),
                 CTime = row["ctime"]?.ToString(),
-                UTime = row["utime"]?.ToString()
+                UTime = row["utime"]?.ToString(),
+                LikeCount = row["like_count"] != DBNull.Value ? Convert.ToInt32(row["like_count"]) : 0
             };
 
             return Ok(new { success = true, data = series });
@@ -122,55 +154,55 @@ public class SeriesController : ControllerBase
         try
         {
             var offset = (page - 1) * pageSize;
+            using var conn = GetConnection();
+            conn.Open();
+
             var countSql = "SELECT COUNT(*) FROM videos WHERE seriesid = @seriesid";
-            var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@seriesid", id)));
-
-            var sql = @"
-                SELECT * FROM videos
-                WHERE seriesid = @seriesid
-                ORDER BY ctime DESC
-                LIMIT @pageSize OFFSET @offset";
-            var dt = _db.ExecuteDataTable(sql,
-                new SqliteParameter("@seriesid", id),
-                new SqliteParameter("@pageSize", pageSize),
-                new SqliteParameter("@offset", offset));
-
-            var videos = new List<Video>();
-            foreach (System.Data.DataRow row in dt.Rows)
+            using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                var video = new Video
-                {
-                    Id = row["id"]?.ToString(),
-                    Code = row["code"]?.ToString(),
-                    Name = row["name"]?.ToString(),
-                    Country = row["country"]?.ToString(),
-                    CoverUrl = row["cover_path"]?.ToString(),
-                    VideoUrl = row["file_path"]?.ToString(),
-                    VideoSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
-                    SeriesId = row["seriesid"]?.ToString(),
-                    CTime = row["ctime"]?.ToString(),
-                    UTime = row["utime"]?.ToString(),
-                    Alias = row["alias"]?.ToString(),
-                    MediaAttrFlags = row["media_attr_flags"] != DBNull.Value ? Convert.ToInt32(row["media_attr_flags"]) : 0,
-                    Actors = new List<Actor>()
-                };
+                countCmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                // 获取该视频的演员列表
-                var actorSql = @"SELECT a.* FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
-                var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
-                foreach (System.Data.DataRow actorRow in actorDt.Rows)
+                var sql = @"
+                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
+                        (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
+                         INNER JOIN video_actors va ON a.id = va.actor_id 
+                         WHERE va.video_id = v.id) as actor_names
+                    FROM videos v 
+                    WHERE v.seriesid = @seriesid
+                    ORDER BY v.sort_order ASC, v.code ASC
+                    LIMIT @pageSize OFFSET @offset";
+
+                using var cmd = new SqliteCommand(sql, conn);
+                cmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
+                cmd.Parameters.Add(new SqliteParameter("@offset", offset));
+
+                using var reader = cmd.ExecuteReader();
+                var videos = new List<object>();
+                while (reader.Read())
                 {
-                    video.Actors.Add(new Actor
+                    videos.Add(new
                     {
-                        Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString()
+                        id = reader["id"].ToString(),
+                        code = reader["code"]?.ToString(),
+                        name = reader["name"].ToString(),
+                        category = reader["category"]?.ToString(),
+                        country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
+                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
+                        filePath = reader["file_path"]?.ToString(),
+                        fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
+                        seriesId = reader["seriesid"]?.ToString(),
+                        ctime = reader["ctime"]?.ToString(),
+                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
+                        actorNames = reader["actor_names"]?.ToString(),
+                        mediaAttrFlags = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
                     });
                 }
 
-                videos.Add(video);
+                return Ok(new { success = true, data = videos, total, page, pageSize });
             }
-
-            return Ok(new { success = true, data = videos, total, page, pageSize });
         }
         catch (Exception ex)
         {
@@ -192,9 +224,14 @@ public class SeriesController : ControllerBase
                 return Ok(new { success = false, message = "系列名称不能为空" });
             }
 
-            series.Id = Guid.NewGuid().ToString();
-            series.CTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            series.UTime = series.CTime;
+            if (string.IsNullOrEmpty(series.Id))
+            {
+                series.Id = Guid.NewGuid().ToString("N").ToUpper();
+            }
+
+            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            series.CTime = now;
+            series.UTime = now;
 
             var sql = @"
                 INSERT INTO video_series (id, name, alias, link, country, ctime, utime)
@@ -210,7 +247,7 @@ public class SeriesController : ControllerBase
                 new SqliteParameter("@utime", series.UTime)
             );
 
-            return Ok(new { success = true, data = series, message = "添加成功" });
+            return Ok(new { success = true, data = series });
         }
         catch (Exception ex)
         {
@@ -227,10 +264,8 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            series.UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-
             var sql = @"
-                UPDATE video_series SET
+                UPDATE video_series SET 
                     name = @name,
                     alias = @alias,
                     link = @link,
@@ -248,13 +283,9 @@ public class SeriesController : ControllerBase
             );
 
             if (result > 0)
-            {
                 return Ok(new { success = true, message = "更新成功" });
-            }
             else
-            {
                 return Ok(new { success = false, message = "系列不存在" });
-            }
         }
         catch (Exception ex)
         {
@@ -271,22 +302,18 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            // 先清空该系列下影片的seriesid
+            // 将系列下影片的seriesid置为空
             _db.ExecuteNonQuery("UPDATE videos SET seriesid = NULL WHERE seriesid = @seriesid",
                 new SqliteParameter("@seriesid", id));
 
-            // 再删除系列
-            var sql = "DELETE FROM video_series WHERE id = @id";
-            var result = _db.ExecuteNonQuery(sql, new SqliteParameter("@id", id));
+            // 删除系列
+            var result = _db.ExecuteNonQuery("DELETE FROM video_series WHERE id = @id",
+                new SqliteParameter("@id", id));
 
             if (result > 0)
-            {
                 return Ok(new { success = true, message = "删除成功" });
-            }
             else
-            {
                 return Ok(new { success = false, message = "系列不存在" });
-            }
         }
         catch (Exception ex)
         {
@@ -294,4 +321,76 @@ public class SeriesController : ControllerBase
             return Ok(new { success = false, message = "删除系列失败" });
         }
     }
+
+    /// <summary>
+    /// 获取所有现有地区列表（去重）
+    /// </summary>
+    [HttpGet("countries")]
+    public IActionResult GetCountries()
+    {
+        try
+        {
+            var dt = _db.ExecuteDataTable(
+                "SELECT DISTINCT country FROM video_series WHERE country IS NOT NULL AND country != '' ORDER BY country");
+            var countries = new List<string>();
+            foreach (System.Data.DataRow row in dt.Rows)
+            {
+                countries.Add(row["country"].ToString());
+            }
+            return Ok(new { success = true, data = countries });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取地区列表失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 更新系列中影片的排序
+    /// </summary>
+    [HttpPost("{id}/sort")]
+    public IActionResult UpdateVideoSort(string id, [FromBody] UpdateVideoSortRequest req)
+    {
+        try
+        {
+            if (req?.VideoIds == null || req.VideoIds.Count == 0)
+                return Ok(new { success = false, message = "排序列表为空" });
+
+            using var conn = GetConnection();
+            conn.Open();
+            using var transaction = conn.BeginTransaction();
+            try
+            {
+                for (int i = 0; i < req.VideoIds.Count; i++)
+                {
+                    using var cmd = new SqliteCommand(
+                        "UPDATE videos SET sort_order = @order WHERE id = @vid AND seriesid = @sid",
+                        conn, transaction);
+                    cmd.Parameters.Add(new SqliteParameter("@order", i));
+                    cmd.Parameters.Add(new SqliteParameter("@vid", req.VideoIds[i]));
+                    cmd.Parameters.Add(new SqliteParameter("@sid", id));
+                    cmd.ExecuteNonQuery();
+                }
+                transaction.Commit();
+                return Ok(new { success = true, message = $"已更新 {req.VideoIds.Count} 个影片的排序" });
+            }
+            catch
+            {
+                transaction.Rollback();
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "更新影片排序失败");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+}
+
+public class UpdateVideoSortRequest
+{
+    [JsonPropertyName("videoIds")]
+    public List<string> VideoIds { get; set; } = new();
 }

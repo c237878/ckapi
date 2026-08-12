@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace ckapi.Services;
 
 /// <summary>
@@ -34,16 +36,14 @@ public class DataService : IDataService
 
         try
         {
-            CreateVideosTable();
-            CreateActorsTable();
-            CreateVideoActorsTable();
-            CreateVideoLikesTable();
-            CreateScanTasksTable();
-            CreateHighlightsTable();
-            CreateLikeRecordsTable();
+            CreateVideoTable();
+            CreateVideoSeriesTable();
+            CreateActorTable();
+            CreateVideoActorTable();
             CreateSystemSettingsTable();
             CreateFriendLinksTable();
-            CreateVideoSeriesTable();
+            CreateScanDirectoryTable();
+            CreateVideoTypeTable();
 
             _logger.LogInformation("数据库初始化完成，数据库路径: {DbPath}", _db.GetDbPath());
         }
@@ -55,26 +55,24 @@ public class DataService : IDataService
     }
 
     /// <summary>
-    /// 创建影片表（videos）
+    /// 创建影片表
     /// </summary>
-    private void CreateVideosTable()
+    private void CreateVideoTable()
     {
         const string tableName = "videos";
         const string fieldStr = @"
-            id                  TEXT    NOT NULL    PRIMARY KEY,
-            name                TEXT,
-            category            TEXT,
-            file_path           TEXT,
-            file_size           INTEGER,
-            cover_path          TEXT,
-            code                TEXT,
-            country             TEXT,
-            seriesid            TEXT,
-            added_at            TEXT,
-            ctime               TEXT,
-            utime               TEXT,
-            media_attr_flags    INTEGER DEFAULT 0,
-            sort_order          INTEGER DEFAULT 0
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL,
+            code        TEXT,
+            category    TEXT    NOT NULL,
+            country     TEXT,
+            file_path   TEXT,
+            file_size   INTEGER,
+            cover_path  TEXT,
+            ctime       TEXT,
+            seriesid    TEXT,
+            media_attr_flags INTEGER DEFAULT 0,
+            sort_order  INTEGER DEFAULT 0
         ";
 
         if (!_db.TableExists(tableName))
@@ -84,30 +82,224 @@ public class DataService : IDataService
         }
         else
         {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-            MigrateVideosTable();
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+            // 添加迁移逻辑
+            MigrateVideoTable();
         }
     }
 
-    private void MigrateVideosTable()
+    private void MigrateVideoTable()
     {
-        // 原始 ckplayer.db 的 videos 表已存在且有数据，无需迁移
+        try
+        {
+            var columns = _db.ExecuteDataTable("PRAGMA table_info(videos)");
+            var columnNames = new List<string>();
+            foreach (System.Data.DataRow row in columns.Rows)
+            {
+                columnNames.Add(row["name"].ToString()?.ToLower() ?? "");
+            }
+
+            // 添加 name 列（旧表可能还是 title）
+            if (!columnNames.Contains("name") && columnNames.Contains("title"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos RENAME COLUMN title TO name");
+                _logger.LogInformation("重命名 title 列为 name");
+            }
+
+            // 添加 code 列
+            if (!columnNames.Contains("code"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN code TEXT");
+                _logger.LogInformation("添加 code 列到 videos 表");
+            }
+
+            // 添加 seriesid 列
+            if (!columnNames.Contains("seriesid"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN seriesid TEXT");
+                _logger.LogInformation("添加 seriesid 列到 videos 表");
+            }
+
+            // 添加 media_attr_flags 列
+            if (!columnNames.Contains("media_attr_flags"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN media_attr_flags INTEGER DEFAULT 0");
+                _logger.LogInformation("添加 media_attr_flags 列到 videos 表");
+            }
+
+            // 添加 sort_order 列
+            if (!columnNames.Contains("sort_order"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE videos ADD COLUMN sort_order INTEGER DEFAULT 0");
+                _logger.LogInformation("添加 sort_order 列到 videos 表");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "迁移videos表失败");
+        }
     }
 
     /// <summary>
-    /// 创建演员表（actors）
+    /// 迁移actors表结构
     /// </summary>
-    private void CreateActorsTable()
+    private void MigrateActorTable()
+    {
+        try
+        {
+            var columns = _db.ExecuteDataTable("PRAGMA table_info(actors)");
+            var columnNames = new List<string>();
+            foreach (System.Data.DataRow row in columns.Rows)
+            {
+                columnNames.Add(row["name"].ToString()?.ToLower() ?? "");
+            }
+
+            // 添加 alias 列
+            if (!columnNames.Contains("alias"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE actors ADD COLUMN alias TEXT");
+                _logger.LogInformation("添加 alias 列到 actors 表");
+            }
+
+            // 添加 country 列
+            if (!columnNames.Contains("country"))
+            {
+                _db.ExecuteNonQuery("ALTER TABLE actors ADD COLUMN country TEXT");
+                _logger.LogInformation("添加 country 列到 actors 表");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "迁移actors表失败");
+        }
+    }
+
+    /// <summary>
+    /// 创建扫描目录表
+    /// </summary>
+    private void CreateScanDirectoryTable()
+    {
+        const string tableName = "scan_directories";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            path        TEXT    NOT NULL,
+            category    TEXT    DEFAULT '',
+            recursive   INTEGER DEFAULT 1,
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    /// <summary>
+    /// 创建视频类型表
+    /// </summary>
+    private void CreateVideoTypeTable()
+    {
+        const string tableName = "video_types";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL UNIQUE,
+            extensions  TEXT    NOT NULL,
+            sort_order  INTEGER DEFAULT 0,
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+            // 初始化默认类型
+            InitDefaultVideoTypes();
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    private void InitDefaultVideoTypes()
+    {
+        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var defaults = new (string name, string ext)[]
+        {
+            ("mp4", ".mp4"),
+            ("mkv", ".mkv"),
+            ("avi", ".avi"),
+            ("mov", ".mov")
+        };
+        foreach (var (name, ext) in defaults)
+        {
+            try
+            {
+                _db.ExecuteNonQuery(@"
+                    INSERT OR IGNORE INTO video_types (id, name, extensions, sort_order, ctime, utime)
+                    VALUES (@id, @name, @ext, @sort, @ctime, @utime)",
+                    new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()),
+                    new SqliteParameter("@name", name),
+                    new SqliteParameter("@ext", ext),
+                    new SqliteParameter("@sort_order", 0),
+                    new SqliteParameter("@ctime", now),
+                    new SqliteParameter("@utime", now));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "初始化视频类型 {name} 失败", name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 创建影视系列表
+    /// </summary>
+    private void CreateVideoSeriesTable()
+    {
+        const string tableName = "video_series";
+        const string fieldStr = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL,
+            alias       TEXT,
+            link        TEXT,
+            country     TEXT,
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
+        ";
+
+        if (!_db.TableExists(tableName))
+        {
+            _db.CreateTable(tableName, fieldStr);
+            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+        }
+    }
+
+    /// <summary>
+    /// 创建演员表
+    /// </summary>
+    private void CreateActorTable()
     {
         const string tableName = "actors";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
-            name        TEXT    NOT NULL,
+            name        TEXT    NOT NULL UNIQUE,
+            alias       TEXT,
+            country     TEXT,
             avatar_path TEXT,
             bio         TEXT,
-            ctime       TEXT,
-            alias       TEXT,
-            country     TEXT
+            ctime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -117,130 +309,22 @@ public class DataService : IDataService
         }
         else
         {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
+            MigrateActorTable();
         }
     }
 
     /// <summary>
-    /// 创建影片-演员关联表（video_actors）
+    /// 创建影片-演员关联表
     /// </summary>
-    private void CreateVideoActorsTable()
+    private void CreateVideoActorTable()
     {
         const string tableName = "video_actors";
         const string fieldStr = @"
-            video_id    TEXT    NOT NULL,
-            actor_id    TEXT    NOT NULL,
-            PRIMARY KEY (video_id, actor_id)
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-        }
-    }
-
-    /// <summary>
-    /// 创建点赞表（video_likes）
-    /// </summary>
-    private void CreateVideoLikesTable()
-    {
-        const string tableName = "video_likes";
-        const string fieldStr = @"
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id    TEXT    NOT NULL,
-            liked_at    TEXT
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-        }
-    }
-
-    /// <summary>
-    /// 创建扫描任务表（scan_tasks）
-    /// </summary>
-    private void CreateScanTasksTable()
-    {
-        const string tableName = "scan_tasks";
-        const string fieldStr = @"
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            name            TEXT,
-            target_path     TEXT,
-            file_extensions TEXT,
-            recursive       INTEGER DEFAULT 1,
-            status          TEXT,
-            started_at      TEXT,
-            completed_at    TEXT,
-            files_found     INTEGER DEFAULT 0,
-            files_added     INTEGER DEFAULT 0,
-            files_updated   INTEGER DEFAULT 0,
-            files_skipped   INTEGER DEFAULT 0,
-            errors          TEXT
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-        }
-    }
-
-    /// <summary>
-    /// 创建高光表（highlights）
-    /// </summary>
-    private void CreateHighlightsTable()
-    {
-        const string tableName = "highlights";
-        const string fieldStr = @"
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id    TEXT,
-            title       TEXT,
-            image       TEXT,
-            ctime       TEXT,
-            utime       TEXT
-        ";
-
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-        }
-    }
-
-    /// <summary>
-    /// 创建点赞记录表（like_records）
-    /// </summary>
-    private void CreateLikeRecordsTable()
-    {
-        // LikeController 使用 like_records 表
-        // 表结构和原始 video_likes 不同，用于收藏功能
-        const string tableName = "like_records";
-        const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
             video_id    TEXT    NOT NULL,
-            like_time   TEXT    NOT NULL,
-            user_token  TEXT,
-            ctime       TEXT,
-            utime       TEXT
+            actor_id    TEXT    NOT NULL,
+            ctime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -250,12 +334,12 @@ public class DataService : IDataService
         }
         else
         {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
         }
     }
 
     /// <summary>
-    /// 创建系统设置表（system_settings）
+    /// 创建系统设置表
     /// </summary>
     private void CreateSystemSettingsTable()
     {
@@ -264,8 +348,8 @@ public class DataService : IDataService
             id          TEXT    NOT NULL    PRIMARY KEY,
             name        TEXT    NOT NULL,
             content     TEXT,
-            ctime       TEXT,
-            utime       TEXT
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -275,25 +359,25 @@ public class DataService : IDataService
         }
         else
         {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
         }
     }
 
     /// <summary>
-    /// 创建友链表（friend_links）
+    /// 创建友情链接表
     /// </summary>
     private void CreateFriendLinksTable()
     {
         const string tableName = "friend_links";
         const string fieldStr = @"
             id          TEXT    NOT NULL    PRIMARY KEY,
-            name        TEXT,
-            link        TEXT,
+            name        TEXT    NOT NULL,
+            link        TEXT    NOT NULL,
             logo        TEXT,
             description TEXT,
             sortorder   INTEGER DEFAULT 0,
-            ctime       TEXT,
-            utime       TEXT
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
         ";
 
         if (!_db.TableExists(tableName))
@@ -303,34 +387,9 @@ public class DataService : IDataService
         }
         else
         {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", tableName);
         }
     }
 
-    /// <summary>
-    /// 创建系列表（video_series）
-    /// </summary>
-    private void CreateVideoSeriesTable()
-    {
-        const string tableName = "video_series";
-        const string fieldStr = @"
-            id          TEXT    NOT NULL    PRIMARY KEY,
-            name        TEXT,
-            alias       TEXT,
-            link        TEXT,
-            country     TEXT,
-            ctime       TEXT,
-            utime       TEXT
-        ";
 
-        if (!_db.TableExists(tableName))
-        {
-            _db.CreateTable(tableName, fieldStr);
-            _logger.LogInformation("表 [{TableName}] 创建成功", tableName);
-        }
-        else
-        {
-            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建");
-        }
-    }
 }

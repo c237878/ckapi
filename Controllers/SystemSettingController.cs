@@ -106,8 +106,8 @@ public class SystemSettingController : ControllerBase
             }
             else
             {
-                // 新增
-                var id = Guid.NewGuid().ToString();
+                // 新增 - 生成GUID作为id
+                var id = Guid.NewGuid().ToString("N").ToUpper();
                 _db.ExecuteNonQuery(
                     "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @name, @content, @ctime, @utime)",
                     new SqliteParameter("@id", id),
