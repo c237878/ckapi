@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 
 namespace ckapi.Services;
 
@@ -20,11 +20,13 @@ public class DataService : IDataService
 {
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
+    private readonly IConfiguration _config;
 
-    public DataService(ILogger<DataService> logger, Utils.SQLiteHelper db)
+    public DataService(ILogger<DataService> logger, Utils.SQLiteHelper db, IConfiguration config)
     {
         _logger = logger;
         _db = db;
+        _config = config;
     }
 
     /// <summary>
@@ -44,6 +46,7 @@ public class DataService : IDataService
             CreateFriendLinksTable();
             CreateScanDirectoryTable();
             CreateVideoTypeTable();
+            CreateComicTables();
 
             _logger.LogInformation("数据库初始化完成，数据库路径: {DbPath}", _db.GetDbPath());
         }
@@ -392,4 +395,75 @@ public class DataService : IDataService
     }
 
 
+
+    /// <summary>
+    /// 创建漫画相关表
+    /// </summary>
+    private void CreateComicTables()
+    {
+        // 漫画表
+        const string comicsTable = "comics";
+        const string comicsFields = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            name        TEXT    NOT NULL,
+            author      TEXT    DEFAULT '',
+            description TEXT    DEFAULT '',
+            url         TEXT    DEFAULT '',
+            cover_path  TEXT    DEFAULT '',
+            directory   TEXT    DEFAULT '',
+            ctime       TEXT    NOT NULL,
+            utime       TEXT    NOT NULL
+        ";
+        if (!_db.TableExists(comicsTable))
+        {
+            _db.CreateTable(comicsTable, comicsFields);
+            _logger.LogInformation("表 [{TableName}] 创建成功", comicsTable);
+        }
+        else
+        {
+            _logger.LogInformation("表 [{TableName}] 已存在，跳过创建", comicsTable);
+        }
+
+        // 漫画章节表
+        const string chaptersTable = "comic_chapters";
+        const string chaptersFields = @"
+            id          TEXT    NOT NULL    PRIMARY KEY,
+            comic_id    TEXT    NOT NULL,
+            title       TEXT    NOT NULL,
+            directory   TEXT    DEFAULT '',
+            sort_order  INTEGER DEFAULT 0,
+            image_count INTEGER DEFAULT 0,
+            ctime       TEXT    NOT NULL,
+            utime       TEXT
+        ";
+        if (!_db.TableExists(chaptersTable))
+        {
+            _db.CreateTable(chaptersTable, chaptersFields);
+            _logger.LogInformation("表 [{TableName}] 创建成功", chaptersTable);
+        }
+        else
+        {
+            // 表已存在，补充缺失的 utime 列（向后兼容）
+            try
+            {
+                using var conn = new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+                conn.Open();
+                using var checkCmd = new SqliteCommand("PRAGMA table_info(comic_chapters)", conn);
+                using var reader = checkCmd.ExecuteReader();
+                var columns = new HashSet<string>();
+                while (reader.Read()) columns.Add(reader["name"].ToString()!);
+                reader.Close();
+                if (!columns.Contains("utime"))
+                {
+                    using var alterCmd = new SqliteCommand("ALTER TABLE comic_chapters ADD COLUMN utime TEXT", conn);
+                    alterCmd.ExecuteNonQuery();
+                    _logger.LogInformation("表 [comic_chapters] 已补充 utime 列");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "补充 comic_chapters.utime 列失败（可能已存在）");
+            }
+        }
+    }
 }
