@@ -16,9 +16,9 @@ public class Actor
     public string? Name { get; set; }
 
     /// <summary>
-    /// 别名
+    /// 头像路径
     /// </summary>
-    public string? Alias { get; set; }
+    public string? AvatarPath { get; set; }
 
     /// <summary>
     /// 所属国家
@@ -26,17 +26,17 @@ public class Actor
     public string? Country { get; set; }
 
     /// <summary>
-    /// 创建时间
+    /// 个人简介
     /// </summary>
-    public string? CTime { get; set; }
+    public string? Bio { get; set; }
 
     /// <summary>
-    /// 修改时间
+    /// 添加时间
     /// </summary>
-    public string? UTime { get; set; }
+    public string? AddedAt { get; set; }
 
     /// <summary>
-    /// 参演影片数量
+    /// 参演影片数量（非数据库字段）
     /// </summary>
     public int VideoCount { get; set; }
 }

@@ -45,14 +45,12 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 总数
             var countSql = $"SELECT COUNT(*) FROM actors {whereClause}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
                 foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                // 列表 + video_count 子查询
                 var sql = $@"
                     SELECT a.*, 
                         (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count
@@ -74,10 +72,12 @@ public class ActorController : ControllerBase
                     {
                         id = reader["id"].ToString(),
                         name = reader["name"].ToString(),
-                        avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
+                        avatar_path = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                        videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
-                        addedAt = reader["added_at"]?.ToString()
+                        alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                        country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
+                        ctime = reader["ctime"] == DBNull.Value ? null : reader["ctime"].ToString(),
+                        videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"])
                     });
                 }
 
@@ -114,9 +114,11 @@ public class ActorController : ControllerBase
             {
                 id = reader["id"].ToString(),
                 name = reader["name"].ToString(),
-                avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
+                avatar_path = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                addedAt = reader["added_at"]?.ToString()
+                alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
+                ctime = reader["ctime"] == DBNull.Value ? null : reader["ctime"].ToString()
             };
 
             return Ok(new { success = true, data = actor });
@@ -145,7 +147,6 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 检查重名
             using (var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM actors WHERE name = @name", conn))
             {
                 checkCmd.Parameters.Add(new SqliteParameter("@name", request.Name));
@@ -153,13 +154,16 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, avatar_path, bio, added_at) VALUES (@id, @name, @avatarPath, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, avatar_path, bio, alias, country, ctime) 
+                        VALUES (@id, @name, @avatarPath, @bio, @alias, @country, @ctime)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
             cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
+            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@ctime", now));
             cmd.ExecuteNonQuery();
 
             return Ok(new { success = true, data = new { id, name = request.Name }, message = "添加成功" });
@@ -182,12 +186,14 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"UPDATE actors SET name = @name, avatar_path = @avatarPath, bio = @bio WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, avatar_path = @avatarPath, bio = @bio, alias = @alias, country = @country WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
 
             if (cmd.ExecuteNonQuery() > 0)
                 return Ok(new { success = true, message = "更新成功" });
@@ -212,14 +218,12 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 删除关联
             using (var relCmd = new SqliteCommand("DELETE FROM video_actors WHERE actor_id = @actorId", conn))
             {
                 relCmd.Parameters.Add(new SqliteParameter("@actorId", id));
                 relCmd.ExecuteNonQuery();
             }
 
-            // 删除演员
             using (var cmd = new SqliteCommand("DELETE FROM actors WHERE id = @id", conn))
             {
                 cmd.Parameters.Add(new SqliteParameter("@id", id));
@@ -258,7 +262,7 @@ public class ActorController : ControllerBase
                     SELECT v.* FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
                     WHERE va.actor_id = @actorId
-                    ORDER BY v.added_at DESC
+                    ORDER BY v.ctime DESC
                     LIMIT @pageSize OFFSET @offset";
                 using var cmd = new SqliteCommand(sql, conn);
                 cmd.Parameters.Add(new SqliteParameter("@actorId", id));
@@ -272,13 +276,13 @@ public class ActorController : ControllerBase
                     videos.Add(new
                     {
                         id = reader["id"].ToString(),
-                        name = reader["title"].ToString(),
-                        category = reader["category"]?.ToString(),
-                        year = reader["year"] == DBNull.Value ? (int?)null : Convert.ToInt32(reader["year"]),
-                        filePath = reader["file_path"]?.ToString(),
+                        name = reader["name"].ToString(),
+                        category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
+                        filePath = reader["file_path"] == DBNull.Value ? "" : reader["file_path"].ToString(),
                         fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                        addedAt = reader["added_at"]?.ToString()
+                        coverPath = reader["cover_path"] == DBNull.Value ? "" : reader["cover_path"].ToString(),
+                        ctime = reader["ctime"] == DBNull.Value ? "" : reader["ctime"].ToString(),
+                        code = reader["code"] == DBNull.Value ? "" : reader["code"].ToString()
                     });
                 }
 
@@ -298,6 +302,8 @@ public class AddActorRequest
     public string Name { get; set; } = "";
     public string? AvatarPath { get; set; }
     public string? Bio { get; set; }
+    public string? Alias { get; set; }
+    public string? Country { get; set; }
 }
 
 public class UpdateActorRequest
@@ -305,4 +311,6 @@ public class UpdateActorRequest
     public string? Name { get; set; }
     public string? AvatarPath { get; set; }
     public string? Bio { get; set; }
+    public string? Alias { get; set; }
+    public string? Country { get; set; }
 }

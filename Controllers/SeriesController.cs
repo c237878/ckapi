@@ -39,12 +39,12 @@ public class SeriesController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            var countSql = $"SELECT COUNT(*) FROM VideoSeries {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM video_series {whereClause}";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, parameters.ToArray()));
 
             var sql = $@"
-                SELECT s.*, (SELECT COUNT(*) FROM Video v WHERE v.seriesid = s.id) as video_count
-                FROM VideoSeries s
+                SELECT s.*, (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count
+                FROM video_series s
                 {whereClause}
                 ORDER BY s.name ASC
                 LIMIT @pageSize OFFSET @offset";
@@ -85,7 +85,7 @@ public class SeriesController : ControllerBase
     {
         try
         {
-            var sql = "SELECT * FROM VideoSeries WHERE id = @id";
+            var sql = "SELECT * FROM video_series WHERE id = @id";
             var dt = _db.ExecuteDataTable(sql, new SqliteParameter("@id", id));
             if (dt.Rows.Count == 0)
             {
@@ -122,13 +122,13 @@ public class SeriesController : ControllerBase
         try
         {
             var offset = (page - 1) * pageSize;
-            var countSql = "SELECT COUNT(*) FROM Video WHERE seriesid = @seriesid";
+            var countSql = "SELECT COUNT(*) FROM videos WHERE seriesid = @seriesid";
             var total = Convert.ToInt32(_db.ExecuteScalar(countSql, new SqliteParameter("@seriesid", id)));
 
             var sql = @"
-                SELECT * FROM Video 
+                SELECT * FROM videos
                 WHERE seriesid = @seriesid
-                ORDER BY sortorder ASC, ctime DESC
+                ORDER BY ctime DESC
                 LIMIT @pageSize OFFSET @offset";
             var dt = _db.ExecuteDataTable(sql,
                 new SqliteParameter("@seriesid", id),
@@ -144,27 +144,26 @@ public class SeriesController : ControllerBase
                     Code = row["code"]?.ToString(),
                     Name = row["name"]?.ToString(),
                     Country = row["country"]?.ToString(),
-                    CoverUrl = row["coverurl"]?.ToString(),
-                    VideoUrl = row["videourl"]?.ToString(),
-                    VideoSize = row["videosize"] != DBNull.Value ? Convert.ToInt64(row["videosize"]) : 0,
-                    Quality = row["quality"]?.ToString(),
+                    CoverUrl = row["cover_path"]?.ToString(),
+                    VideoUrl = row["file_path"]?.ToString(),
+                    VideoSize = row["file_size"] != DBNull.Value ? Convert.ToInt64(row["file_size"]) : 0,
                     SeriesId = row["seriesid"]?.ToString(),
-                    SortOrder = row["sortorder"] != DBNull.Value ? Convert.ToInt32(row["sortorder"]) : 0,
                     CTime = row["ctime"]?.ToString(),
                     UTime = row["utime"]?.ToString(),
+                    Alias = row["alias"]?.ToString(),
+                    MediaAttrFlags = row["media_attr_flags"] != DBNull.Value ? Convert.ToInt32(row["media_attr_flags"]) : 0,
                     Actors = new List<Actor>()
                 };
 
                 // 获取该视频的演员列表
-                var actorSql = @"SELECT a.* FROM Actor a INNER JOIN VideoActor va ON a.id = va.actorid WHERE va.videoid = @videoId";
+                var actorSql = @"SELECT a.* FROM actors a INNER JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = @videoId";
                 var actorDt = _db.ExecuteDataTable(actorSql, new SqliteParameter("@videoId", video.Id));
                 foreach (System.Data.DataRow actorRow in actorDt.Rows)
                 {
                     video.Actors.Add(new Actor
                     {
                         Id = actorRow["id"]?.ToString(),
-                        Name = actorRow["name"]?.ToString(),
-                        Country = actorRow["country"]?.ToString()
+                        Name = actorRow["name"]?.ToString()
                     });
                 }
 
@@ -198,7 +197,7 @@ public class SeriesController : ControllerBase
             series.UTime = series.CTime;
 
             var sql = @"
-                INSERT INTO VideoSeries (id, name, alias, link, country, ctime, utime)
+                INSERT INTO video_series (id, name, alias, link, country, ctime, utime)
                 VALUES (@id, @name, @alias, @link, @country, @ctime, @utime)";
 
             _db.ExecuteNonQuery(sql,
@@ -231,7 +230,7 @@ public class SeriesController : ControllerBase
             series.UTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             var sql = @"
-                UPDATE VideoSeries SET 
+                UPDATE video_series SET
                     name = @name,
                     alias = @alias,
                     link = @link,
@@ -273,11 +272,11 @@ public class SeriesController : ControllerBase
         try
         {
             // 先清空该系列下影片的seriesid
-            _db.ExecuteNonQuery("UPDATE Video SET seriesid = NULL WHERE seriesid = @seriesid",
+            _db.ExecuteNonQuery("UPDATE videos SET seriesid = NULL WHERE seriesid = @seriesid",
                 new SqliteParameter("@seriesid", id));
 
             // 再删除系列
-            var sql = "DELETE FROM VideoSeries WHERE id = @id";
+            var sql = "DELETE FROM video_series WHERE id = @id";
             var result = _db.ExecuteNonQuery(sql, new SqliteParameter("@id", id));
 
             if (result > 0)

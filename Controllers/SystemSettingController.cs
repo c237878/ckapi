@@ -29,7 +29,7 @@ public class SystemSettingController : ControllerBase
     {
         try
         {
-            var dt = _db.ExecuteDataTable("SELECT * FROM SystemSetting ORDER BY id");
+            var dt = _db.ExecuteDataTable("SELECT * FROM system_settings ORDER BY id");
             var list = new List<Dictionary<string, object?>>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
@@ -60,7 +60,7 @@ public class SystemSettingController : ControllerBase
         try
         {
             var result = _db.ExecuteScalar(
-                "SELECT content FROM SystemSetting WHERE name = @name",
+                "SELECT content FROM system_settings WHERE name = @name",
                 new SqliteParameter("@name", name));
 
             if (result == null || result == DBNull.Value)
@@ -91,14 +91,14 @@ public class SystemSettingController : ControllerBase
 
             // 检查是否存在
             var exists = _db.ExecuteScalar(
-                "SELECT COUNT(*) FROM SystemSetting WHERE name = @name",
+                "SELECT COUNT(*) FROM system_settings WHERE name = @name",
                 new SqliteParameter("@name", name));
 
             if (Convert.ToInt32(exists) > 0)
             {
                 // 更新
                 _db.ExecuteNonQuery(
-                    "UPDATE SystemSetting SET content = @content, utime = @utime WHERE name = @name",
+                    "UPDATE system_settings SET content = @content, utime = @utime WHERE name = @name",
                     new SqliteParameter("@content", content),
                     new SqliteParameter("@utime", now),
                     new SqliteParameter("@name", name));
@@ -106,10 +106,10 @@ public class SystemSettingController : ControllerBase
             }
             else
             {
-                // 新增 - 生成GUID作为id
+                // 新增
                 var id = Guid.NewGuid().ToString();
                 _db.ExecuteNonQuery(
-                    "INSERT INTO SystemSetting (id, name, content, ctime, utime) VALUES (@id, @name, @content, @ctime, @utime)",
+                    "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @name, @content, @ctime, @utime)",
                     new SqliteParameter("@id", id),
                     new SqliteParameter("@name", name),
                     new SqliteParameter("@content", content),
@@ -136,7 +136,7 @@ public class SystemSettingController : ControllerBase
         try
         {
             var rows = _db.ExecuteNonQuery(
-                "DELETE FROM SystemSetting WHERE id = @id",
+                "DELETE FROM system_settings WHERE id = @id",
                 new SqliteParameter("@id", id));
 
             if (rows > 0)

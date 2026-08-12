@@ -16,7 +16,7 @@ public class Video
     public string? Code { get; set; }
 
     /// <summary>
-    /// 名称
+    /// 标题
     /// </summary>
     public string? Name { get; set; }
 
@@ -31,7 +31,7 @@ public class Video
     public string? CoverUrl { get; set; }
 
     /// <summary>
-    /// 主机地址
+    /// 视频地址
     /// </summary>
     public string? VideoUrl { get; set; }
 
@@ -54,6 +54,16 @@ public class Video
     /// 排序序号
     /// </summary>
     public int SortOrder { get; set; }
+
+    /// <summary>
+    /// 别名
+    /// </summary>
+    public string? Alias { get; set; }
+
+    /// <summary>
+    /// 媒体属性标志
+    /// </summary>
+    public int MediaAttrFlags { get; set; }
 
     /// <summary>
     /// 创建时间

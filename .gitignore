@@ -20,5 +20,5 @@ obj/
 # Log files  
 *.log  
 
-# Runtime configs  
-appsettings.*.json
+# Runtime configs (keep appsettings.Development.json tracked for Windows DB path)
+# appsettings.*.json
