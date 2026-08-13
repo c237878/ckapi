@@ -529,6 +529,91 @@ public class ComicController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 还原单张图片（删除解密文件，回退到原图）
+    /// </summary>
+    [HttpPost("restore/image")]
+    public IActionResult RestoreImage([FromBody] Models.DecryptImageRequest req)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(req.ChapterId) || string.IsNullOrEmpty(req.ImageName))
+                return BadRequest(new { success = false, message = "章节ID和图片名不能为空" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            string? chapterDir = null;
+            using (var chCmd = new SqliteCommand("SELECT directory FROM comic_chapters WHERE id = @id", conn))
+            {
+                chCmd.Parameters.Add(new SqliteParameter("@id", req.ChapterId));
+                var result = chCmd.ExecuteScalar();
+                if (result == null || result == DBNull.Value)
+                    return NotFound(new { success = false, message = "章节不存在" });
+                chapterDir = result.ToString();
+            }
+
+            var baseName = Io.Path.GetFileNameWithoutExtension(req.ImageName);
+            var decryptedDir = Io.Path.Combine(chapterDir!, "_decrypted");
+            var decryptedPath = Io.Path.Combine(decryptedDir, baseName + ".jpg");
+
+            if (Io.File.Exists(decryptedPath))
+            {
+                Io.File.Delete(decryptedPath);
+                return Ok(new { success = true, message = "还原成功" });
+            }
+            return Ok(new { success = true, message = "无解密文件，无需还原" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RestoreImage failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 还原章节内所有图片（清空 _decrypted 目录）
+    /// </summary>
+    [HttpPost("restore/batch")]
+    public IActionResult RestoreBatch([FromBody] Models.DecryptTaskRequest req)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(req.ChapterId))
+                return BadRequest(new { success = false, message = "章节ID不能为空" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            string? chapterDir = null;
+            using (var chCmd = new SqliteCommand("SELECT directory FROM comic_chapters WHERE id = @id", conn))
+            {
+                chCmd.Parameters.Add(new SqliteParameter("@id", req.ChapterId));
+                var result = chCmd.ExecuteScalar();
+                if (result == null || result == DBNull.Value)
+                    return NotFound(new { success = false, message = "章节不存在" });
+                chapterDir = result.ToString();
+            }
+
+            var decryptedDir = Io.Path.Combine(chapterDir!, "_decrypted");
+            var deleted = 0;
+            if (Io.Directory.Exists(decryptedDir))
+            {
+                foreach (var f in Io.Directory.GetFiles(decryptedDir, "*.jpg"))
+                {
+                    Io.File.Delete(f);
+                    deleted++;
+                }
+            }
+            return Ok(new { success = true, data = new { deleted }, message = $"已还原 {deleted} 张图片" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RestoreBatch failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
         /// <summary>
     /// 解密单张图片
     /// </summary>
