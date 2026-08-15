@@ -28,6 +28,7 @@ public class AddComicRequest
     public string? Url { get; set; }
     public string? CoverPath { get; set; }
     public string? Directory { get; set; }
+    public int Status { get; set; } = 0;
 }
 
 /// <summary>
@@ -41,4 +42,5 @@ public class UpdateComicRequest
     public string? Url { get; set; }
     public string? CoverPath { get; set; }
     public string? Directory { get; set; }
+    public int Status { get; set; } = 0;
 }

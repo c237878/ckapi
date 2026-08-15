@@ -155,8 +155,8 @@ public class ComicController : ControllerBase
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             var sql = @"
-                INSERT INTO comics (id, name, author, description, url, cover_path, directory, ctime, utime)
-                VALUES (@id, @name, @author, @description, @url, @coverPath, @directory, @ctime, @utime)";
+                INSERT INTO comics (id, name, author, description, url, cover_path, directory, status, ctime, utime)
+                VALUES (@id, @name, @author, @description, @url, @coverPath, @directory, @status, @ctime, @utime)";
 
             using var conn = GetConnection();
             conn.Open();
@@ -168,6 +168,7 @@ public class ComicController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@url", req.Url ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@directory", req.Directory ?? ""));
+            cmd.Parameters.Add(new SqliteParameter("@status", req.Status));
             cmd.Parameters.Add(new SqliteParameter("@ctime", now));
             cmd.Parameters.Add(new SqliteParameter("@utime", now));
             cmd.ExecuteNonQuery();
@@ -205,6 +206,7 @@ public class ComicController : ControllerBase
                     url = @url,
                     cover_path = @coverPath,
                     directory = @directory,
+                    status = @status,
                     utime = @utime
                 WHERE id = @id";
 
@@ -216,6 +218,7 @@ public class ComicController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@url", req.Url ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@directory", req.Directory ?? ""));
+            cmd.Parameters.Add(new SqliteParameter("@status", req.Status));
             cmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             cmd.ExecuteNonQuery();
 
@@ -883,6 +886,7 @@ public class ComicController : ControllerBase
             url = reader["url"] == DBNull.Value ? null : reader["url"].ToString(),
             coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
             directory = reader["directory"] == DBNull.Value ? null : reader["directory"].ToString(),
+            status = reader["status"] == DBNull.Value ? 0 : Convert.ToInt32(reader["status"]),
             chapterCount = Convert.ToInt32(reader["chapter_count"]),
             ctime = reader["ctime"].ToString(),
             utime = reader["utime"] == DBNull.Value ? null : reader["utime"].ToString()
