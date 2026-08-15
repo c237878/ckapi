@@ -37,7 +37,7 @@ public class ComicController : ControllerBase
         [FromQuery] int pageIndex = 1,
         [FromQuery] int pageSize = 20,
         [FromQuery] string? keyword = null,
-        [FromQuery] int? status = null)
+        [FromQuery] int? status = null, [FromQuery] string? sortBy = null)
     {
         try
         {
@@ -60,13 +60,20 @@ public class ComicController : ControllerBase
             var countSql = "SELECT COUNT(*) FROM comics c " + whereClause;
             var total = Convert.ToInt32(ExecuteScalar(countSql, parameters.ToArray()));
 
+            var orderByClause = sortBy switch
+            {
+                "name" => "c.name ASC",
+                "likes" => "like_count DESC, c.ctime DESC",
+                _ => "c.ctime DESC"
+            };
+
             var sql = $@"
                 SELECT c.*,
                        (SELECT COUNT(*) FROM comic_chapters cc WHERE cc.comic_id = c.id) as chapter_count,
                        (SELECT COUNT(*) FROM video_likes WHERE video_id = c.id AND target_type='comic') as like_count
                 FROM comics c
                 {whereClause}
-                ORDER BY c.ctime DESC
+                ORDER BY {orderByClause}
                 LIMIT @pageSize OFFSET @offset";
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
