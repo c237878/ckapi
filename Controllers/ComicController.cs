@@ -829,29 +829,27 @@ public class ComicController : ControllerBase
         using var img = Image.Load<Rgba32>(srcPath);
         int fullHeight = img.Height;
 
-        // 可用切割区域 = 总高 - 顶部留高 - 底部留高
+        // 计算每行高度：第一行 = 均分 + topPad，最后一行 = 均分 + bottomPad，中间行 = 均分
+        // 均分高度 = (总高 - topPad - bottomPad) / rows
         int usableHeight = Math.Max(0, fullHeight - topPad - bottomPad);
         int rowHeight = usableHeight / rows;
         int remainder = usableHeight % rows;
 
-        using var output = new Image<Rgba32>(img.Width, fullHeight);
-
-        // 先绘制顶部留高区域（直接从原图顶部复制）
-        if (topPad > 0)
-        {
-            using var topSlice = img.Clone(ctx => ctx.Crop(new Rectangle(0, 0, img.Width, topPad)));
-            output.Mutate(ctx => ctx.DrawImage(topSlice, new Point(0, 0), 1f));
-        }
-
-        // 计算每行的起始Y和高度（在原图中的位置）
+        // 计算原图中每行的起始Y和高度
         var rowInfos = new (int y, int h)[rows];
-        int curY = topPad;
+        int curY = 0;
         for (int i = 0; i < rows; i++)
         {
             int h = rowHeight + (i < remainder ? 1 : 0);
+            // 第一行加上顶部留高
+            if (i == 0) h += topPad;
+            // 最后一行加上底部留高
+            if (i == rows - 1) h += bottomPad;
             rowInfos[i] = (curY, h);
             curY += h;
         }
+
+        using var output = new Image<Rgba32>(img.Width, fullHeight);
 
         // 逐行处理：输出第 outRow 行从加密图的 srcSlice 行取值
         for (int outRow = 0; outRow < rows; outRow++)
@@ -859,22 +857,14 @@ public class ComicController : ControllerBase
             int srcSlice = reversedOrder[outRow];
             var (srcY, sliceH) = rowInfos[srcSlice];
 
-            // 目标行Y = 顶部留高 + 之前各行高度之和
-            int dstY = topPad;
+            // 目标行Y = 之前各行高度之和
+            int dstY = 0;
             for (int k = 0; k < outRow; k++)
                 dstY += rowInfos[k].h;
 
             using var slice = img.Clone(ctx => ctx
                 .Crop(new Rectangle(0, srcY, img.Width, sliceH)));
             output.Mutate(ctx => ctx.DrawImage(slice, new Point(0, dstY), 1f));
-        }
-
-        // 绘制底部留高区域（直接从原图底部复制）
-        if (bottomPad > 0)
-        {
-            int bottomY = fullHeight - bottomPad;
-            using var bottomSlice = img.Clone(ctx => ctx.Crop(new Rectangle(0, bottomY, img.Width, bottomPad)));
-            output.Mutate(ctx => ctx.DrawImage(bottomSlice, new Point(0, bottomY), 1f));
         }
 
         output.SaveAsJpeg(outPath);
