@@ -62,7 +62,8 @@ public class ComicController : ControllerBase
 
             var sql = $@"
                 SELECT c.*,
-                       (SELECT COUNT(*) FROM comic_chapters cc WHERE cc.comic_id = c.id) as chapter_count
+                       (SELECT COUNT(*) FROM comic_chapters cc WHERE cc.comic_id = c.id) as chapter_count,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = c.id AND target_type='comic') as like_count
                 FROM comics c
                 {whereClause}
                 ORDER BY c.ctime DESC
@@ -107,7 +108,8 @@ public class ComicController : ControllerBase
             conn.Open();
 
             var sql = @"SELECT c.*,
-           (SELECT COUNT(*) FROM comic_chapters cc WHERE cc.comic_id = c.id) as chapter_count
+           (SELECT COUNT(*) FROM comic_chapters cc WHERE cc.comic_id = c.id) as chapter_count,
+           (SELECT COUNT(*) FROM video_likes WHERE video_id = c.id AND target_type='comic') as like_count
            FROM comics c WHERE c.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
@@ -895,6 +897,7 @@ public class ComicController : ControllerBase
             directory = reader["directory"] == DBNull.Value ? null : reader["directory"].ToString(),
             status = reader["status"] == DBNull.Value ? 0 : Convert.ToInt32(reader["status"]),
             chapterCount = Convert.ToInt32(reader["chapter_count"]),
+            likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
             ctime = reader["ctime"].ToString(),
             utime = reader["utime"] == DBNull.Value ? null : reader["utime"].ToString()
         };
@@ -908,6 +911,48 @@ public class ComicController : ControllerBase
         if (parameters != null)
             cmd.Parameters.AddRange(parameters);
         return cmd.ExecuteScalar() ?? DBNull.Value;
+    }
+
+    /// <summary>
+    /// 漫画点赞
+    /// </summary>
+    [HttpPost("{id}/like")]
+    public IActionResult LikeComic(string id)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            using (var checkCmd = new SqliteCommand("SELECT id FROM comics WHERE id = @id", conn))
+            {
+                checkCmd.Parameters.Add(new SqliteParameter("@id", id));
+                if (checkCmd.ExecuteScalar() == null)
+                    return NotFound(new { success = false, message = "漫画不存在" });
+            }
+
+            var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            using (var insertCmd = new SqliteCommand("INSERT INTO video_likes (video_id, liked_at, target_type) VALUES (@id, @likedAt, 'comic')", conn))
+            {
+                insertCmd.Parameters.Add(new SqliteParameter("@id", id));
+                insertCmd.Parameters.Add(new SqliteParameter("@likedAt", likedAt));
+                insertCmd.ExecuteNonQuery();
+            }
+
+            int likeCount = 0;
+            using (var countCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @id AND target_type='comic'", conn))
+            {
+                countCmd.Parameters.Add(new SqliteParameter("@id", id));
+                likeCount = Convert.ToInt32(countCmd.ExecuteScalar());
+            }
+
+            return Ok(new { success = true, likeCount });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LikeComic failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
     }
 }
 

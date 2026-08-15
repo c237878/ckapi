@@ -111,7 +111,7 @@ public class VideoController : ControllerBase
             // 获取列表
             var sql = $@"
                 SELECT v.*, s.name as series_name,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) as like_count,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') as like_count,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
@@ -310,7 +310,7 @@ public class VideoController : ControllerBase
             int likeCount = 0;
             try
             {
-                using var likeCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId", conn);
+                using var likeCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId AND target_type='video'", conn);
                 likeCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 likeCount = Convert.ToInt32(likeCmd.ExecuteScalar());
             }
@@ -380,7 +380,7 @@ public class VideoController : ControllerBase
                 var seriesSql = @"
                     SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
-                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id AND vl.target_type='video') as like_count
                     FROM videos v
                     LEFT JOIN video_series s ON v.seriesid = s.id
                     WHERE v.seriesid = @seriesId AND v.id != @currentId AND v.file_size > 0
@@ -409,7 +409,7 @@ public class VideoController : ControllerBase
                 var actorSql = $@"
                     SELECT DISTINCT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
-                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id AND vl.target_type='video') as like_count
                     FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
                     LEFT JOIN video_series s ON v.seriesid = s.id
@@ -436,7 +436,7 @@ public class VideoController : ControllerBase
                 var randomSql = @"
                     SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
                         s.name as series_name,
-                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count
+                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id AND vl.target_type='video') as like_count
                     FROM videos v
                     LEFT JOIN video_series s ON v.seriesid = s.id
                     WHERE v.file_size > 0
@@ -516,7 +516,7 @@ public class VideoController : ControllerBase
 
             // 插入点赞记录
             var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            using (var insertCmd = new SqliteCommand("INSERT INTO video_likes (video_id, liked_at) VALUES (@videoId, @likedAt)", conn))
+            using (var insertCmd = new SqliteCommand("INSERT INTO video_likes (video_id, liked_at, target_type) VALUES (@videoId, @likedAt, 'video')", conn))
             {
                 insertCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 insertCmd.Parameters.Add(new SqliteParameter("@likedAt", likedAt));
@@ -525,7 +525,7 @@ public class VideoController : ControllerBase
 
             // 统计点赞数
             int likeCount = 0;
-            using (var countCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId", conn))
+            using (var countCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId AND target_type='video'", conn))
             {
                 countCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 likeCount = Convert.ToInt32(countCmd.ExecuteScalar());
@@ -2131,7 +2131,7 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM videos v
@@ -2181,7 +2181,7 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM video_likes vl
@@ -2220,7 +2220,7 @@ public class VideoController : ControllerBase
             var sql = @"
                 SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
                        v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id) AS like_count,
+                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
                        s.name AS series_name,
                        (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
                 FROM video_likes vl
@@ -2268,7 +2268,7 @@ public class VideoController : ControllerBase
             var dailySql = @"
                 SELECT DATE(liked_at) as like_date, COUNT(*) as cnt
                 FROM video_likes
-                WHERE DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
+                WHERE target_type='video' AND DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
                 GROUP BY DATE(liked_at)
                 ORDER BY like_date";
             using var dailyCmd = new SqliteCommand(dailySql, conn);
@@ -2285,18 +2285,18 @@ public class VideoController : ControllerBase
             }
 
             // 当月总点赞数
-            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE target_type='video' AND DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
             using var monthTotalCmd = new SqliteCommand(monthTotalSql, conn);
             monthTotalCmd.Parameters.Add(new SqliteParameter("@s", startDate));
             monthTotalCmd.Parameters.Add(new SqliteParameter("@e", endDate));
             int monthTotal = Convert.ToInt32(monthTotalCmd.ExecuteScalar());
 
             // 历史总点赞数
-            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes", conn);
+            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE target_type='video'", conn);
             int total = Convert.ToInt32(totalCmd.ExecuteScalar());
 
             // 最后一次点赞日期
-            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes", conn);
+            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes WHERE target_type='video'", conn);
             var lastLikeDate = lastCmd.ExecuteScalar()?.ToString();
 
             // 最近12个月每月统计
@@ -2306,7 +2306,7 @@ public class VideoController : ControllerBase
                 var m = now.AddMonths(-i);
                 var mStart = new DateTime(m.Year, m.Month, 1).ToString("yyyy-MM-dd");
                 var mEnd = new DateTime(m.Year, m.Month, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
-                var mSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+                var mSql = "SELECT COUNT(*) FROM video_likes WHERE target_type='video' AND DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
                 using var mCmd = new SqliteCommand(mSql, conn);
                 mCmd.Parameters.Add(new SqliteParameter("@s", mStart));
                 mCmd.Parameters.Add(new SqliteParameter("@e", mEnd));
