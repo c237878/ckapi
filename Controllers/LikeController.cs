@@ -1,122 +1,183 @@
-using ckapi.Models;
-using ckapi.Utils;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 点赞相关接口
+/// 点赞记录管理
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 public class LikeController : ControllerBase
 {
+    private readonly IConfiguration _config;
     private readonly ILogger<LikeController> _logger;
-    private readonly SQLiteHelper _db;
 
-    public LikeController(ILogger<LikeController> logger, SQLiteHelper db)
+    public LikeController(IConfiguration config, ILogger<LikeController> logger)
     {
+        _config = config;
         _logger = logger;
-        _db = db;
+    }
+
+    private SqliteConnection GetConnection()
+    {
+        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
     /// <summary>
-    /// 点赞视频（video_likes 表：id, video_id, liked_at）
+    /// 查询点赞记录（分页）
     /// </summary>
-    [HttpPost("{videoId}")]
-    public IActionResult LikeVideo(string videoId)
+    [HttpGet("list")]
+    public IActionResult GetList([FromQuery] int pageIndex = 1, [FromQuery] int pageSize = 20,
+        [FromQuery] string? targetType = null, [FromQuery] string? keyword = null,
+        [FromQuery] string? startDate = null, [FromQuery] string? endDate = null)
     {
         try
         {
-            // 检查视频是否存在
-            var videoResult = _db.ExecuteScalar(
-                "SELECT id FROM videos WHERE id = @id",
-                new SqliteParameter("@id", videoId));
-            if (videoResult == null)
+            var offset = (pageIndex - 1) * pageSize;
+            var whereClause = "WHERE 1=1";
+            var parameters = new List<SqliteParameter>();
+
+            if (!string.IsNullOrEmpty(targetType))
             {
-                return Ok(new { success = false, message = "视频不存在" });
+                whereClause += " AND vl.target_type = @targetType";
+                parameters.Add(new SqliteParameter("@targetType", targetType));
             }
 
-            var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            _db.ExecuteNonQuery(
-                "INSERT INTO video_likes (video_id, liked_at) VALUES (@videoId, @likedAt)",
-                new SqliteParameter("@videoId", videoId),
-                new SqliteParameter("@likedAt", likedAt));
+            if (!string.IsNullOrEmpty(keyword))
+            {
+                whereClause += " AND (v.name LIKE @keyword OR v.code LIKE @keyword OR c.name LIKE @keyword)";
+                parameters.Add(new SqliteParameter("@keyword", "%" + keyword + "%"));
+            }
 
-            return Ok(new { success = true, message = "点赞成功" });
+            if (!string.IsNullOrEmpty(startDate))
+            {
+                whereClause += " AND DATE(vl.liked_at) >= @startDate";
+                parameters.Add(new SqliteParameter("@startDate", startDate));
+            }
+
+            if (!string.IsNullOrEmpty(endDate))
+            {
+                whereClause += " AND DATE(vl.liked_at) <= @endDate";
+                parameters.Add(new SqliteParameter("@endDate", endDate));
+            }
+
+            var countSql = $@"SELECT COUNT(*) FROM video_likes vl
+                LEFT JOIN videos v ON vl.video_id = v.id AND vl.target_type = 'video'
+                LEFT JOIN comics c ON vl.video_id = c.id AND vl.target_type = 'comic'
+                {whereClause}";
+            int total;
+            using (var conn = GetConnection())
+            {
+                conn.Open();
+                using var countCmd = new SqliteCommand(countSql, conn);
+                foreach (var p in parameters) countCmd.Parameters.Add(p);
+                total = Convert.ToInt32(countCmd.ExecuteScalar());
+
+                var sql = $@"
+                    SELECT vl.id, vl.video_id, vl.liked_at, vl.target_type,
+                           v.name as video_name, v.code as video_code, v.cover_path as video_cover,
+                           c.name as comic_name, c.cover_path as comic_cover
+                    FROM video_likes vl
+                    LEFT JOIN videos v ON vl.video_id = v.id AND vl.target_type = 'video'
+                    LEFT JOIN comics c ON vl.video_id = c.id AND vl.target_type = 'comic'
+                    {whereClause}
+                    ORDER BY vl.liked_at DESC
+                    LIMIT @pageSize OFFSET @offset";
+                using var cmd = new SqliteCommand(sql, conn);
+                foreach (var p in parameters) cmd.Parameters.Add(p);
+                cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
+                cmd.Parameters.Add(new SqliteParameter("@offset", offset));
+
+                var list = new List<object>();
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var isComic = reader["target_type"]?.ToString() == "comic";
+                        var name = isComic
+                            ? (reader["comic_name"] == DBNull.Value ? null : reader["comic_name"].ToString())
+                            : (reader["video_name"] == DBNull.Value ? null : reader["video_name"].ToString());
+                        var cover = isComic
+                            ? (reader["comic_cover"] == DBNull.Value ? null : reader["comic_cover"].ToString())
+                            : (reader["video_cover"] == DBNull.Value ? null : reader["video_cover"].ToString());
+
+                        list.Add(new
+                        {
+                            id = reader["id"],
+                            videoId = reader["video_id"],
+                            likedAt = reader["liked_at"],
+                            targetType = reader["target_type"],
+                            name = name,
+                            code = isComic ? null : (reader["video_code"] == DBNull.Value ? null : reader["video_code"].ToString()),
+                            coverPath = cover
+                        });
+                    }
+                }
+
+                return Ok(new { success = true, data = new { list, total } });
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "点赞失败");
-            return Ok(new { success = false, message = "点赞失败" });
+            _logger.LogError(ex, "GetLikeList failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
     /// <summary>
-    /// 取消点赞
+    /// 删除单条点赞记录
     /// </summary>
-    [HttpDelete("{videoId}")]
-    public IActionResult UnlikeVideo(string videoId)
+    [HttpDelete("{id}")]
+    public IActionResult Delete(int id)
     {
         try
         {
-            // 删除该视频最近一条点赞记录
-            var result = _db.ExecuteNonQuery(
-                @"DELETE FROM video_likes WHERE id = (
-                    SELECT id FROM video_likes WHERE video_id = @videoId ORDER BY liked_at DESC LIMIT 1
-                )",
-                new SqliteParameter("@videoId", videoId));
-
-            if (result > 0)
-                return Ok(new { success = true, message = "取消点赞成功" });
-            else
-                return Ok(new { success = false, message = "点赞记录不存在" });
+            using var conn = GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand("DELETE FROM video_likes WHERE id = @id", conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            var affected = cmd.ExecuteNonQuery();
+            return Ok(new { success = affected > 0 });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "取消点赞失败");
-            return Ok(new { success = false, message = "取消点赞失败" });
+            _logger.LogError(ex, "DeleteLike failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
 
     /// <summary>
-    /// 获取视频的点赞数
+    /// 批量删除点赞记录
     /// </summary>
-    [HttpGet("count/{videoId}")]
-    public IActionResult GetLikeCount(string videoId)
+    [HttpPost("batch-delete")]
+    public IActionResult BatchDelete([FromBody] LikeBatchDeleteRequest req)
     {
         try
         {
-            var sql = "SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId";
-            var count = Convert.ToInt32(_db.ExecuteScalar(sql, new SqliteParameter("@videoId", videoId)));
+            if (req?.Ids == null || req.Ids.Count == 0)
+                return BadRequest(new { success = false, message = "未提供ID" });
 
-            return Ok(new { success = true, data = count });
+            using var conn = GetConnection();
+            conn.Open();
+            var deleted = 0;
+            foreach (var id in req.Ids)
+            {
+                using var cmd = new SqliteCommand("DELETE FROM video_likes WHERE id = @id", conn);
+                cmd.Parameters.Add(new SqliteParameter("@id", id));
+                deleted += cmd.ExecuteNonQuery();
+            }
+            return Ok(new { success = true, deleted });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "获取点赞数失败");
-            return Ok(new { success = false, message = "获取点赞数失败" });
+            _logger.LogError(ex, "BatchDeleteLike failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
+}
 
-    /// <summary>
-    /// 检查是否已点赞
-    /// </summary>
-    [HttpGet("check/{videoId}")]
-    public IActionResult CheckLiked(string videoId)
-    {
-        try
-        {
-            var sql = "SELECT id FROM video_likes WHERE video_id = @videoId LIMIT 1";
-            var result = _db.ExecuteScalar(sql, new SqliteParameter("@videoId", videoId));
-
-            return Ok(new { success = true, data = result != null });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "检查点赞状态失败");
-            return Ok(new { success = false, message = "检查点赞状态失败" });
-        }
-    }
+public class LikeBatchDeleteRequest
+{
+    public List<int> Ids { get; set; } = new();
 }
