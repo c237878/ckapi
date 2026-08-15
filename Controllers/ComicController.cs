@@ -36,7 +36,8 @@ public class ComicController : ControllerBase
     public IActionResult GetList(
         [FromQuery] int pageIndex = 1,
         [FromQuery] int pageSize = 20,
-        [FromQuery] string? keyword = null)
+        [FromQuery] string? keyword = null,
+        [FromQuery] int? status = null)
     {
         try
         {
@@ -48,6 +49,12 @@ public class ComicController : ControllerBase
             {
                 whereClause += " AND (c.name LIKE @keyword OR c.author LIKE @keyword)";
                 parameters.Add(new SqliteParameter("@keyword", "%" + keyword + "%"));
+            }
+
+            if (status.HasValue)
+            {
+                whereClause += " AND c.status = @status";
+                parameters.Add(new SqliteParameter("@status", status.Value));
             }
 
             var countSql = "SELECT COUNT(*) FROM comics c " + whereClause;
