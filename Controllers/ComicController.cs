@@ -809,6 +809,9 @@ public class ComicController : ControllerBase
         if (config.Order == null || config.Order.Count < rows)
             rows = 1;
 
+        int topPad = Math.Max(0, config.TopPadding);
+        int bottomPad = Math.Max(0, config.BottomPadding);
+
         // 构建逆序映射
         var reversedOrder = new int[rows];
         for (int i = 0; i < rows; i++) reversedOrder[i] = -1;
@@ -825,33 +828,53 @@ public class ComicController : ControllerBase
 
         using var img = Image.Load<Rgba32>(srcPath);
         int fullHeight = img.Height;
-        int rowHeight = fullHeight / rows;
-        int remainder = fullHeight % rows;
+
+        // 可用切割区域 = 总高 - 顶部留高 - 底部留高
+        int usableHeight = Math.Max(0, fullHeight - topPad - bottomPad);
+        int rowHeight = usableHeight / rows;
+        int remainder = usableHeight % rows;
 
         using var output = new Image<Rgba32>(img.Width, fullHeight);
 
-        // 逐行处理
+        // 先绘制顶部留高区域（直接从原图顶部复制）
+        if (topPad > 0)
+        {
+            using var topSlice = img.Clone(ctx => ctx.Crop(new Rectangle(0, 0, img.Width, topPad)));
+            output.Mutate(ctx => ctx.DrawImage(topSlice, new Point(0, 0), 1f));
+        }
+
+        // 计算每行的起始Y和高度（在原图中的位置）
+        var rowInfos = new (int y, int h)[rows];
+        int curY = topPad;
+        for (int i = 0; i < rows; i++)
+        {
+            int h = rowHeight + (i < remainder ? 1 : 0);
+            rowInfos[i] = (curY, h);
+            curY += h;
+        }
+
+        // 逐行处理：输出第 outRow 行从加密图的 srcSlice 行取值
         for (int outRow = 0; outRow < rows; outRow++)
         {
-            // 找出输出第 outRow 行应从加密图的哪一行取值
             int srcSlice = reversedOrder[outRow];
+            var (srcY, sliceH) = rowInfos[srcSlice];
 
-            // 计算源行起始Y
-            int srcY = 0;
-            for (int k = 0; k < srcSlice; k++)
-                srcY += rowHeight + (k < remainder ? 1 : 0);
-            int sliceH = rowHeight + (srcSlice < remainder ? 1 : 0);
-
-            // 计算目标行起始Y
-            int dstY = 0;
+            // 目标行Y = 顶部留高 + 之前各行高度之和
+            int dstY = topPad;
             for (int k = 0; k < outRow; k++)
-                dstY += rowHeight + (k < remainder ? 1 : 0);
+                dstY += rowInfos[k].h;
 
-            // 从原图裁剪一行，绘制到输出图
             using var slice = img.Clone(ctx => ctx
-                .Crop(new Rectangle(0, srcY, img.Width, sliceH))
-                .Resize(img.Width, sliceH));
+                .Crop(new Rectangle(0, srcY, img.Width, sliceH)));
             output.Mutate(ctx => ctx.DrawImage(slice, new Point(0, dstY), 1f));
+        }
+
+        // 绘制底部留高区域（直接从原图底部复制）
+        if (bottomPad > 0)
+        {
+            int bottomY = fullHeight - bottomPad;
+            using var bottomSlice = img.Clone(ctx => ctx.Crop(new Rectangle(0, bottomY, img.Width, bottomPad)));
+            output.Mutate(ctx => ctx.DrawImage(bottomSlice, new Point(0, bottomY), 1f));
         }
 
         output.SaveAsJpeg(outPath);

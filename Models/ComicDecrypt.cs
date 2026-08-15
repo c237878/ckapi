@@ -15,6 +15,16 @@ public class ComicDecryptConfig
     /// 还原时按此顺序逆向拼接
     /// </summary>
     public List<int> Order { get; set; } = new();
+
+    /// <summary>
+    /// 顶部留高（像素），从顶部不参与切割的高度
+    /// </summary>
+    public int TopPadding { get; set; } = 0;
+
+    /// <summary>
+    /// 底部留高（像素），从底部不参与切割的高度
+    /// </summary>
+    public int BottomPadding { get; set; } = 0;
 }
 
 /// <summary>
