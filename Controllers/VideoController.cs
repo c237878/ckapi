@@ -2268,7 +2268,7 @@ public class VideoController : ControllerBase
             var dailySql = @"
                 SELECT DATE(liked_at) as like_date, COUNT(*) as cnt
                 FROM video_likes
-                WHERE target_type='video' AND DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
+                WHERE DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
                 GROUP BY DATE(liked_at)
                 ORDER BY like_date";
             using var dailyCmd = new SqliteCommand(dailySql, conn);
@@ -2285,18 +2285,18 @@ public class VideoController : ControllerBase
             }
 
             // 当月总点赞数
-            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE target_type='video' AND DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
             using var monthTotalCmd = new SqliteCommand(monthTotalSql, conn);
             monthTotalCmd.Parameters.Add(new SqliteParameter("@s", startDate));
             monthTotalCmd.Parameters.Add(new SqliteParameter("@e", endDate));
             int monthTotal = Convert.ToInt32(monthTotalCmd.ExecuteScalar());
 
             // 历史总点赞数
-            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE target_type='video'", conn);
+            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes", conn);
             int total = Convert.ToInt32(totalCmd.ExecuteScalar());
 
             // 最后一次点赞日期
-            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes WHERE target_type='video'", conn);
+            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes", conn);
             var lastLikeDate = lastCmd.ExecuteScalar()?.ToString();
 
             // 最近12个月每月统计
@@ -2306,7 +2306,7 @@ public class VideoController : ControllerBase
                 var m = now.AddMonths(-i);
                 var mStart = new DateTime(m.Year, m.Month, 1).ToString("yyyy-MM-dd");
                 var mEnd = new DateTime(m.Year, m.Month, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
-                var mSql = "SELECT COUNT(*) FROM video_likes WHERE target_type='video' AND DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
+                var mSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
                 using var mCmd = new SqliteCommand(mSql, conn);
                 mCmd.Parameters.Add(new SqliteParameter("@s", mStart));
                 mCmd.Parameters.Add(new SqliteParameter("@e", mEnd));
