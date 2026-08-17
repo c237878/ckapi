@@ -1158,7 +1158,7 @@ public class VideoController : ControllerBase
     /// 批量删除视频
     /// </summary>
     [HttpDelete("batch")]
-    public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req)
+    public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req, [FromQuery] bool deleteFiles = true)
     {
         try
         {
@@ -1222,32 +1222,35 @@ public class VideoController : ControllerBase
 
             transaction.Commit();
 
-            // 删除文件（数据库操作成功后再删除）
+            // 根据参数决定是否删除文件
             var deletedFiles = new List<string>();
-            foreach (var (id, filePath, coverPath) in filesToDelete)
+            if (deleteFiles)
             {
-                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                foreach (var (id, filePath, coverPath) in filesToDelete)
                 {
-                    try
+                    if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
                     {
-                        System.IO.File.Delete(filePath);
-                        deletedFiles.Add(filePath);
+                        try
+                        {
+                            System.IO.File.Delete(filePath);
+                            deletedFiles.Add(filePath);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "删除视频文件失败: {FilePath}", filePath);
+                        }
                     }
-                    catch (Exception ex)
+                    if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
                     {
-                        _logger.LogWarning(ex, "删除视频文件失败: {FilePath}", filePath);
-                    }
-                }
-                if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
-                {
-                    try
-                    {
-                        System.IO.File.Delete(coverPath);
-                        deletedFiles.Add(coverPath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "删除封面文件失败: {CoverPath}", coverPath);
+                        try
+                        {
+                            System.IO.File.Delete(coverPath);
+                            deletedFiles.Add(coverPath);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "删除封面文件失败: {CoverPath}", coverPath);
+                        }
                     }
                 }
             }
