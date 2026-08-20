@@ -600,6 +600,82 @@ public class VideoController : ControllerBase
     {
         try
         {
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 查询旧记录（获取旧番号和文件路径）
+            string? oldCode = null;
+            string? oldFilePath = null;
+            string? oldCoverPath = null;
+            using (var queryCmd = new SqliteCommand("SELECT code, file_path, cover_path FROM videos WHERE id = @id", conn))
+            {
+                queryCmd.Parameters.Add(new SqliteParameter("@id", id));
+                using var qReader = queryCmd.ExecuteReader();
+                if (!qReader.Read())
+                    return NotFound(new { success = false, message = "视频不存在" });
+                oldCode = qReader["code"]?.ToString();
+                oldFilePath = qReader["file_path"]?.ToString();
+                oldCoverPath = qReader["cover_path"]?.ToString();
+            }
+
+            // 番号变化时同步重命名文件
+            var newFilePath = req.FilePath;
+            var newCoverPath = req.CoverPath;
+            var renameInfo = new { videoRenamed = false, coverRenamed = false, oldFile = "", newFile = "", oldCover = "", newCover = "" };
+            
+            if (!string.IsNullOrEmpty(req.Code) && req.Code != oldCode)
+            {
+                // 重命名视频文件
+                if (!string.IsNullOrEmpty(newFilePath) && System.IO.File.Exists(newFilePath))
+                {
+                    var dir = Path.GetDirectoryName(newFilePath)!;
+                    var ext = Path.GetExtension(newFilePath);
+                    var currentName = Path.GetFileNameWithoutExtension(newFilePath);
+                    if (currentName != req.Code)
+                    {
+                        var targetPath = Path.Combine(dir, req.Code + ext);
+                        if (!System.IO.File.Exists(targetPath) || targetPath == newFilePath)
+                        {
+                            try
+                            {
+                                System.IO.File.Move(newFilePath, targetPath);
+                                newFilePath = targetPath;
+                                renameInfo = new { videoRenamed = true, coverRenamed = renameInfo.coverRenamed, oldFile = oldFilePath ?? "", newFile = targetPath, oldCover = renameInfo.oldCover, newCover = renameInfo.newCover };
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "编辑时重命名视频文件失败: {FilePath}", newFilePath);
+                            }
+                        }
+                    }
+                }
+
+                // 重命名封面文件
+                if (!string.IsNullOrEmpty(newCoverPath) && System.IO.File.Exists(newCoverPath))
+                {
+                    var dir = Path.GetDirectoryName(newCoverPath)!;
+                    var ext = Path.GetExtension(newCoverPath);
+                    var currentName = Path.GetFileNameWithoutExtension(newCoverPath);
+                    if (currentName != req.Code)
+                    {
+                        var targetPath = Path.Combine(dir, req.Code + ext);
+                        if (!System.IO.File.Exists(targetPath) || targetPath == newCoverPath)
+                        {
+                            try
+                            {
+                                System.IO.File.Move(newCoverPath, targetPath);
+                                newCoverPath = targetPath;
+                                renameInfo = new { videoRenamed = renameInfo.videoRenamed, coverRenamed = true, oldFile = renameInfo.oldFile, newFile = renameInfo.newFile, oldCover = oldCoverPath ?? "", newCover = targetPath };
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "编辑时重命名封面文件失败: {CoverPath}", newCoverPath);
+                            }
+                        }
+                    }
+                }
+            }
+
             var sql = @"
                 UPDATE videos SET
                     code = @code,
@@ -611,35 +687,24 @@ public class VideoController : ControllerBase
                     seriesid = @seriesId
                 WHERE id = @id";
 
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 检查是否存在
-            using var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM videos WHERE id = @id", conn);
-            checkCmd.Parameters.Add(new SqliteParameter("@id", id));
-            if (Convert.ToInt32(checkCmd.ExecuteScalar()) == 0)
-                return NotFound(new { success = false, message = "视频不存在" });
-
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath));
-            cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@filePath", newFilePath));
+            cmd.Parameters.Add(new SqliteParameter("@coverPath", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             cmd.ExecuteNonQuery();
 
             // 更新演员关联
             if (req.ActorIds != null)
             {
-                // 先删除所有旧关联
                 using var delCmd = new SqliteCommand("DELETE FROM video_actors WHERE video_id = @videoId", conn);
                 delCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 delCmd.ExecuteNonQuery();
 
-                // 重新添加
                 foreach (var actorId in req.ActorIds)
                 {
                     var relSql = "INSERT OR IGNORE INTO video_actors (video_id, actor_id) VALUES (@videoId, @actorId)";
@@ -650,7 +715,7 @@ public class VideoController : ControllerBase
                 }
             }
 
-            return Ok(new { success = true, message = "更新成功" });
+            return Ok(new { success = true, message = "更新成功", renameInfo });
         }
         catch (Exception ex)
         {
@@ -2335,6 +2400,136 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetLikeStats failed");
+            return StatusCode(500, new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 检查并重命名文件名与番号一致
+    /// </summary>
+    [HttpPost("rename-to-code")]
+    public IActionResult RenameFilesToCode()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            var results = new List<object>();
+            var renamed = 0;
+            var skipped = 0;
+            var failed = 0;
+
+            using var cmd = new SqliteCommand(@"
+                SELECT id, code, file_path, cover_path 
+                FROM videos 
+                WHERE code IS NOT NULL AND code != '' 
+                  AND file_path != '' AND file_path NOT LIKE 'manual://%'", conn);
+            using var reader = cmd.ExecuteReader();
+
+            while (reader.Read())
+            {
+                var videoId = reader["id"].ToString()!;
+                var code = reader["code"].ToString()!;
+                var filePath = reader["file_path"]?.ToString() ?? "";
+                var coverPath = reader["cover_path"]?.ToString() ?? "";
+
+                var fileRenamed = false;
+                var coverRenamed = false;
+                var newFilePath = filePath;
+                var newCoverPath = coverPath;
+                var errors = new List<string>();
+
+                // 检查视频文件名
+                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                {
+                    var dir = Path.GetDirectoryName(filePath)!;
+                    var ext = Path.GetExtension(filePath);
+                    var currentName = Path.GetFileNameWithoutExtension(filePath);
+                    if (currentName != code)
+                    {
+                        newFilePath = Path.Combine(dir, code + ext);
+                        try
+                        {
+                            // 避免覆盖：如果目标文件已存在且不是同一个文件，跳过
+                            if (System.IO.File.Exists(newFilePath) && newFilePath != filePath)
+                            {
+                                errors.Add($"视频文件目标已存在: {code + ext}");
+                            }
+                            else
+                            {
+                                System.IO.File.Move(filePath, newFilePath);
+                                fileRenamed = true;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            errors.Add($"重命名视频失败: {ex.Message}");
+                            newFilePath = filePath;
+                        }
+                    }
+                }
+
+                // 检查封面文件名
+                if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
+                {
+                    var dir = Path.GetDirectoryName(coverPath)!;
+                    var ext = Path.GetExtension(coverPath);
+                    var currentName = Path.GetFileNameWithoutExtension(coverPath);
+                    if (currentName != code)
+                    {
+                        newCoverPath = Path.Combine(dir, code + ext);
+                        try
+                        {
+                            if (System.IO.File.Exists(newCoverPath) && newCoverPath != coverPath)
+                            {
+                                errors.Add($"封面文件目标已存在: {code + ext}");
+                            }
+                            else
+                            {
+                                System.IO.File.Move(coverPath, newCoverPath);
+                                coverRenamed = true;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            errors.Add($"重命名封面失败: {ex.Message}");
+                            newCoverPath = coverPath;
+                        }
+                    }
+                }
+
+                // 如果有文件被重命名，更新数据库中的路径
+                if (fileRenamed || coverRenamed)
+                {
+                    using var updCmd = new SqliteCommand("UPDATE videos SET file_path = @fp, cover_path = @cp WHERE id = @id", conn);
+                    updCmd.Parameters.Add(new SqliteParameter("@fp", newFilePath));
+                    updCmd.Parameters.Add(new SqliteParameter("@cp", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
+                    updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
+                    updCmd.ExecuteNonQuery();
+                    renamed++;
+                    results.Add(new { videoId, code, fileRenamed, coverRenamed, oldFile = filePath, newFile = newFilePath, oldCover = coverPath, newCover = newCoverPath, errors });
+                }
+                else if (errors.Count > 0)
+                {
+                    failed++;
+                    results.Add(new { videoId, code, fileRenamed = false, coverRenamed = false, errors });
+                }
+                else
+                {
+                    skipped++;
+                }
+            }
+
+            return Ok(new
+            {
+                success = true,
+                data = new { renamed, skipped, failed, details = results }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "RenameFilesToCode failed");
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
