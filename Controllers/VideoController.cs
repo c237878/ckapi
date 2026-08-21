@@ -2424,7 +2424,8 @@ public class VideoController : ControllerBase
                 SELECT id, code, file_path, cover_path 
                 FROM videos 
                 WHERE code IS NOT NULL AND code != '' 
-                  AND file_path != '' AND file_path NOT LIKE 'manual://%'", conn);
+                AND ((file_path != '' AND file_path NOT LIKE 'manual://%' AND file_path NOT LIKE '%'||code||'%') 
+                OR (cover_path != '' AND cover_path NOT LIKE 'manual://%' AND cover_path NOT LIKE '%'||code||'%'))", conn);
             using var reader = cmd.ExecuteReader();
 
             while (reader.Read())
@@ -2503,8 +2504,8 @@ public class VideoController : ControllerBase
                 if (fileRenamed || coverRenamed)
                 {
                     using var updCmd = new SqliteCommand("UPDATE videos SET file_path = @fp, cover_path = @cp WHERE id = @id", conn);
-                    updCmd.Parameters.Add(new SqliteParameter("@fp", newFilePath));
-                    updCmd.Parameters.Add(new SqliteParameter("@cp", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
+                    updCmd.Parameters.Add(new SqliteParameter("@fp", fileRenamed ? newFilePath : filePath));
+                    updCmd.Parameters.Add(new SqliteParameter("@cp", coverRenamed ? newCoverPath : coverPath));
                     updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
                     updCmd.ExecuteNonQuery();
                     renamed++;
