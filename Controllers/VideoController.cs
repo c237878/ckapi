@@ -812,7 +812,7 @@ public class VideoController : ControllerBase
             // ===== 2. 处理 cover_path =====
             if (string.IsNullOrEmpty(newCoverPath))
             {
-                var coverFound = TryFindCover(conn, id, videoName, videoCode, newFilePath, scanDirs, ref newCoverPath);
+                var coverFound = TryFindCover(conn, id, videoName, videoCode, scanDirs, ref newCoverPath);
                 if (!string.IsNullOrEmpty(newCoverPath))
                     messages.Add("封面已找回");
                 else
@@ -1043,7 +1043,7 @@ public class VideoController : ControllerBase
     /// 搜索封面路径：同目录 + /cover/ 目录
     /// </summary>
     private bool TryFindCover(SqliteConnection conn, string videoId, string? name, string? code,
-        string? filePath, List<(string path, string category)> scanDirs, ref string? outCoverPath)
+        List<(string path, string category)> scanDirs, ref string? outCoverPath)
     {
         var invalidChars = System.IO.Path.GetInvalidFileNameChars();
         var searchKeys = new List<string>();
@@ -1057,60 +1057,25 @@ public class VideoController : ControllerBase
         }
         if (searchKeys.Count == 0) return false;
 
-        // 1. 同目录 .jpg
-        if (!string.IsNullOrEmpty(filePath))
+        // 遍历扫描目录
+        foreach (var dir in scanDirs)
         {
-            try
+            if (!Directory.Exists(dir.path)) continue;
+            var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+            foreach (var key in searchKeys)
             {
-                var dir = Path.GetDirectoryName(filePath) ?? "";
-                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                var searchPattern = key + ".jpg";
+                foreach (var found in Directory.GetFiles(dir.path, searchPattern, enumOpts))
                 {
-                    foreach (var key in searchKeys)
-                    {
-                        var cover = Path.Combine(dir, key + ".jpg");
-                        if (System.IO.File.Exists(cover)) { outCoverPath = cover; UpdateCover(conn, videoId, cover); return true; }
-                    }
-                    foreach (var f in Directory.GetFiles(dir, "*.jpg", SearchOption.TopDirectoryOnly))
-                    {
-                        try {
-                            var fn = Path.GetFileNameWithoutExtension(f);
-                            if (searchKeys.Any(k => fn.Equals(k, StringComparison.OrdinalIgnoreCase) || fn.Contains(k, StringComparison.OrdinalIgnoreCase)))
-                            { outCoverPath = f; UpdateCover(conn, videoId, f); return true; }
-                        } catch { continue; }
-                    }
-                }
-            } catch { /* ignore */ }
-        }
-
-        // 2. 磁盘根目录 /cover/ 文件夹
-        foreach (var key in searchKeys)
-        {
-            foreach (var dir in scanDirs)
-            {
-                string? mountPoint = null;
-                try {
-                    if (dir.path.StartsWith("/Volumes/")) {
-                        var parts = dir.path.Split('/');
-                        if (parts.Length >= 3) mountPoint = "/" + parts[1] + "/" + parts[2];
-                    } else {
-                        mountPoint = Directory.GetDirectoryRoot(dir.path);
-                    }
-                } catch { continue; }
-                if (string.IsNullOrEmpty(mountPoint)) continue;
-                var coverDir = Path.Combine(mountPoint, "cover");
-                if (Directory.Exists(coverDir))
-                {
-                    foreach (var coverFile in Directory.GetFiles(coverDir, "*.jpg", SearchOption.TopDirectoryOnly))
-                    {
-                        var fn = Path.GetFileNameWithoutExtension(coverFile);
-                        if (fn.Equals(key, StringComparison.OrdinalIgnoreCase))
-                        {
-                            outCoverPath = coverFile; UpdateCover(conn, videoId, coverFile); return true;
-                        }
-                    }
+                    if (Path.GetFileName(found).StartsWith("._")) continue;
+                    var fi = new System.IO.FileInfo(found);
+                    outCoverPath = found;
+                    UpdateCover(conn, videoId, found);
+                    return true;
                 }
             }
         }
+
         return false;
     }
 
