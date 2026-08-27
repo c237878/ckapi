@@ -755,22 +755,15 @@ public class VideoController : ControllerBase
                 currentFileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]);
             }
 
-            // 获取扫描目录（含分类）
+            // 获取文件目录（含分类）
             var scanDirs = new List<(string path, string category)>();
             using (var dirCmd = new SqliteCommand(
-                "SELECT path, category FROM scan_directories", conn))
+                "SELECT path, category FROM scan_directories ORDER BY path ASC", conn))
             using (var reader = dirCmd.ExecuteReader())
             {
                 while (reader.Read())
                     scanDirs.Add((reader.GetString(0), reader["category"]?.ToString() ?? ""));
             }
-
-            // 获取 scanType 扩展名
-            var scanType = "";
-            using (var stCmd = new SqliteCommand(
-                "SELECT content FROM system_settings WHERE name = 'scanType'", conn))
-                scanType = stCmd.ExecuteScalar()?.ToString() ?? "";
-            var extensions = ParseScanType(scanType);
 
             var newFilePath = currentFilePath;
             long? newFileSize = null;
@@ -778,41 +771,30 @@ public class VideoController : ControllerBase
             var messages = new List<string>();
 
             // ===== 1. 处理 file_path =====
-            if (!string.IsNullOrEmpty(currentFilePath))
+            if (!string.IsNullOrEmpty(currentFilePath) && System.IO.File.Exists(currentFilePath))
             {
-                // 有路径 → 检查文件是否存在，重算大小
-                if (System.IO.File.Exists(currentFilePath))
-                {
-                    var fi = new System.IO.FileInfo(currentFilePath);
-                    newFileSize = fi.Length;
-                    using var updCmd = new SqliteCommand("UPDATE videos SET file_size = @fs WHERE id = @id", conn);
-                    updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
-                    updCmd.Parameters.Add(new SqliteParameter("@id", id));
-                    updCmd.ExecuteNonQuery();
-                    messages.Add($"文件大小已更新: {FormatFileSize(newFileSize.Value)}");
-                }
-                else
-                {
-                    messages.Add("文件路径存在但文件不存在: " + (currentFilePath ?? "(空)"));
-                    // 尝试找回
-                    var found = TryFindVideoFile(conn, id, videoName, videoCode, scanDirs, extensions, ref newFilePath, ref newFileSize);
-                    if (found) messages.Add("已在扫描目录中找到并更新文件路径");
-                    else messages.Add("在扫描目录中未找到匹配文件");
-                }
+                // 有路径且文件存在 → 检查文件是否存在，重算大小
+                var fi = new System.IO.FileInfo(currentFilePath);
+                newFileSize = fi.Length;
+                using var updCmd = new SqliteCommand("UPDATE videos SET file_size = @fs WHERE id = @id", conn);
+                updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
+                updCmd.Parameters.Add(new SqliteParameter("@id", id));
+                updCmd.ExecuteNonQuery();
+                messages.Add($"文件大小已更新: {FormatFileSize(newFileSize.Value)}");
             }
             else
             {
-                // 无路径 → 在同分类扫描目录中搜索
+                // 无路径或文件不存在 → 在文件目录中搜索
                 messages.Add("未配置文件路径，开始搜索同分类目录...");
-                var found = TryFindVideoFile(conn, id, videoName, videoCode, scanDirs, extensions, ref newFilePath, ref newFileSize);
-                if (found) messages.Add("在扫描目录中找到匹配文件");
-                else messages.Add("在扫描目录中未找到匹配文件");
+                var found = TryFindVideoFile(conn, id, videoCode, scanDirs, ref newFilePath, ref newFileSize);
+                if (found) messages.Add("在文件目录中找到匹配文件");
+                else messages.Add("在文件目录中未找到匹配文件");
             }
 
             // ===== 2. 处理 cover_path =====
             if (string.IsNullOrEmpty(newCoverPath))
             {
-                var coverFound = TryFindCover(conn, id, videoName, videoCode, scanDirs, ref newCoverPath);
+                var coverFound = TryFindCover(conn, id, videoCode, scanDirs, ref newCoverPath);
                 if (!string.IsNullOrEmpty(newCoverPath))
                     messages.Add("封面已找回");
                 else
@@ -991,8 +973,8 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 在同分类扫描目录中搜索匹配的视频文件
     /// </summary>
-    private bool TryFindVideoFile(SqliteConnection conn, string videoId, string? name, string? code,
-        List<(string path, string category)> scanDirs, List<string> extensions,
+    private bool TryFindVideoFile(SqliteConnection conn, string videoId, string? code,
+        List<(string path, string category)> scanDirs,
         ref string? outFilePath, ref long? outFileSize)
     {
         // 过滤非法路径字符，防止 Directory.GetFiles 崩溃
@@ -1002,37 +984,30 @@ public class VideoController : ControllerBase
             var clean = new string(code.Where(c => !invalidChars.Contains(c)).ToArray());
             if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
         }
-        if (!string.IsNullOrEmpty(name)) {
-            var clean = new string(name.Where(c => !invalidChars.Contains(c)).ToArray());
-            if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
-        }
         if (searchKeys.Count == 0) return false;
 
         foreach (var dir in scanDirs)
         {
-            if (!Directory.Exists(dir.path)) continue;
+            if (dir.category!="视频" || !Directory.Exists(dir.path)) continue;
             var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
-            foreach (var ext in extensions)
+            foreach (var key in searchKeys)
             {
-                foreach (var key in searchKeys)
+                var searchPattern = key + ".mp4";
+                foreach (var found in Directory.GetFiles(dir.path, searchPattern, enumOpts))
                 {
-                    var searchPattern = key + ext;
-                    foreach (var found in Directory.GetFiles(dir.path, searchPattern, enumOpts))
-                    {
-                        if (Path.GetFileName(found).StartsWith("._")) continue;
-                        var fi = new System.IO.FileInfo(found);
-                        outFilePath = found;
-                        outFileSize = fi.Length;
+                    if (Path.GetFileName(found).StartsWith("._")) continue;
+                    var fi = new System.IO.FileInfo(found);
+                    outFilePath = found;
+                    outFileSize = fi.Length;
 
-                        // 直接更新（UNIQUE 约束兜底；同一视频重复执行则为幂等操作）
-                        using var updCmd = new SqliteCommand(
-                            "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
-                        updCmd.Parameters.Add(new SqliteParameter("@fp", found));
-                        updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
-                        updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-                        updCmd.ExecuteNonQuery();
-                        return true;
-                    }
+                    // 直接更新（UNIQUE 约束兜底；同一视频重复执行则为幂等操作）
+                    using var updCmd = new SqliteCommand(
+                        "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
+                    updCmd.Parameters.Add(new SqliteParameter("@fp", found));
+                    updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
+                    updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
+                    updCmd.ExecuteNonQuery();
+                    return true;
                 }
             }
         }
@@ -1042,7 +1017,7 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 搜索封面路径：同目录 + /cover/ 目录
     /// </summary>
-    private bool TryFindCover(SqliteConnection conn, string videoId, string? name, string? code,
+    private bool TryFindCover(SqliteConnection conn, string videoId, string? code,
         List<(string path, string category)> scanDirs, ref string? outCoverPath)
     {
         var invalidChars = System.IO.Path.GetInvalidFileNameChars();
@@ -1051,16 +1026,12 @@ public class VideoController : ControllerBase
             var clean = new string(code.Where(c => !invalidChars.Contains(c)).ToArray());
             if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
         }
-        if (!string.IsNullOrEmpty(name)) {
-            var clean = new string(name.Where(c => !invalidChars.Contains(c)).ToArray());
-            if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
-        }
         if (searchKeys.Count == 0) return false;
 
         // 遍历扫描目录
         foreach (var dir in scanDirs)
         {
-            if (!Directory.Exists(dir.path)) continue;
+            if (dir.category != "封面" || !Directory.Exists(dir.path)) continue;
             var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
             foreach (var key in searchKeys)
             {
@@ -1304,178 +1275,6 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 扫描所有配置目录
-    /// </summary>
-    [HttpPost("scan")]
-    public IActionResult ScanAll()
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 读取扫描类型配置
-            var scanType = "";
-            using (var stCmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'scanType'", conn))
-            {
-                var result = stCmd.ExecuteScalar();
-                scanType = result?.ToString() ?? "";
-            }
-
-            if (string.IsNullOrEmpty(scanType))
-                return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
-
-            // 读取扫描目录（含分类属性）
-            var dirs = new List<(string path, string category, bool recursive, bool autoCreateSeries)>();
-            using (var dirCmd = new SqliteCommand("SELECT path, category, recursive, auto_create_series FROM scan_directories", conn))
-            using (var reader = dirCmd.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    dirs.Add((
-                        reader["path"].ToString()!,
-                        reader["category"] == DBNull.Value ? "" : reader["category"].ToString()!,
-                        Convert.ToInt32(reader["recursive"]) == 1,
-                        reader["auto_create_series"] == DBNull.Value ? false : Convert.ToInt32(reader["auto_create_series"]) == 1));
-                }
-            }
-
-            if (dirs.Count == 0)
-                return Ok(new { success = false, message = "没有配置扫描目录" });
-
-            // 创建扫描任务
-            var taskId = 0;
-            var insertTaskSql = @"
-                INSERT INTO scan_tasks (task_type, status, target_path, started_at)
-                VALUES ('all', 'pending', @targetPath, @startedAt);
-                SELECT last_insert_rowid();";
-            using (var taskCmd = new SqliteCommand(insertTaskSql, conn))
-            {
-                taskCmd.Parameters.Add(new SqliteParameter("@targetPath", "all"));
-                taskCmd.Parameters.Add(new SqliteParameter("@startedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-                taskId = Convert.ToInt32(taskCmd.ExecuteScalar());
-            }
-
-            // 异步执行扫描
-            _ = Task.Run(() => ScanAllDirectoriesAsync(dirs, scanType, taskId));
-
-            return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ScanAll failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
-        }
-    }
-
-    /// <summary>
-    /// 扫描单个目录
-    /// </summary>
-    [HttpPost("scan-directory")]
-    public IActionResult ScanDirectory([FromBody] ScanRequest req)
-    {
-        try
-        {
-            if (string.IsNullOrEmpty(req.TargetPath) || !Directory.Exists(req.TargetPath))
-            {
-                return Ok(new { success = false, message = "扫描目录不存在" });
-            }
-
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 读取扫描类型配置
-            var scanType = "";
-            using (var stCmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'scanType'", conn))
-            {
-                var result = stCmd.ExecuteScalar();
-                scanType = result?.ToString() ?? "";
-            }
-
-            if (string.IsNullOrEmpty(scanType))
-                return Ok(new { success = false, message = "请先在基本信息中配置扫描类型" });
-
-            // 读取该目录的分类和自动创建系列设置
-            var category = "";
-            var autoCreateSeries = false;
-            using (var catCmd = new SqliteCommand("SELECT category, auto_create_series FROM scan_directories WHERE path = @path", conn))
-            {
-                catCmd.Parameters.Add(new SqliteParameter("@path", req.TargetPath));
-                using var reader = catCmd.ExecuteReader();
-                if (reader.Read())
-                {
-                    category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString();
-                    autoCreateSeries = reader["auto_create_series"] != DBNull.Value && Convert.ToInt32(reader["auto_create_series"]) == 1;
-                }
-            }
-
-            var taskId = 0;
-            var sql = @"
-                INSERT INTO scan_tasks (task_type, status, target_path, started_at)
-                VALUES ('manual', 'pending', @targetPath, @startedAt);
-                SELECT last_insert_rowid();";
-
-            using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@targetPath", req.TargetPath));
-            cmd.Parameters.Add(new SqliteParameter("@startedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            taskId = Convert.ToInt32(cmd.ExecuteScalar());
-
-            // 异步执行扫描
-            _ = Task.Run(() => ScanSingleDirectoryAsync(req.TargetPath, req.Recursive, category, autoCreateSeries, scanType, taskId));
-
-            return Ok(new { success = true, data = new { taskId = taskId }, message = "扫描任务已启动" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ScanDirectory failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
-        }
-    }
-
-    /// <summary>
-    /// 获取扫描任务状态
-    /// </summary>
-    [HttpGet("scan/{taskId}")]
-    public IActionResult GetScanStatus(int taskId)
-    {
-        try
-        {
-            var sql = "SELECT * FROM scan_tasks WHERE id = @taskId";
-            using var conn = GetConnection();
-            conn.Open();
-            
-            using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-            
-            using var reader = cmd.ExecuteReader();
-            if (!reader.Read())
-                return NotFound(new { success = false, message = "任务不存在" });
-
-            return Ok(new
-            {
-                success = true,
-                data = new
-                {
-                    id = Convert.ToInt32(reader["id"]),
-                    task_type = reader["task_type"].ToString(),
-                    status = reader["status"].ToString(),
-                    target_path = reader["target_path"].ToString(),
-                    started_at = reader["started_at"].ToString(),
-                    completed_at = reader["completed_at"]?.ToString(),
-                    files_found = reader["files_found"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_found"]),
-                    files_added = reader["files_added"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_added"]),
-                    files_updated = reader["files_updated"] == DBNull.Value ? 0 : Convert.ToInt32(reader["files_updated"])
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "GetScanStatus failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
-        }
-    }
-
-    /// <summary>
     /// 视频流代理（支持 Range 请求）
     /// </summary>
     [HttpGet("stream/{id}")]
@@ -1537,30 +1336,28 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 检查字幕是否存在
     /// </summary>
-    [HttpGet("{id}/subtitle/check")]
-    public IActionResult CheckSubtitle(string id)
+    [HttpGet("{code}/subtitle/check")]
+    public IActionResult CheckSubtitle(string code)
     {
         try
         {
-            var sql = "SELECT file_path, name FROM videos WHERE id = @id";
+            var sql = "SELECT path FROM scan_directories WHERE category = '字幕' LIMIT 1";
             using var conn = GetConnection();
             conn.Open();
             using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
             using var reader = cmd.ExecuteReader();
             if (!reader.Read())
                 return NotFound(new { success = false, message = "视频不存在" });
-            var filePath = reader["file_path"]?.ToString();
-            var videoName = reader["name"]?.ToString() ?? "";
+            var filePath = reader["path"]?.ToString();
             if (string.IsNullOrEmpty(filePath))
                 return Ok(new { success = true, hasSubtitle = false });
 
-            var subPath = FindSubtitleFile(filePath);
+            var subPath = FindSubtitleFile(filePath, code);
             if (subPath != null)
             {
                 var ext = Path.GetExtension(subPath).ToLower();
                 var ct = ext == ".vtt" ? "text/vtt" : "text/plain";
-                return Ok(new { success = true, hasSubtitle = true, url = $"/api/video/{id}/subtitle", contentType = ct, ext });
+                return Ok(new { success = true, hasSubtitle = true, url = $"/api/video/{code}/subtitle", contentType = ct, ext });
             }
             return Ok(new { success = true, hasSubtitle = false });
         }
@@ -1574,21 +1371,20 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 字幕流代理
     /// </summary>
-    [HttpGet("{id}/subtitle")]
-    public IActionResult GetSubtitle(string id)
+    [HttpGet("{code}/subtitle")]
+    public IActionResult GetSubtitle(string code)
     {
         try
         {
-            var sql = "SELECT file_path FROM videos WHERE id = @id";
+            var sql = "SELECT path FROM scan_directories WHERE category = '字幕' LIMIT 1";
             using var conn = GetConnection();
             conn.Open();
             using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
             var filePath = cmd.ExecuteScalar()?.ToString();
             if (string.IsNullOrEmpty(filePath))
-                return NotFound(new { success = false, message = "视频不存在" });
+                return NotFound(new { success = false, message = "字幕目录不存在" });
 
-            var subPath = FindSubtitleFile(filePath);
+            var subPath = FindSubtitleFile(filePath, code);
             if (subPath == null || !System.IO.File.Exists(subPath))
                 return NotFound(new { success = false, message = "字幕不存在" });
 
@@ -1605,29 +1401,24 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 根据视频路径查找字幕文件：../subtitle/同名.*
+    /// 根据视频路径查找字幕文件：同番号.*
     /// </summary>
-    private string? FindSubtitleFile(string videoFilePath)
+    private string? FindSubtitleFile(string path, string code)
     {
         try
         {
-            var dir = Path.GetDirectoryName(videoFilePath);
-            if (string.IsNullOrEmpty(dir)) return null;
-            // 父目录的兄弟目录 subtitle
-            var parentDir = Path.GetDirectoryName(dir);
-            if (string.IsNullOrEmpty(parentDir)) return null;
-            var subDir = Path.Combine(parentDir, "subtitle");
+            var subDir = Path.GetFullPath(path);
+            if (string.IsNullOrEmpty(subDir)) return null;
             if (!Directory.Exists(subDir)) return null;
 
-            var baseName = Path.GetFileNameWithoutExtension(videoFilePath);
             var extensions = new[] { ".srt", ".ass", ".ssa", ".vtt", ".sub" };
             foreach (var ext in extensions)
             {
-                var candidate = Path.Combine(subDir, baseName + ext);
+                var candidate = Path.Combine(subDir, code + ext);
                 if (System.IO.File.Exists(candidate)) return candidate;
             }
             // 也尝试不带扩展名的同名文件
-            var direct = Path.Combine(subDir, baseName);
+            var direct = Path.Combine(subDir, code);
             if (System.IO.File.Exists(direct)) return direct;
             return null;
         }
@@ -1636,15 +1427,6 @@ public class VideoController : ControllerBase
 
 
     #region 私有方法
-
-    private List<string> ParseScanType(string scanType)
-    {
-        return scanType.Split(',', StringSplitOptions.RemoveEmptyEntries)
-            .Select(t => t.Trim().ToLowerInvariant())
-            .Where(t => t.Length > 0)
-            .Select(t => t.StartsWith(".") ? t : "." + t)
-            .ToList();
-    }
 
     private string ExtractVideoName(string filePath)
     {
@@ -1710,181 +1492,6 @@ public class VideoController : ControllerBase
         cmd.Parameters.AddRange(parameters);
         
         return cmd.ExecuteScalar();
-    }
-
-    private void ScanAllDirectoriesAsync(List<(string path, string category, bool recursive, bool autoCreateSeries)> dirs, 
-        string scanType, int taskId)
-    {
-        try
-        {
-            var totalFilesFound = 0;
-            var totalFilesAdded = 0;
-            var totalFilesCleared = 0;
-            var errors = new List<string>();
-
-            var extensions = ParseScanType(scanType);
-            if (extensions.Count == 0)
-            {
-                UpdateScanTaskFailed(taskId, "扫描类型为空");
-                return;
-            }
-
-            using var conn = GetConnection();
-            conn.Open();
-
-            using (var cmd = new SqliteCommand("UPDATE scan_tasks SET status = 'running' WHERE id = @taskId", conn))
-            {
-                cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-                cmd.ExecuteNonQuery();
-            }
-
-            // 第一遍：收集所有文件路径及对应的目录信息
-            var pathToInfo = new Dictionary<string, (string category, bool autoCreateSeries)>();
-            foreach (var dir in dirs)
-            {
-                if (!Directory.Exists(dir.path)) continue;
-
-                var enumOpts = new EnumerationOptions
-                {
-                    RecurseSubdirectories = dir.recursive,
-                    IgnoreInaccessible = true
-                };
-
-                foreach (var ext in extensions)
-                {
-                    try
-                    {
-                        var files = Directory.GetFiles(dir.path, $"*{ext}", enumOpts)
-                            .Where(f => !Path.GetFileName(f).StartsWith("._"));
-                        foreach (var file in files)
-                            pathToInfo[file] = (dir.category, dir.autoCreateSeries);
-                    }
-                    catch (Exception ex)
-                    {
-                        errors.Add($"扫描目录 {dir.path} 扩展名 {ext} 失败: {ex.Message}");
-                    }
-                }
-            }
-
-            totalFilesFound = pathToInfo.Count;
-
-            // 第二遍：先清空不在扫描目录的旧记录，再插入/更新
-            totalFilesCleared = ClearMissingPaths(conn, pathToInfo.Keys.ToHashSet());
-
-            foreach (var kvp in pathToInfo)
-            {
-                try
-                {
-                    if (UpsertVideoFromFile(kvp.Key, kvp.Value.category, kvp.Value.autoCreateSeries, conn))
-                        totalFilesAdded++;
-                }
-                catch (Exception ex)
-                {
-                    errors.Add($"{kvp.Key}: {ex.Message}");
-                }
-            }
-
-            var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
-                                    files_found = @filesFound, files_added = @filesAdded, 
-                                    files_updated = @filesCleared, errors = @errors 
-                                    WHERE id = @taskId";
-            using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
-            {
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", totalFilesFound));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", totalFilesAdded));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesCleared", totalFilesCleared));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-                updateTaskCmd.ExecuteNonQuery();
-            }
-        }
-        catch (Exception ex)
-        {
-            UpdateScanTaskFailed(taskId, ex.Message);
-            _logger.LogError(ex, "ScanAllDirectoriesAsync failed");
-        }
-    }
-
-    private void ScanSingleDirectoryAsync(string targetPath, bool recursive, string category, bool autoCreateSeries, string scanType, int taskId)
-    {
-        try
-        {
-            var extensions = ParseScanType(scanType);
-            if (extensions.Count == 0)
-            {
-                UpdateScanTaskFailed(taskId, "扫描类型为空");
-                return;
-            }
-
-            using var conn = GetConnection();
-            conn.Open();
-
-            using (var cmd = new SqliteCommand("UPDATE scan_tasks SET status = 'running' WHERE id = @taskId", conn))
-            {
-                cmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-                cmd.ExecuteNonQuery();
-            }
-
-            var filesFound = 0;
-            var filesAdded = 0;
-            var errors = new List<string>();
-
-            var enumOpts = new EnumerationOptions
-            {
-                RecurseSubdirectories = recursive,
-                IgnoreInaccessible = true
-            };
-
-            var allFiles = new List<string>();
-            foreach (var ext in extensions)
-            {
-                try
-                {
-                    allFiles.AddRange(Directory.GetFiles(targetPath, $"*{ext}", enumOpts));
-                }
-                catch (Exception ex)
-                {
-                    errors.Add($"扫描目录失败: {ex.Message}");
-                }
-            }
-            allFiles = allFiles.Distinct().ToList();
-            filesFound = allFiles.Count;
-
-            foreach (var filePath in allFiles)
-            {
-                if (Path.GetFileName(filePath).StartsWith("._")) continue;
-
-                try
-                {
-                    if (UpsertVideoFromFile(filePath, category, autoCreateSeries, conn))
-                        filesAdded++;
-                }
-                catch (Exception ex)
-                {
-                    errors.Add($"{filePath}: {ex.Message}");
-                }
-            }
-
-            var updateTaskSql = @"UPDATE scan_tasks SET status = 'completed', completed_at = @completedAt, 
-                                    files_found = @filesFound, files_added = @filesAdded, 
-                                    files_updated = 0, errors = @errors 
-                                    WHERE id = @taskId";
-            using (var updateTaskCmd = new SqliteCommand(updateTaskSql, conn))
-            {
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesFound", filesFound));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@filesAdded", filesAdded));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", errors.Any() ? JsonSerializer.Serialize(errors) : (object)DBNull.Value));
-                updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-                updateTaskCmd.ExecuteNonQuery();
-            }
-        }
-        catch (Exception ex)
-        {
-            UpdateScanTaskFailed(taskId, ex.Message);
-            _logger.LogError(ex, "ScanSingleDirectoryAsync failed");
-        }
     }
 
     /// <summary>
@@ -2104,27 +1711,6 @@ public class VideoController : ControllerBase
         }
 
         return cleared;
-    }
-
-    private void UpdateScanTaskFailed(int taskId, string error)
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-            
-            var updateTaskSql = @"UPDATE scan_tasks SET status = 'failed', completed_at = @completedAt, errors = @errors 
-                                    WHERE id = @taskId";
-            using var updateTaskCmd = new SqliteCommand(updateTaskSql, conn);
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@completedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@errors", error));
-            updateTaskCmd.Parameters.Add(new SqliteParameter("@taskId", taskId));
-            updateTaskCmd.ExecuteNonQuery();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "UpdateScanTaskFailed failed");
-        }
     }
 
     // 今日推荐内存缓存：按天缓存，refresh=true 清除

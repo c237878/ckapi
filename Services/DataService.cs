@@ -178,7 +178,7 @@ public class DataService : IDataService
     }
 
     /// <summary>
-    /// 创建扫描目录表
+    /// 创建文件目录表
     /// </summary>
     private void CreateScanDirectoryTable()
     {
