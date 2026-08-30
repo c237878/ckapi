@@ -759,127 +759,119 @@ public class VideoController : ControllerBase
             string? currentFilePath = null;
             string? currentCoverPath = null;
             long currentFileSize = 0;
-            using (var getCmd = new SqliteCommand(
-                "SELECT code, file_path, cover_path, file_size FROM videos WHERE id = @id", conn))
+            
+            const string selectVideoSql = "SELECT code, file_path, cover_path, file_size FROM videos WHERE id = @id";
+            using var getCmd = new SqliteCommand(selectVideoSql, conn);
+            getCmd.Parameters.AddWithValue("@id", id);
+            
+            using (var reader = getCmd.ExecuteReader())
             {
-                getCmd.Parameters.Add(new SqliteParameter("@id", id));
-                using var reader = getCmd.ExecuteReader();
                 if (!reader.Read())
                     return NotFound(new { success = false, message = "视频不存在" });
+                
                 videoCode = reader["code"]?.ToString();
-                var rawFp = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
-                currentFilePath = rawFp;
+                currentFilePath = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
                 currentCoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"]?.ToString();
                 currentFileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]);
             }
 
             var newFilePath = currentFilePath;
             long? newFileSize = null;
-            string? newCoverPath = currentCoverPath;
+            var newCoverPath = currentCoverPath;
             var messages = new List<string>();
 
-            // ===== 1. 处理 file_path =====
+            // ===== 1. 处理视频文件路径与大小 =====
             if (!string.IsNullOrEmpty(currentFilePath) && System.IO.File.Exists(currentFilePath))
             {
-                // 有路径且文件存在 → 直接取文件大小，无需单独UPDATE（后面合并）
-                var fi = new System.IO.FileInfo(currentFilePath);
+                var fi = new FileInfo(currentFilePath);
                 newFileSize = fi.Length;
                 messages.Add($"文件大小: {FormatFileSize(newFileSize.Value)}");
             }
-            else
+            else if (!string.IsNullOrEmpty(videoCode))
             {
-                // 无路径或文件不存在 → 只在番号非空时搜索
-                if (!string.IsNullOrEmpty(videoCode))
+                var videoDirs = QueryScanDirectoriesByCategory(conn, "视频");
+                bool found = false;
+                
+                foreach (var dirPath in videoDirs)
                 {
-                    // 只查询视频分类目录，不递归搜索全盘
-                    using var dirCmd = new SqliteCommand(
-                        "SELECT path FROM scan_directories WHERE category = '视频' ORDER BY path ASC LIMIT 1", conn);
-                    var topDir = dirCmd.ExecuteScalar()?.ToString();
-                    if (!string.IsNullOrEmpty(topDir) && Directory.Exists(topDir))
+                    if (!Directory.Exists(dirPath)) continue;
+                    var searchPath = Path.Combine(dirPath, $"{videoCode}.mp4");
+                    
+                    if (System.IO.File.Exists(searchPath))
                     {
-                        // 精确搜索 番号.mp4，不递归（性能优先）
-                        var searchPath = Path.Combine(topDir, videoCode + ".mp4");
-                        if (System.IO.File.Exists(searchPath))
-                        {
-                            var fi = new System.IO.FileInfo(searchPath);
-                            newFilePath = searchPath;
-                            newFileSize = fi.Length;
-                            messages.Add("在目录中找到匹配文件");
-                        }
-                        else
-                        {
-                            // 精确未找到，再递归搜索（兜底）
-                            var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, MaxRecursionDepth = 3 };
-                            foreach (var found in Directory.GetFiles(topDir, videoCode + ".mp4", enumOpts))
-                            {
-                                if (Path.GetFileName(found).StartsWith("._")) continue;
-                                var fi = new System.IO.FileInfo(found);
-                                newFilePath = found;
-                                newFileSize = fi.Length;
-                                messages.Add("在子目录中找到匹配文件");
-                                break;
-                            }
-                            if (newFileSize == null)
-                                messages.Add("未找到匹配文件");
-                        }
-                    }
-                    else
-                    {
-                        messages.Add("未配置视频目录");
+                        var fi = new FileInfo(searchPath);
+                        newFilePath = searchPath;
+                        newFileSize = fi.Length;
+                        messages.Add($"在目录 [{dirPath}] 中找到匹配文件");
+                        found = true;
+                        break;
                     }
                 }
-                else
+
+                if (!found)
                 {
-                    messages.Add("无番号，无法搜索");
+                    messages.Add(videoDirs.Any() ? "在所有配置的视频目录中未找到匹配文件" : "未配置视频目录");
                 }
             }
+            else
+            {
+                messages.Add("无番号，无法搜索");
+            }
 
-            // ===== 2. 处理 cover_path（只在封面为空时搜索）=====
+            // ===== 2. 处理封面路径（仅封面为空时搜索）=====
             if (string.IsNullOrEmpty(newCoverPath) && !string.IsNullOrEmpty(videoCode))
             {
-                using var coverDirCmd = new SqliteCommand(
-                    "SELECT path FROM scan_directories WHERE category = '封面' ORDER BY path ASC LIMIT 1", conn);
-                var coverDir = coverDirCmd.ExecuteScalar()?.ToString();
-                if (!string.IsNullOrEmpty(coverDir) && Directory.Exists(coverDir))
+                var coverDirs = QueryScanDirectoriesByCategory(conn, "封面");
+                bool coverFound = false;
+                
+                foreach (var dir in coverDirs)
                 {
-                    var searchPath = Path.Combine(coverDir, videoCode + ".jpg");
+                    if (!Directory.Exists(dir)) continue;
+                    var searchPath = Path.Combine(dir, $"{videoCode}.jpg");
+                    
                     if (System.IO.File.Exists(searchPath))
                     {
                         newCoverPath = searchPath;
                         messages.Add("封面已找回");
+                        coverFound = true;
+                        break;
                     }
+                }
+
+                if (!coverFound)
+                {
+                    messages.Add("未找到封面");
                 }
             }
 
-            // ===== 3. 合并为一次 UPDATE =====
+            // ===== 3. 合并为一次 UPDATE，消除重复SQL分支 =====
             long finalFileSize = newFileSize ?? 0;
             bool sizeChanged = finalFileSize != currentFileSize;
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
-            if (sizeChanged)
-            {
-                // file_size 变化：更新路径+大小+封面+ctime+flags
-                using var updCmd = new SqliteCommand(
-                    @"UPDATE videos SET file_path = @fp, file_size = @fs, cover_path = @cp, ctime = @ctime, media_attr_flags = 0 WHERE id = @id", conn);
-                updCmd.Parameters.Add(new SqliteParameter("@fp", newFilePath ?? ""));
-                updCmd.Parameters.Add(new SqliteParameter("@fs", finalFileSize));
-                updCmd.Parameters.Add(new SqliteParameter("@cp", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
-                updCmd.Parameters.Add(new SqliteParameter("@ctime", now));
-                updCmd.Parameters.Add(new SqliteParameter("@id", id));
-                updCmd.ExecuteNonQuery();
-            }
-            else
-            {
-                // file_size 未变化：只更新路径+封面+flags
-                using var updCmd = new SqliteCommand(
-                    @"UPDATE videos SET file_path = @fp, cover_path = @cp, media_attr_flags = 0 WHERE id = @id", conn);
-                updCmd.Parameters.Add(new SqliteParameter("@fp", newFilePath ?? ""));
-                updCmd.Parameters.Add(new SqliteParameter("@cp", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
-                updCmd.Parameters.Add(new SqliteParameter("@id", id));
-                updCmd.ExecuteNonQuery();
-            }
+            const string updateSql = @"
+                UPDATE videos 
+                SET file_path = @fp, 
+                    file_size = @fs, 
+                    cover_path = @cp, 
+                    media_attr_flags = 0,
+                    ctime = CASE WHEN @updateCtime = 1 THEN @ctime ELSE ctime END
+                WHERE id = @id";
 
-            return Ok(new { success = true, data = new { filePath = newFilePath, fileSize = newFileSize, coverPath = newCoverPath }, message = string.Join("；", messages) });
+            using var updCmd = new SqliteCommand(updateSql, conn);
+            updCmd.Parameters.AddWithValue("@fp", newFilePath ?? "");
+            updCmd.Parameters.AddWithValue("@fs", finalFileSize);
+            updCmd.Parameters.AddWithValue("@cp", string.IsNullOrEmpty(newCoverPath) ? DBNull.Value : newCoverPath);
+            updCmd.Parameters.AddWithValue("@updateCtime", sizeChanged ? 1 : 0);
+            updCmd.Parameters.AddWithValue("@ctime", now);
+            updCmd.Parameters.AddWithValue("@id", id);
+            updCmd.ExecuteNonQuery();
+
+            return Ok(new { 
+                success = true, 
+                data = new { filePath = newFilePath, fileSize = newFileSize, coverPath = newCoverPath }, 
+                message = string.Join("；", messages) 
+            });
         }
         catch (Exception ex)
         {
@@ -887,6 +879,28 @@ public class VideoController : ControllerBase
             return StatusCode(500, new { success = false, message = ex.Message });
         }
     }
+
+    // 提取通用查询方法，消除重复代码
+    private List<string> QueryScanDirectoriesByCategory(SqliteConnection conn, string category)
+    {
+        var dirs = new List<string>();
+        const string sql = "SELECT path FROM scan_directories WHERE category = @cat ORDER BY path ASC";
+        
+        using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@cat", category);
+        
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var path = reader.GetString(0);
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                dirs.Add(path);
+            }
+        }
+        return dirs;
+    }
+
 
     /// <summary>
     /// 删除视频文件（置空路径和大小，不动封面）
