@@ -71,10 +71,8 @@ if (isDev)
 }
 
 app.UseCors("AllowAll");
-app.UseHttpsRedirection();
+// 注意：服务只监听 HTTP（5033），不要启用 UseHttpsRedirection，否则会把请求 307 到无人监听的 HTTPS 端口
 app.UseRouting();
 app.MapControllers();
-
-app.Urls.Add("http://0.0.0.0:5033");
 
 app.Run();
