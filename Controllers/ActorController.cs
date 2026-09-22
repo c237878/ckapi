@@ -1,3 +1,4 @@
+using ckapi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using System.Text.Json.Serialization;
@@ -34,6 +35,8 @@ public class ActorController : ControllerBase
     {
         try
         {
+            page = Utils.Paging.ClampPage(page);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (page - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -46,6 +49,8 @@ public class ActorController : ControllerBase
                 "videocount" => "video_count DESC",
                 _ => "like_count DESC"
             };
+            // 并列行按 id 收尾，保证翻页结果稳定
+            orderBy += ", a.id ASC";
 
             if (!string.IsNullOrEmpty(keyword))
             {
@@ -75,7 +80,7 @@ public class ActorController : ControllerBase
                         (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) as video_count,
                         (SELECT COUNT(*) FROM video_actors va2 
                          JOIN videos v ON va2.video_id = v.id 
-                         JOIN video_likes vl ON v.id = vl.video_id 
+                         JOIN video_likes vl ON v.id = vl.video_id AND vl.target_type = 'video'
                          WHERE va2.actor_id = a.id) as like_count,
                         (SELECT COUNT(*) FROM video_actors va3 
                          JOIN videos v2 ON va3.video_id = v2.id 
@@ -100,12 +105,10 @@ public class ActorController : ControllerBase
                         name = reader["name"].ToString(),
                         alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
                         country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
-                        avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
                         likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-                        unloadedCount = reader["unloaded_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["unloaded_count"]),
-                        addedAt = reader["ctime"]?.ToString()
+                        unloadedCount = reader["unloaded_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["unloaded_count"])
                     });
                 }
 
@@ -115,7 +118,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员列表失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -148,9 +151,7 @@ public class ActorController : ControllerBase
                 name = reader["name"].ToString(),
                 alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
                 country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
-                avatarPath = reader["avatar_path"] == DBNull.Value ? null : reader["avatar_path"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                addedAt = reader["ctime"]?.ToString(),
                 likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
             };
 
@@ -159,7 +160,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员详情失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -188,13 +189,12 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, alias, country, avatar_path, bio, ctime) VALUES (@id, @name, @alias, @country, @avatarPath, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, alias, country, bio, ctime) VALUES (@id, @name, @alias, @country, @bio, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
             cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
             cmd.ExecuteNonQuery();
@@ -204,7 +204,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "添加演员失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -219,13 +219,12 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"UPDATE actors SET name = @name, alias = @alias, country = @country, avatar_path = @avatarPath, bio = @bio WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, alias = @alias, country = @country, bio = @bio WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@avatarPath", (object?)request.AvatarPath ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
 
             if (cmd.ExecuteNonQuery() > 0)
@@ -236,7 +235,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "更新演员失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -271,7 +270,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "删除演员失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -298,7 +297,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取地区列表失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -306,35 +305,39 @@ public class ActorController : ControllerBase
     /// 获取演员的影片列表
     /// </summary>
     [HttpGet("{id}/videos")]
-    public IActionResult GetActorVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public IActionResult GetActorVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
+        [FromQuery] int? mediaAttrFlags = null, [FromQuery] bool? hasFile = null)
     {
         try
         {
+            page = Utils.Paging.ClampPage(page);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (page - 1) * pageSize;
             using var conn = GetConnection();
             conn.Open();
 
-            var countSql = @"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id WHERE va.actor_id = @actorId";
+            // 片源/下载状态筛选下沉到 SQL：原先前端在已分页的结果里再过滤一次，
+            // 只能筛到当前页，页数不同结果就不同。
+            var where = "WHERE va.actor_id = @actorId";
+            var parameters = new List<SqliteParameter> { new("@actorId", id) };
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, mediaAttrFlags, hasFile);
+
+            var countSql = $@"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                countCmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                var sql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
-                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
-                        s.name as series_name,
-                        (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
-                         INNER JOIN video_actors va ON a.id = va.actor_id 
-                         WHERE va.video_id = v.id) as actor_names
+                var sql = $@"
+                    SELECT {VideoCardQuery.ColumnsWithSeries}
                     FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
                     LEFT JOIN video_series s ON v.seriesid = s.id
-                    WHERE va.actor_id = @actorId
-                    ORDER BY v.code ASC
+                    {where}
+                    ORDER BY v.code ASC, v.id ASC
                     LIMIT @pageSize OFFSET @offset";
                 using var cmd = new SqliteCommand(sql, conn);
-                cmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                foreach (var p in parameters) cmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
                 cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
                 cmd.Parameters.Add(new SqliteParameter("@offset", offset));
 
@@ -342,23 +345,7 @@ public class ActorController : ControllerBase
                 var videos = new List<object>();
                 while (reader.Read())
                 {
-                    videos.Add(new
-                    {
-                        id = reader["id"].ToString(),
-                        code = reader["code"]?.ToString(),
-                        name = reader["name"].ToString(),
-                        category = reader["category"]?.ToString(),
-                        country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-                        filePath = reader["file_path"]?.ToString(),
-                        fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                        seriesId = reader["seriesid"]?.ToString(),
-                        seriesName = reader["series_name"]?.ToString(),
-                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-                        actorNames = reader["actor_names"]?.ToString(),
-                        addedAt = reader["ctime"]?.ToString(),
-                        mediaAttrFlags = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
-                    });
+                    videos.Add(VideoCardQuery.Map(reader));
                 }
 
                 return Ok(new { success = true, data = videos, total, page, pageSize });
@@ -367,7 +354,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员影片失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
     /// <summary>
@@ -407,7 +394,7 @@ public class ActorController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取演员海报失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -419,6 +406,11 @@ public class ActorController : ControllerBase
     {
         try
         {
+            var safeFileName = Utils.SafePath.AsFileName(fileName);
+            var safeId = Utils.SafePath.AsFileName(id);
+            if (safeFileName is null || safeId is null || !Utils.SafePath.IsImageFile(safeFileName))
+                return NotFound();
+
             using var conn = GetConnection();
             conn.Open();
             using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
@@ -429,27 +421,19 @@ public class ActorController : ControllerBase
                 return NotFound();
             }
 
-            var filePath = Path.Combine(posterDir, id, fileName);
-            if (!System.IO.File.Exists(filePath))
-            {
+            var filePath = Path.Combine(posterDir, safeId, safeFileName);
+            if (!Utils.SafePath.IsInside(filePath, posterDir))
                 return NotFound();
-            }
 
-            var ext = Path.GetExtension(fileName).ToLower();
-            var contentType = ext switch
-            {
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".png" => "image/png",
-                ".webp" => "image/webp",
-                _ => "application/octet-stream"
-            };
+            var result = Utils.CachedFile.TryServe(this, filePath);
+            if (result is not null) return result;
 
-            return PhysicalFile(filePath, contentType);
+            return NotFound();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取海报图片失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }
@@ -462,24 +446,18 @@ public class AddActorRequest
     public string? Alias { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
-    [JsonPropertyName("avatarPath")]
-    public string? AvatarPath { get; set; }
     [JsonPropertyName("bio")]
     public string? Bio { get; set; }
 }
 
 public class UpdateActorRequest
 {
-    [JsonPropertyName("id")]
-    public string? Id { get; set; }
     [JsonPropertyName("name")]
     public string? Name { get; set; }
     [JsonPropertyName("alias")]
     public string? Alias { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
-    [JsonPropertyName("avatarPath")]
-    public string? AvatarPath { get; set; }
     [JsonPropertyName("bio")]
     public string? Bio { get; set; }
 }

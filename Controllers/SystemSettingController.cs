@@ -47,7 +47,7 @@ public class SystemSettingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取系统设置失败");
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -73,7 +73,7 @@ public class SystemSettingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取设置失败: {Name}", name);
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -123,7 +123,7 @@ public class SystemSettingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "保存设置失败");
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -149,7 +149,7 @@ public class SystemSettingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "删除设置失败: {Id}", id);
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

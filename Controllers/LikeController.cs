@@ -34,6 +34,8 @@ public class LikeController : ControllerBase
     {
         try
         {
+            pageIndex = Utils.Paging.ClampPage(pageIndex);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (pageIndex - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -121,7 +123,7 @@ public class LikeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetLikeList failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -143,7 +145,7 @@ public class LikeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteLike failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -172,7 +174,7 @@ public class LikeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "BatchDeleteLike failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

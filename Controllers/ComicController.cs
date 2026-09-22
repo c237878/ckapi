@@ -41,6 +41,8 @@ public class ComicController : ControllerBase
     {
         try
         {
+            pageIndex = Utils.Paging.ClampPage(pageIndex);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (pageIndex - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -66,6 +68,8 @@ public class ComicController : ControllerBase
                 "likes" => "like_count DESC, c.ctime DESC",
                 _ => "c.ctime DESC"
             };
+            // 并列行按 id 收尾，保证翻页结果稳定
+            orderByClause += ", c.id ASC";
 
             var sql = $@"
                 SELECT c.*,
@@ -99,7 +103,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetComicList failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -138,12 +142,10 @@ public class ComicController : ControllerBase
                 chapters.Add(new
                 {
                     id = chReader["id"].ToString(),
-                    comicId = chReader["comic_id"].ToString(),
                     title = chReader["title"].ToString(),
                     directory = chReader["directory"].ToString(),
                     sortOrder = Convert.ToInt32(chReader["sort_order"]),
-                    imageCount = Convert.ToInt32(chReader["image_count"]),
-                    ctime = chReader["ctime"].ToString()
+                    imageCount = Convert.ToInt32(chReader["image_count"])
                 });
             }
 
@@ -152,7 +154,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetComicById failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -194,7 +196,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "AddComic failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -243,7 +245,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateComic failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -274,7 +276,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteComic failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -335,7 +337,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "AddChapter failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -370,12 +372,12 @@ public class ComicController : ControllerBase
                 .OrderBy(f => f, new NaturalStringComparer())
                 .ToArray();
 
-            var images = files.Select((f, idx) => new
+            // 只回文件名与是否已解密：原先还带 index 和逐文件 FileInfo().Length，
+            // 前端两个都没用，而 size 会让每张图多一次磁盘往返。
+            var images = files.Select(f => new
             {
                 fileName = Io.Path.GetFileName(f),
-                index = idx,
-                isDecrypted = Io.File.Exists(Io.Path.Combine(chapterDir, "_decrypted", Io.Path.GetFileNameWithoutExtension(f) + ".jpg")),
-                size = new Io.FileInfo(f).Length
+                isDecrypted = Io.File.Exists(Io.Path.Combine(chapterDir, "_decrypted", Io.Path.GetFileNameWithoutExtension(f) + ".jpg"))
             }).ToArray();
 
             return Ok(new { success = true, data = new { images } });
@@ -383,7 +385,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetChapterImages failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -399,27 +401,25 @@ public class ComicController : ControllerBase
             if (string.IsNullOrEmpty(path))
                 return NotFound(new { success = false, message = "路径为空" });
 
-            if (!System.IO.File.Exists(path))
+            // 该接口按调用方给定的磁盘路径取文件，必须限定在媒体卷内
+            if (!Utils.MediaRoots.IsAllowed(_config, path))
+            {
+                _logger.LogWarning("拒绝越界的封面读取请求: {Path}", path);
+                return NotFound(new { success = false, message = "封面文件不存在" });
+            }
+
+            if (!Utils.SafePath.IsImageFile(path))
                 return NotFound(new { success = false, message = "封面文件不存在" });
 
-            var bytes = System.IO.File.ReadAllBytes(path);
-            var ext = System.IO.Path.GetExtension(path).ToLower();
-            var contentType = ext switch
-            {
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".png" => "image/png",
-                ".gif" => "image/gif",
-                ".webp" => "image/webp",
-                ".bmp" => "image/bmp",
-                _ => "application/octet-stream"
-            };
+            var served = Utils.CachedFile.TryServe(this, path);
+            if (served is not null) return served;
 
-            return PhysicalFile(path, contentType);
+            return NotFound(new { success = false, message = "封面文件不存在" });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetCoverImage failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -446,7 +446,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteChapter failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -493,10 +493,7 @@ public class ComicController : ControllerBase
                 updateParams.Add(new SqliteParameter("@sort_order", req.SortOrder.Value));
             }
 
-            setClauses.Add("utime = @utime");
-            updateParams.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-
-            if (setClauses.Count == 1)
+            if (setClauses.Count == 0)
                 return BadRequest(new { success = false, message = "没有需要更新的字段" });
 
             var sql = $"UPDATE comic_chapters SET {string.Join(", ", setClauses)} WHERE id = @id";
@@ -523,28 +520,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateChapter failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
-        }
-    }
-
-
-    /// <summary>
-    /// 测试接口（调试用）
-    /// </summary>
-    [HttpGet("test")]
-    public IActionResult Test()
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-            using var cmd = new SqliteCommand("SELECT COUNT(*) FROM comics", conn);
-            var count = cmd.ExecuteScalar();
-            return Ok(new { success = true, message = "OK", count });
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(500, new { success = false, error = ex.Message, type = ex.GetType().Name });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -586,7 +562,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "RestoreImage failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -629,7 +605,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "RestoreBatch failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -678,7 +654,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DecryptImage failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -750,7 +726,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DecryptBatch failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -775,8 +751,12 @@ public class ComicController : ControllerBase
                 chapterDir = result.ToString();
             }
 
+            var safeFileName = Utils.SafePath.AsFileName(fileName);
+            if (safeFileName is null)
+                return NotFound(new { success = false, message = "图片不存在" });
+
             var decryptedDir = Io.Path.Combine(chapterDir!, "_decrypted");
-            var baseName = Io.Path.GetFileNameWithoutExtension(fileName);
+            var baseName = Io.Path.GetFileNameWithoutExtension(safeFileName);
             string? imagePath = null;
 
             var decryptedPath = Io.Path.Combine(decryptedDir, baseName + ".jpg");
@@ -784,7 +764,7 @@ public class ComicController : ControllerBase
                 imagePath = decryptedPath;
             else
             {
-                var originalPath = Io.Path.Combine(chapterDir!, fileName);
+                var originalPath = Io.Path.Combine(chapterDir!, safeFileName);
                 if (Io.File.Exists(originalPath))
                     imagePath = originalPath;
             }
@@ -792,24 +772,21 @@ public class ComicController : ControllerBase
             if (imagePath == null || !Io.File.Exists(imagePath))
                 return NotFound(new { success = false, message = "图片不存在" });
 
-            var bytes = Io.File.ReadAllBytes(imagePath);
-            var ext = Io.Path.GetExtension(imagePath).ToLower();
-            var contentType = ext switch
+            if (!Utils.SafePath.IsInside(imagePath, chapterDir))
             {
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".png" => "image/png",
-                ".gif" => "image/gif",
-                ".webp" => "image/webp",
-                ".bmp" => "image/bmp",
-                _ => "application/octet-stream"
-            };
+                _logger.LogWarning("拒绝越界的章节图片读取请求: {Path}", imagePath);
+                return NotFound(new { success = false, message = "图片不存在" });
+            }
 
-            return PhysicalFile(imagePath, contentType);
+            var served = Utils.CachedFile.TryServe(this, imagePath);
+            if (served is not null) return served;
+
+            return NotFound(new { success = false, message = "图片不存在" });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetImage failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -904,9 +881,7 @@ public class ComicController : ControllerBase
             directory = reader["directory"] == DBNull.Value ? null : reader["directory"].ToString(),
             status = reader["status"] == DBNull.Value ? 0 : Convert.ToInt32(reader["status"]),
             chapterCount = Convert.ToInt32(reader["chapter_count"]),
-            likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-            ctime = reader["ctime"].ToString(),
-            utime = reader["utime"] == DBNull.Value ? null : reader["utime"].ToString()
+            likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
         };
     }
 
@@ -958,7 +933,7 @@ public class ComicController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "LikeComic failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

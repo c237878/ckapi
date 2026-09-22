@@ -158,7 +158,7 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "ResetFileSize failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -242,7 +242,7 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteVideoFile failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -284,7 +284,7 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateFileInfo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -321,7 +321,7 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateMediaFlags failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -452,7 +452,7 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "RenameFilesToCode failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 

@@ -50,7 +50,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetList failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -69,7 +69,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "CheckDirectory failed");
-            return Ok(new { success = false, exists = false, message = ex.Message });
+            return Ok(new { success = false, exists = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -97,7 +97,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetById failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -129,15 +129,13 @@ public class ScanDirectoryController : ControllerBase
             var id = Guid.NewGuid().ToString("N").ToUpper();
             var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             var sql = @"
-                INSERT INTO scan_directories (id, path, category, recursive, auto_create_series, ctime, utime)
-                VALUES (@id, @path, @category, @recursive, @autoCreateSeries, @ctime, @utime)";
+                INSERT INTO scan_directories (id, path, category, ctime, utime)
+                VALUES (@id, @path, @category, @ctime, @utime)";
 
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@autoCreateSeries", req.AutoCreateSeries ? 1 : 0));
             cmd.Parameters.Add(new SqliteParameter("@ctime", now));
             cmd.Parameters.Add(new SqliteParameter("@utime", now));
             cmd.ExecuteNonQuery();
@@ -147,7 +145,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "AddDirectory failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -169,8 +167,6 @@ public class ScanDirectoryController : ControllerBase
                 UPDATE scan_directories SET
                     path = @path,
                     category = @category,
-                    recursive = @recursive,
-                    auto_create_series = @autoCreateSeries,
                     utime = @utime
                 WHERE id = @id";
 
@@ -178,8 +174,6 @@ public class ScanDirectoryController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@path", req.Path));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@recursive", req.Recursive ? 1 : 0));
-            cmd.Parameters.Add(new SqliteParameter("@autoCreateSeries", req.AutoCreateSeries ? 1 : 0));
             cmd.Parameters.Add(new SqliteParameter("@utime", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
 
             if (cmd.ExecuteNonQuery() > 0)
@@ -190,7 +184,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateDirectory failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -215,7 +209,7 @@ public class ScanDirectoryController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteDirectory failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -225,11 +219,7 @@ public class ScanDirectoryController : ControllerBase
         {
             id = reader["id"].ToString(),
             path = reader["path"].ToString(),
-            category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
-            recursive = Convert.ToInt32(reader["recursive"]) == 1,
-            autoCreateSeries = reader["auto_create_series"] == DBNull.Value ? false : Convert.ToInt32(reader["auto_create_series"]) == 1,
-            ctime = reader["ctime"]?.ToString(),
-            utime = reader["utime"]?.ToString()
+            category = reader["category"] == DBNull.Value ? "" : reader["category"].ToString()
         };
     }
 }
@@ -238,8 +228,6 @@ public class ScanDirectoryRequest
 {
     public string Path { get; set; } = "";
     public string? Category { get; set; }
-    public bool Recursive { get; set; } = true;
-    public bool AutoCreateSeries { get; set; } = false;
 }
 
 public class DirectoryCheckRequest

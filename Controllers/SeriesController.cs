@@ -1,3 +1,4 @@
+using ckapi.Services;
 using ckapi.Models;
 using ckapi.Utils;
 using Microsoft.AspNetCore.Mvc;
@@ -38,6 +39,8 @@ public class SeriesController : ControllerBase
     {
         try
         {
+            page = Utils.Paging.ClampPage(page);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (page - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -50,6 +53,8 @@ public class SeriesController : ControllerBase
                 "videocount" => "video_count DESC",
                 _ => "like_count DESC"
             };
+            // 并列行按 id 收尾，保证翻页结果稳定
+            orderBy += ", s.id ASC";
 
             if (!string.IsNullOrEmpty(country))
             {
@@ -149,33 +154,37 @@ public class SeriesController : ControllerBase
     /// 获取系列下的影片
     /// </summary>
     [HttpGet("{id}/videos")]
-    public IActionResult GetSeriesVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public IActionResult GetSeriesVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
+        [FromQuery] int? mediaAttrFlags = null, [FromQuery] bool? hasFile = null)
     {
         try
         {
+            page = Utils.Paging.ClampPage(page);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (page - 1) * pageSize;
             using var conn = GetConnection();
             conn.Open();
 
-            var countSql = "SELECT COUNT(*) FROM videos WHERE seriesid = @seriesid";
+            // 同演员详情页：筛选下沉到 SQL，前端客户端过滤只能作用当前页。
+            var where = "WHERE v.seriesid = @seriesid";
+            var parameters = new List<SqliteParameter> { new("@seriesid", id) };
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, mediaAttrFlags, hasFile);
+
+            var countSql = $"SELECT COUNT(*) FROM videos v {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
-                countCmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
                 var total = Convert.ToInt32(countCmd.ExecuteScalar());
 
-                var sql = @"
-                    SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size, v.seriesid, v.ctime, v.media_attr_flags,
-                        (SELECT COUNT(*) FROM video_likes vl WHERE vl.video_id = v.id) as like_count,
-                        (SELECT GROUP_CONCAT(a.id || '|' || a.name) FROM actors a 
-                         INNER JOIN video_actors va ON a.id = va.actor_id 
-                         WHERE va.video_id = v.id) as actor_names
+                var sql = $@"
+                    SELECT {VideoCardQuery.Columns}
                     FROM videos v 
-                    WHERE v.seriesid = @seriesid
-                    ORDER BY v.sort_order ASC, v.code ASC
+                    {where}
+                    ORDER BY v.sort_order ASC, v.code ASC, v.id ASC
                     LIMIT @pageSize OFFSET @offset";
 
                 using var cmd = new SqliteCommand(sql, conn);
-                cmd.Parameters.Add(new SqliteParameter("@seriesid", id));
+                foreach (var p in parameters) cmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
                 cmd.Parameters.Add(new SqliteParameter("@pageSize", pageSize));
                 cmd.Parameters.Add(new SqliteParameter("@offset", offset));
 
@@ -183,22 +192,7 @@ public class SeriesController : ControllerBase
                 var videos = new List<object>();
                 while (reader.Read())
                 {
-                    videos.Add(new
-                    {
-                        id = reader["id"].ToString(),
-                        code = reader["code"]?.ToString(),
-                        name = reader["name"].ToString(),
-                        category = reader["category"]?.ToString(),
-                        country = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-                        coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-                        filePath = reader["file_path"]?.ToString(),
-                        fileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-                        seriesId = reader["seriesid"]?.ToString(),
-                        ctime = reader["ctime"]?.ToString(),
-                        likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]),
-                        actorNames = reader["actor_names"]?.ToString(),
-                        mediaAttrFlags = reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])
-                    });
+                    videos.Add(VideoCardQuery.Map(reader));
                 }
 
                 return Ok(new { success = true, data = videos, total, page, pageSize });
@@ -335,14 +329,15 @@ public class SeriesController : ControllerBase
             var countries = new List<string>();
             foreach (System.Data.DataRow row in dt.Rows)
             {
-                countries.Add(row["country"].ToString());
+                var name = row["country"].ToString();
+                if (!string.IsNullOrEmpty(name)) countries.Add(name);
             }
             return Ok(new { success = true, data = countries });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取地区列表失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -384,7 +379,7 @@ public class SeriesController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "更新影片排序失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

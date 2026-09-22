@@ -50,7 +50,7 @@ public class FriendLinkController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取友情链接失败");
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -82,7 +82,7 @@ public class FriendLinkController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "添加友情链接失败");
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -115,7 +115,7 @@ public class FriendLinkController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "更新友情链接失败: {Id}", id);
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -141,7 +141,7 @@ public class FriendLinkController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "删除友情链接失败: {Id}", id);
-            return Ok(new { success = false, message = ex.Message });
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

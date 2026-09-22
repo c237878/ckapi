@@ -49,6 +49,13 @@ public class UploadController : ControllerBase
         if (string.IsNullOrWhiteSpace(directory))
             return BadRequest(new { success = false, message = "请选择上传目录" });
 
+        // directory 由调用方给出，不约束的话可以把文件写到服务器任意路径（并可顺带创建目录）
+        if (!Utils.MediaRoots.IsAllowed(_config, directory))
+        {
+            _logger.LogWarning("[Upload] 拒绝写入媒体白名单之外的目录: {Dir}", directory);
+            return BadRequest(new { success = false, message = "上传目录不在允许的媒体目录内" });
+        }
+
         if (file == null || file.Length == 0)
             return BadRequest(new { success = false, message = "请选择要上传的文件" });
 
@@ -101,7 +108,7 @@ public class UploadController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Upload] {Type} 上传失败: {Path}", type, savePath);
-            return StatusCode(500, new { success = false, message = $"上传失败: {ex.Message}" });
+            return StatusCode(500, new { success = false, message = "上传失败" });
         }
     }
 }

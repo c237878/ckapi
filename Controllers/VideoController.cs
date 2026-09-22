@@ -1,3 +1,4 @@
+using ckapi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
@@ -45,6 +46,8 @@ public class VideoController : ControllerBase
     {
         try
         {
+            pageIndex = Utils.Paging.ClampPage(pageIndex);
+            pageSize = Utils.Paging.ClampSize(pageSize);
             var offset = (pageIndex - 1) * pageSize;
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
@@ -59,6 +62,8 @@ public class VideoController : ControllerBase
                     ? "CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, v.ctime DESC"
                     : "v.ctime DESC"
             };
+            // 并列行按 id 收尾：否则 like_count/ctime 相同的影片在翻页时来回换位
+            orderBy += ", v.id ASC";
 
             if (!string.IsNullOrEmpty(category))
             {
@@ -104,36 +109,39 @@ public class VideoController : ControllerBase
                 parameters.Add(new SqliteParameter("@mediaAttrFlags", mediaAttrFlags.Value));
             }
 
-            // 获取总数
+            using var conn = GetConnection();
+            conn.Open();
+
+            // 总数（原先这里另开了一条连接，与列表查询各一次握手）
             var countSql = $"SELECT COUNT(*) FROM videos v {whereClause}";
-            var total = Convert.ToInt32(ExecuteScalar(countSql, parameters.ToArray()));
+            int total;
+            using (var countCmd = new SqliteCommand(countSql, conn))
+            {
+                foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
+                total = Convert.ToInt32(countCmd.ExecuteScalar());
+            }
 
             // 获取列表
             var sql = $@"
-                SELECT v.*, s.name as series_name,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') as like_count,
-                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+                SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
                 ORDER BY " + orderBy + @"
                 LIMIT @pageSize OFFSET @offset";
-            
+
             parameters.Add(new SqliteParameter("@pageSize", pageSize));
             parameters.Add(new SqliteParameter("@offset", offset));
 
-            using var conn = GetConnection();
-            conn.Open();
-            
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddRange(parameters.ToArray());
-            
+
             using var reader = cmd.ExecuteReader();
-            
+
             var videos = new List<object>();
             while (reader.Read())
             {
-                videos.Add(ReadVideoRow(reader, withSeriesName: true));
+                videos.Add(VideoCardQuery.Map(reader));
             }
 
             return Ok(new
@@ -151,7 +159,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetList failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -198,7 +206,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "生成自动编号失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -254,7 +262,81 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetMeta failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 首页分类板块：一次请求返回全部板块。
+    /// 之前首页按分类各发一次 /video/list（每个请求还要开两条连接跑 COUNT），6 个分类就是 6 次往返。
+    /// 这里在同一个连接上按分类各取一次，只走索引定位 + LIMIT。
+    /// </summary>
+    [HttpGet("home-sections")]
+    public IActionResult GetHomeSections()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            string homePageCategories = "";
+            int count = 12;
+            using (var sCmd = new SqliteCommand(
+                "SELECT name, content FROM system_settings WHERE name IN ('homePageCategories','homePageCategoryCount')", conn))
+            using (var sReader = sCmd.ExecuteReader())
+            {
+                while (sReader.Read())
+                {
+                    var name = sReader.GetString(0);
+                    var value = sReader.IsDBNull(1) ? "" : sReader.GetString(1);
+                    if (name == "homePageCategories") homePageCategories = value;
+                    if (name == "homePageCategoryCount" && int.TryParse(value, out var parsed)) count = parsed;
+                }
+            }
+
+            var categories = homePageCategories
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct()
+                .ToList();
+
+            // 未配置时退回"全部分类"
+            if (categories.Count == 0)
+            {
+                using var catCmd = new SqliteCommand("SELECT DISTINCT category FROM videos WHERE category != '' ORDER BY category", conn);
+                using var catReader = catCmd.ExecuteReader();
+                while (catReader.Read()) categories.Add(catReader.GetString(0));
+            }
+
+            count = Utils.Paging.ClampCount(count, 12, 50);
+
+            const string sectionSql = $@"
+                SELECT {VideoCardQuery.ColumnsWithSeries}
+                FROM videos v
+                LEFT JOIN video_series s ON v.seriesid = s.id
+                WHERE v.category = @category AND v.file_size > 0
+                ORDER BY CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
+                LIMIT @limit";
+
+            var sections = new List<object>();
+            foreach (var category in categories)
+            {
+                var videos = new List<object>();
+                using var cmd = new SqliteCommand(sectionSql, conn);
+                cmd.Parameters.Add(new SqliteParameter("@category", category));
+                cmd.Parameters.Add(new SqliteParameter("@limit", count));
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) videos.Add(VideoCardQuery.Map(reader));
+                }
+                sections.Add(new { category, videos });
+            }
+
+            return Ok(new { success = true, data = sections, count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetHomeSections failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -281,7 +363,7 @@ public class VideoController : ControllerBase
             if (!reader.Read())
                 return NotFound(new { success = false, message = "视频不存在" });
 
-            var video = ReadVideoRow(reader, withSeriesName: true);
+            var video = VideoCardQuery.Map(reader);
 
             // 获取演员列表
             var actorSql = @"
@@ -301,8 +383,7 @@ public class VideoController : ControllerBase
                     id = actorReader["id"].ToString(),
                     name = actorReader["name"].ToString(),
                     alias = actorReader["alias"] == DBNull.Value ? null : actorReader["alias"].ToString(),
-                    country = actorReader["country"] == DBNull.Value ? null : actorReader["country"].ToString(),
-                    avatarPath = actorReader["avatar_path"] == DBNull.Value ? null : actorReader["avatar_path"].ToString()
+                    country = actorReader["country"] == DBNull.Value ? null : actorReader["country"].ToString()
                 });
             }
 
@@ -330,7 +411,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetById failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -353,16 +434,8 @@ public class VideoController : ControllerBase
                     return NotFound(new { success = false, message = "视频不存在" });
             }
 
-            // 创建点赞记录表（如果不存在）
-            using (var createCmd = new SqliteCommand(@"
-                CREATE TABLE IF NOT EXISTS video_likes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    video_id TEXT NOT NULL,
-                    liked_at TEXT NOT NULL
-                )", conn))
-            {
-                createCmd.ExecuteNonQuery();
-            }
+            // 建表统一由 DataService 负责；此处原先还留着一份缺 target_type 的旧 CREATE，
+            // 一旦真的按它建表，下面的 INSERT 就会因无该列而失败。
 
             // 插入点赞记录
             var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -386,7 +459,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "LikeVideo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -438,7 +511,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "AddVideo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -589,103 +662,15 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateVideo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
-    }
-
-    /// <summary>
-    /// 在同分类扫描目录中搜索匹配的视频文件
-    /// </summary>
-    private bool TryFindVideoFile(SqliteConnection conn, string videoId, string? code,
-        List<(string path, string category)> scanDirs,
-        ref string? outFilePath, ref long? outFileSize)
-    {
-        // 过滤非法路径字符，防止 Directory.GetFiles 崩溃
-        var invalidChars = System.IO.Path.GetInvalidFileNameChars();
-        var searchKeys = new List<string>();
-        if (!string.IsNullOrEmpty(code)) {
-            var clean = new string(code.Where(c => !invalidChars.Contains(c)).ToArray());
-            if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
-        }
-        if (searchKeys.Count == 0) return false;
-
-        foreach (var dir in scanDirs)
-        {
-            if (dir.category!="视频" || !Directory.Exists(dir.path)) continue;
-            var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
-            foreach (var key in searchKeys)
-            {
-                var searchPattern = key + ".mp4";
-                foreach (var found in Directory.GetFiles(dir.path, searchPattern, enumOpts))
-                {
-                    if (Path.GetFileName(found).StartsWith("._")) continue;
-                    var fi = new System.IO.FileInfo(found);
-                    outFilePath = found;
-                    outFileSize = fi.Length;
-
-                    // 直接更新（UNIQUE 约束兜底；同一视频重复执行则为幂等操作）
-                    using var updCmd = new SqliteCommand(
-                        "UPDATE videos SET file_path = @fp, file_size = @fs WHERE id = @id", conn);
-                    updCmd.Parameters.Add(new SqliteParameter("@fp", found));
-                    updCmd.Parameters.Add(new SqliteParameter("@fs", fi.Length));
-                    updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-                    updCmd.ExecuteNonQuery();
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// 搜索封面路径：同目录 + /cover/ 目录
-    /// </summary>
-    private bool TryFindCover(SqliteConnection conn, string videoId, string? code,
-        List<(string path, string category)> scanDirs, ref string? outCoverPath)
-    {
-        var invalidChars = System.IO.Path.GetInvalidFileNameChars();
-        var searchKeys = new List<string>();
-        if (!string.IsNullOrEmpty(code)) {
-            var clean = new string(code.Where(c => !invalidChars.Contains(c)).ToArray());
-            if (!string.IsNullOrWhiteSpace(clean)) searchKeys.Add(clean);
-        }
-        if (searchKeys.Count == 0) return false;
-
-        // 遍历扫描目录
-        foreach (var dir in scanDirs)
-        {
-            if (dir.category != "封面" || !Directory.Exists(dir.path)) continue;
-            var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
-            foreach (var key in searchKeys)
-            {
-                var searchPattern = key + ".jpg";
-                foreach (var found in Directory.GetFiles(dir.path, searchPattern, enumOpts))
-                {
-                    if (Path.GetFileName(found).StartsWith("._")) continue;
-                    var fi = new System.IO.FileInfo(found);
-                    outCoverPath = found;
-                    UpdateCover(conn, videoId, found);
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    private void UpdateCover(SqliteConnection conn, string videoId, string coverPath)
-    {
-        using var updCmd = new SqliteCommand("UPDATE videos SET cover_path = @cp WHERE id = @id", conn);
-        updCmd.Parameters.Add(new SqliteParameter("@cp", coverPath));
-        updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-        updCmd.ExecuteNonQuery();
     }
 
     /// <summary>
     /// 删除视频
     /// </summary>
     [HttpDelete("{id}")]
-    public IActionResult DeleteVideo(string id, [FromQuery] bool deleteFiles = true)
+    public IActionResult DeleteVideo(string id, [FromQuery] bool deleteFiles = false)
     {
         try
         {
@@ -766,7 +751,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "DeleteVideo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -774,7 +759,7 @@ public class VideoController : ControllerBase
     /// 批量删除视频
     /// </summary>
     [HttpDelete("batch")]
-    public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req, [FromQuery] bool deleteFiles = true)
+    public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req, [FromQuery] bool deleteFiles = false)
     {
         try
         {
@@ -890,296 +875,11 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "BatchDeleteVideos failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
     #region 私有方法
-
-    private string ExtractVideoName(string filePath)
-    {
-        // 取文件名中第一个.前的部分
-        var fileName = Path.GetFileNameWithoutExtension(filePath);
-        var dotIndex = fileName.IndexOf('.');
-        if (dotIndex > 0)
-            return fileName.Substring(0, dotIndex);
-        return fileName;
-    }
-
-    private object ReadVideoRow(SqliteDataReader reader, bool withSeriesName = false)
-    {
-        var result = new Dictionary<string, object?>
-        {
-            ["id"] = reader["id"].ToString(),
-            ["code"] = reader["code"] == DBNull.Value ? null : reader["code"].ToString(),
-            ["name"] = reader["name"].ToString(),
-            ["category"] = reader["category"] == DBNull.Value ? "" : reader["category"].ToString(),
-            ["country"] = reader["country"] == DBNull.Value ? "" : reader["country"].ToString(),
-            ["filePath"] = reader["file_path"].ToString(),
-            ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
-            ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
-            ["addedAt"] = reader["ctime"].ToString(),
-            ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString(),
-            ["mediaAttrFlags"] = HasColumn(reader, "media_attr_flags") ? (reader["media_attr_flags"] == DBNull.Value ? 0 : Convert.ToInt32(reader["media_attr_flags"])) : 0
-        };
-
-        if (HasColumn(reader, "like_count"))
-        {
-            result["likeCount"] = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"]);
-        }
-
-        if (withSeriesName)
-        {
-            result["seriesName"] = reader["series_name"] == DBNull.Value ? null : reader["series_name"].ToString();
-        }
-
-        if (HasColumn(reader, "actor_names") && reader["actor_names"] != DBNull.Value)
-        {
-            result["actorNames"] = reader["actor_names"].ToString();
-        }
-
-        return result;
-    }
-
-    private bool HasColumn(SqliteDataReader reader, string columnName)
-    {
-        for (int i = 0; i < reader.FieldCount; i++)
-        {
-            if (reader.GetName(i).Equals(columnName, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
-
-    private object? ExecuteScalar(string sql, SqliteParameter[] parameters)
-    {
-        using var conn = GetConnection();
-        conn.Open();
-        
-        using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddRange(parameters);
-        
-        return cmd.ExecuteScalar();
-    }
-
-    /// <summary>
-    /// 插入或更新视频记录，返回 true 表示新增
-    /// </summary>
-    private bool UpsertVideoFromFile(string filePath, string dirCategory, bool autoCreateSeries, SqliteConnection conn)
-    {
-        var videoName = ExtractVideoName(filePath);
-        var fileInfo = new FileInfo(filePath);
-        
-        // 查询是否存在 name 或 code 与文件名一致的记录
-        var checkSql = @"SELECT id FROM videos WHERE name = @videoName OR code = @videoName";
-        string? existingId = null;
-        using (var checkCmd = new SqliteCommand(checkSql, conn))
-        {
-            checkCmd.Parameters.Add(new SqliteParameter("@videoName", videoName));
-            var result = checkCmd.ExecuteScalar();
-            if (result != null && result != DBNull.Value)
-            {
-                existingId = result.ToString();
-            }
-        }
-        
-        // 计算 cover_path
-        var coverPath = FindCoverPath(filePath, videoName);
-        
-        if (existingId != null)
-        {
-            // 已存在记录，更新 file_path、file_size、cover_path
-            var updateSql = coverPath != null 
-                ? @"UPDATE videos SET 
-                    file_path = @filePath, 
-                    file_size = @fileSize, 
-                    cover_path = @coverPath
-                    WHERE id = @id"
-                : @"UPDATE videos SET 
-                    file_path = @filePath, 
-                    file_size = @fileSize
-                    WHERE id = @id";
-            using var updateCmd = new SqliteCommand(updateSql, conn);
-            updateCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-            updateCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-            if (coverPath != null)
-            {
-                updateCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath));
-            }
-            updateCmd.Parameters.Add(new SqliteParameter("@id", existingId));
-            updateCmd.ExecuteNonQuery();
-            return false; // 更新而非新增
-        }
-        else
-        {
-            // 不存在记录，新增
-            var id = Guid.NewGuid().ToString("N").ToUpper();
-            
-            // 自动创建系列
-            string? seriesId = null;
-            if (autoCreateSeries && !string.IsNullOrEmpty(videoName))
-            {
-                seriesId = GetOrCreateSeries(videoName, conn);
-            }
-            
-            var insertSql = @"INSERT INTO videos (id, name, category, country, file_path, file_size, cover_path, seriesid, ctime) 
-                            VALUES (@id, @name, @category, @country, @filePath, @fileSize, @coverPath, @seriesid, @addedAt)";
-            using var insertCmd = new SqliteCommand(insertSql, conn);
-            insertCmd.Parameters.Add(new SqliteParameter("@id", id));
-            insertCmd.Parameters.Add(new SqliteParameter("@name", videoName));
-            insertCmd.Parameters.Add(new SqliteParameter("@category", dirCategory));
-            insertCmd.Parameters.Add(new SqliteParameter("@country", ""));
-            insertCmd.Parameters.Add(new SqliteParameter("@filePath", filePath));
-            insertCmd.Parameters.Add(new SqliteParameter("@fileSize", fileInfo.Length));
-            insertCmd.Parameters.Add(new SqliteParameter("@coverPath", coverPath != null ? coverPath : (object)DBNull.Value));
-            insertCmd.Parameters.Add(new SqliteParameter("@seriesid", seriesId != null ? seriesId : (object)DBNull.Value));
-            insertCmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
-            insertCmd.ExecuteNonQuery();
-            return true; // 新增成功
-        }
-    }
-
-    /// <summary>
-    /// 获取或创建系列，返回系列ID
-    /// </summary>
-    private string? GetOrCreateSeries(string seriesName, SqliteConnection conn)
-    {
-        // 先查找是否存在
-        var checkSql = "SELECT id FROM video_series WHERE name = @name";
-        using (var checkCmd = new SqliteCommand(checkSql, conn))
-        {
-            checkCmd.Parameters.Add(new SqliteParameter("@name", seriesName));
-            var result = checkCmd.ExecuteScalar();
-            if (result != null && result != DBNull.Value)
-            {
-                return result.ToString();
-            }
-        }
-
-        // 不存在则创建
-        var id = Guid.NewGuid().ToString("N").ToUpper();
-        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        var insertSql = "INSERT INTO video_series (id, name, ctime, utime) VALUES (@id, @name, @ctime, @utime)";
-        using var insertCmd = new SqliteCommand(insertSql, conn);
-        insertCmd.Parameters.Add(new SqliteParameter("@id", id));
-        insertCmd.Parameters.Add(new SqliteParameter("@name", seriesName));
-        insertCmd.Parameters.Add(new SqliteParameter("@ctime", now));
-        insertCmd.Parameters.Add(new SqliteParameter("@utime", now));
-        insertCmd.ExecuteNonQuery();
-        
-        return id;
-    }
-
-    /// <summary>
-    /// 查找封面路径
-    /// 优先级：1. 同目录下同名.jpg  2. 磁盘根目录/cover/{filename}.jpg
-    /// </summary>
-    private string? FindCoverPath(string filePath, string videoName)
-    {
-        // 1. 同目录下同名.jpg
-        var sameDirCover = Path.ChangeExtension(filePath, ".jpg");
-        if (System.IO.File.Exists(sameDirCover))
-        {
-            return sameDirCover;
-        }
-        
-        // 2. 磁盘根目录/cover/{filename}.jpg
-        // macOS: /Volumes/diskname/... → 提取 /Volumes/diskname
-        try
-        {
-            string? mountPoint = null;
-            if (filePath.StartsWith("/Volumes/"))
-            {
-                // 提取 /Volumes/xxx
-                var parts = filePath.Split('/');
-                if (parts.Length >= 3)
-                {
-                    mountPoint = "/" + parts[1] + "/" + parts[2]; // /Volumes/diskname
-                }
-            }
-            else
-            {
-                // 非 /Volumes 路径，使用文件系统根目录
-                mountPoint = Directory.GetDirectoryRoot(filePath);
-            }
-            
-            if (!string.IsNullOrEmpty(mountPoint))
-            {
-                var coverDir = Path.Combine(mountPoint, "cover");
-                if (Directory.Exists(coverDir))
-                {
-                    var coverFile = Path.Combine(coverDir, videoName + ".jpg");
-                    if (System.IO.File.Exists(coverFile))
-                    {
-                        return coverFile;
-                    }
-                }
-            }
-        }
-        catch
-        {
-            // 忽略路径解析错误
-        }
-        
-        return null;
-    }
-
-    /// <summary>
-    /// 清空不在扫描目录中的视频路径，返回清除数量
-    /// </summary>
-    private int ClearMissingPaths(SqliteConnection conn, HashSet<string> allFoundPaths)
-    {
-        // 读取所有扫描目录路径
-        var scanDirPaths = new List<string>();
-        using (var dirCmd = new SqliteCommand("SELECT path FROM scan_directories", conn))
-        using (var reader = dirCmd.ExecuteReader())
-        {
-            while (reader.Read())
-                scanDirPaths.Add(reader.GetString(0));
-        }
-
-        // 查询所有有文件路径的视频
-        var videosWithPath = new List<(string id, string filePath)>();
-        using (var videoCmd = new SqliteCommand("SELECT id, file_path FROM videos WHERE file_path IS NOT NULL AND file_path != ''", conn))
-        using (var reader = videoCmd.ExecuteReader())
-        {
-            while (reader.Read())
-                videosWithPath.Add((reader.GetString(0), reader.GetString(1)));
-        }
-
-        var cleared = 0;
-        foreach (var (id, filePath) in videosWithPath)
-        {
-            // 跳过手动添加的占位路径
-            if (string.IsNullOrEmpty(filePath)) continue;
-
-            // 统一转小写比较路径
-            var filePathLower = filePath.ToLowerInvariant();
-            var inScanDir = scanDirPaths.Any(scanPath => 
-                filePathLower.StartsWith(scanPath.ToLowerInvariant()));
-
-            if (!inScanDir)
-            {
-                // 文件路径不在任何扫描目录下，清空路径
-                using var clearCmd = new SqliteCommand(
-                    "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
-                clearCmd.Parameters.Add(new SqliteParameter("@id", id));
-                clearCmd.ExecuteNonQuery();
-                cleared++;
-            }
-            else if (!allFoundPaths.Contains(filePath))
-            {
-                // 文件路径在扫描目录下但文件不存在了，清空路径
-                using var clearCmd = new SqliteCommand(
-                    "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
-                clearCmd.Parameters.Add(new SqliteParameter("@id", id));
-                clearCmd.ExecuteNonQuery();
-                cleared++;
-            }
-        }
-
-        return cleared;
-    }
 
     // 今日推荐内存缓存：按天缓存，refresh=true 清除
     private static string? _dailyRecommendDate = null;
@@ -1194,6 +894,7 @@ public class VideoController : ControllerBase
     {
         try
         {
+            count = Utils.Paging.ClampCount(count);
             var today = DateTime.Now.ToString("yyyy-MM-dd");
 
             // 非刷新模式且日期一致 → 直接返回缓存
@@ -1219,12 +920,8 @@ public class VideoController : ControllerBase
             // 单条 SQL：CASE WHEN 二分排序，优先 media_attr_flags=0，非0同等优先级
             int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
 
-            var sql = @"
-                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
-                       s.name AS series_name,
-                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+            var sql = $@"
+                SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.file_size > 0
@@ -1235,7 +932,7 @@ public class VideoController : ControllerBase
             var pool = new List<object>();
             using (var reader = poolCmd.ExecuteReader())
             {
-                while (reader.Read()) pool.Add(ReadVideoRow(reader, withSeriesName: true));
+                while (reader.Read()) pool.Add(VideoCardQuery.Map(reader));
             }
 
             // 从候选池中随机选 count 条
@@ -1255,7 +952,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetDailyRecommend failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -1267,14 +964,11 @@ public class VideoController : ControllerBase
     {
         try
         {
+            count = Utils.Paging.ClampCount(count);
             using var conn = GetConnection();
             conn.Open();
-            var sql = @"
-                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
-                       s.name AS series_name,
-                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+            var sql = $@"
+                SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
@@ -1287,14 +981,14 @@ public class VideoController : ControllerBase
             var list = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) list.Add(ReadVideoRow(reader, withSeriesName: true));
+                while (reader.Read()) list.Add(VideoCardQuery.Map(reader));
             }
             return Ok(new { success = true, data = list });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetRecentlyLiked failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -1306,14 +1000,11 @@ public class VideoController : ControllerBase
     {
         try
         {
+            count = Utils.Paging.ClampCount(count);
             using var conn = GetConnection();
             conn.Open();
-            var sql = @"
-                SELECT v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-                       v.seriesid, v.ctime, v.media_attr_flags,
-                       (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
-                       s.name AS series_name,
-                       (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) as actor_names
+            var sql = $@"
+                SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
@@ -1326,14 +1017,14 @@ public class VideoController : ControllerBase
             var list = new List<object>();
             using (var reader = cmd.ExecuteReader())
             {
-                while (reader.Read()) list.Add(ReadVideoRow(reader, withSeriesName: true));
+                while (reader.Read()) list.Add(VideoCardQuery.Map(reader));
             }
             return Ok(new { success = true, data = list });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetTopLiked failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -1349,22 +1040,24 @@ public class VideoController : ControllerBase
             int targetYear = year ?? now.Year;
             int targetMonth = month ?? now.Month;
 
-            var startDate = new DateTime(targetYear, targetMonth, 1).ToString("yyyy-MM-dd");
-            var endDate = new DateTime(targetYear, targetMonth, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
+            // 用日期区间比较而不是 DATE(liked_at)：对列套函数会让 idx_video_likes_time 失效
+            var monthStart = new DateTime(targetYear, targetMonth, 1);
+            var startDate = monthStart.ToString("yyyy-MM-dd");
+            var nextMonthStart = monthStart.AddMonths(1).ToString("yyyy-MM-dd");
 
             using var conn = GetConnection();
             conn.Open();
 
             // 获取当月每日点赞数
             var dailySql = @"
-                SELECT DATE(liked_at) as like_date, COUNT(*) as cnt
+                SELECT substr(liked_at, 1, 10) as like_date, COUNT(*) as cnt
                 FROM video_likes
-                WHERE DATE(liked_at) >= @startDate AND DATE(liked_at) <= @endDate
-                GROUP BY DATE(liked_at)
+                WHERE liked_at >= @startDate AND liked_at < @nextMonthStart
+                GROUP BY like_date
                 ORDER BY like_date";
             using var dailyCmd = new SqliteCommand(dailySql, conn);
             dailyCmd.Parameters.Add(new SqliteParameter("@startDate", startDate));
-            dailyCmd.Parameters.Add(new SqliteParameter("@endDate", endDate));
+            dailyCmd.Parameters.Add(new SqliteParameter("@nextMonthStart", nextMonthStart));
 
             var dailyStats = new Dictionary<string, int>();
             using (var reader = dailyCmd.ExecuteReader())
@@ -1375,33 +1068,43 @@ public class VideoController : ControllerBase
                 }
             }
 
-            // 当月总点赞数
-            var monthTotalSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
-            using var monthTotalCmd = new SqliteCommand(monthTotalSql, conn);
-            monthTotalCmd.Parameters.Add(new SqliteParameter("@s", startDate));
-            monthTotalCmd.Parameters.Add(new SqliteParameter("@e", endDate));
-            int monthTotal = Convert.ToInt32(monthTotalCmd.ExecuteScalar());
+            // 当月总数直接由日聚合求和，省掉一次查询
+            int monthTotal = dailyStats.Values.Sum();
 
-            // 历史总点赞数
-            using var totalCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes", conn);
-            int total = Convert.ToInt32(totalCmd.ExecuteScalar());
+            var statMonth = new DateTime(now.Year, now.Month, 1);
 
-            // 最后一次点赞日期
-            using var lastCmd = new SqliteCommand("SELECT MAX(DATE(liked_at)) FROM video_likes", conn);
-            var lastLikeDate = lastCmd.ExecuteScalar()?.ToString();
-
-            // 最近12个月每月统计
-            var monthlyStats = new List<object>();
-            for (int i = 11; i >= 0; i--)
+            // 历史总数与最后点赞日期合并成一次查询
+            int total;
+            string? lastLikeDate;
+            using (var sumCmd = new SqliteCommand(
+                "SELECT COUNT(*), substr(MAX(liked_at), 1, 10) FROM video_likes", conn))
+            using (var sumReader = sumCmd.ExecuteReader())
             {
-                var m = now.AddMonths(-i);
-                var mStart = new DateTime(m.Year, m.Month, 1).ToString("yyyy-MM-dd");
-                var mEnd = new DateTime(m.Year, m.Month, 1).AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd");
-                var mSql = "SELECT COUNT(*) FROM video_likes WHERE DATE(liked_at) >= @s AND DATE(liked_at) <= @e";
-                using var mCmd = new SqliteCommand(mSql, conn);
-                mCmd.Parameters.Add(new SqliteParameter("@s", mStart));
-                mCmd.Parameters.Add(new SqliteParameter("@e", mEnd));
-                monthlyStats.Add(new { year = m.Year, month = m.Month, count = Convert.ToInt32(mCmd.ExecuteScalar()) });
+                sumReader.Read();
+                total = Convert.ToInt32(sumReader[0]);
+                lastLikeDate = sumReader[1] == DBNull.Value ? null : sumReader[1].ToString();
+            }
+
+            // 最近 12 个月：一次 GROUP BY 取回，之前是 12 次串行 COUNT
+            var monthlyCounts = new Dictionary<string, int>();
+            using (var mCmd = new SqliteCommand(@"
+                SELECT substr(liked_at, 1, 7) AS ym, COUNT(*) AS cnt
+                FROM video_likes
+                WHERE liked_at >= @s AND liked_at < @e
+                GROUP BY ym", conn))
+            {
+                mCmd.Parameters.Add(new SqliteParameter("@s", statMonth.AddMonths(-11).ToString("yyyy-MM-dd")));
+                mCmd.Parameters.Add(new SqliteParameter("@e", statMonth.AddMonths(1).ToString("yyyy-MM-dd")));
+                using var mReader = mCmd.ExecuteReader();
+                while (mReader.Read()) monthlyCounts[mReader.GetString(0)] = mReader.GetInt32(1);
+            }
+
+            var monthlyStats = new List<object>();
+            for (var i = 11; i >= 0; i--)
+            {
+                var m = statMonth.AddMonths(-i);
+                monthlyCounts.TryGetValue(m.ToString("yyyy-MM"), out var cnt);
+                monthlyStats.Add(new { year = m.Year, month = m.Month, count = cnt });
             }
 
             return Ok(new {
@@ -1419,7 +1122,7 @@ public class VideoController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetLikeStats failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -1468,12 +1171,6 @@ public class UpdateVideoRequest
     public List<string>? ActorIds { get; set; }
     [JsonPropertyName("seriesId")]
     public string? SeriesId { get; set; }
-}
-
-public class ScanRequest
-{
-    public string TargetPath { get; set; } = "";
-    public bool Recursive { get; set; } = true;
 }
 
 public class BatchDeleteRequest

@@ -58,7 +58,7 @@ public class HighlightsController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取精彩瞬间海报失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -70,6 +70,10 @@ public class HighlightsController : ControllerBase
     {
         try
         {
+            var safeFileName = Utils.SafePath.AsFileName(fileName);
+            if (safeFileName is null || !Utils.SafePath.IsImageFile(safeFileName))
+                return NotFound();
+
             using var conn = GetConnection();
             conn.Open();
             using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
@@ -80,27 +84,19 @@ public class HighlightsController : ControllerBase
                 return NotFound();
             }
 
-            var filePath = Path.Combine(posterDir, "default", fileName);
-            if (!System.IO.File.Exists(filePath))
-            {
+            var filePath = Path.Combine(posterDir, "default", safeFileName);
+            if (!Utils.SafePath.IsInside(filePath, posterDir))
                 return NotFound();
-            }
 
-            var ext = Path.GetExtension(fileName).ToLower();
-            var contentType = ext switch
-            {
-                ".jpg" or ".jpeg" => "image/jpeg",
-                ".png" => "image/png",
-                ".webp" => "image/webp",
-                _ => "application/octet-stream"
-            };
+            var result = Utils.CachedFile.TryServe(this, filePath);
+            if (result is not null) return result;
 
-            return PhysicalFile(filePath, contentType);
+            return NotFound();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "获取精彩瞬间图片失败");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 }

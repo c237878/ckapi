@@ -51,7 +51,7 @@ public class VideoStreamController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "StreamVideo failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -71,16 +71,16 @@ public class VideoStreamController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@id", id));
 
             var coverPath = cmd.ExecuteScalar()?.ToString();
-            if (string.IsNullOrEmpty(coverPath) || !System.IO.File.Exists(coverPath))
-                return NotFound(new { success = false, message = "封面不存在" });
 
-            var fileStream = new FileStream(coverPath, FileMode.Open, FileAccess.Read);
-            return File(fileStream, "image/jpeg");
+            var result = Utils.CachedFile.TryServe(this, coverPath, "image/jpeg");
+            if (result is not null) return result;
+
+            return NotFound(new { success = false, message = "封面不存在" });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetCover failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -115,7 +115,7 @@ public class VideoStreamController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "CheckSubtitle failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
@@ -147,7 +147,7 @@ public class VideoStreamController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetSubtitle failed");
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 

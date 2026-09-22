@@ -6,9 +6,10 @@ using Microsoft.Extensions.Configuration;
 var builder = WebApplication.CreateBuilder(args);
 
 // 配置 Kestrel 支持大文件上传（无限制）
+var serverPort = builder.Configuration.GetValue<int?>("ServerPort") ?? 5033;
 builder.WebHost.ConfigureKestrel(options => {
     options.Limits.MaxRequestBodySize = null; // 无限制
-    options.ListenAnyIP(5033);
+    options.ListenAnyIP(serverPort);
 });
 
 // 解除 multipart 上传大小限制
@@ -34,12 +35,6 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddSingleton<ckapi.Utils.SQLiteHelper>(sp =>
     new ckapi.Utils.SQLiteHelper(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<ILogger<ckapi.Utils.SQLiteHelper>>()));
 builder.Services.AddScoped<IDataService, DataService>();
-
-// 注册 Samba 配置与服务
-// builder.Services.Configure<ckapi.Models.SambaConfig>(
-//     builder.Configuration.GetSection("SambaConfig"));
-// builder.Services.AddScoped<ckapi.Services.SambaService>();
-// builder.Services.AddScoped<ckapi.Services.DockerSambaService>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

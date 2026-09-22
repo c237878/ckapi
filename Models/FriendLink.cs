@@ -6,11 +6,6 @@ namespace ckapi.Models;
 public class FriendLink
 {
     /// <summary>
-    /// 主键ID
-    /// </summary>
-    public string? Id { get; set; }
-
-    /// <summary>
     /// 网站名称
     /// </summary>
     public string? Name { get; set; }
@@ -34,14 +29,4 @@ public class FriendLink
     /// 排序序号
     /// </summary>
     public int SortOrder { get; set; }
-
-    /// <summary>
-    /// 创建时间
-    /// </summary>
-    public string? CTime { get; set; }
-
-    /// <summary>
-    /// 修改时间
-    /// </summary>
-    public string? UTime { get; set; }
 }
