@@ -881,17 +881,19 @@ public class VideoController : ControllerBase
 
     #region 私有方法
 
-    // 今日推荐内存缓存：按天缓存，refresh=true 清除
+    // 今日推荐内存缓存：按天缓存，refresh=true 清除。
+    // 只缓存影片 id —— 番号/片名/文件大小/演员都会变，缓存整行会让首页一整天显示旧数据。
     private static string? _dailyRecommendDate = null;
-    private static List<object>? _dailyRecommendCache = null;
+    private static List<string>? _dailyRecommendIds = null;
 
-    /// 缓存里那份是当天随机出来的前 N 条；请求的 count 不超过 N 时直接截断复用，
-    /// 否则重新生成。只按日期判等会让"首页分类数量"改小改大都整天不生效。
-    private static int _dailyRecommendCacheCount = 0;
+    /// 缓存是"为某个 count 生成的一份随机结果"，所以设置里的数量一改就该失效重建，
+    /// 不能拿旧列表截断凑数（那会让新数量整天不生效）。
+    private static int _dailyRecommendForCount = 0;
     private static readonly object _dailyRecommendLock = new();
 
     /// <summary>
-    /// 首页 - 今日推荐（内存缓存，优先 media_attr_flags=0）
+    /// 首页 - 今日推荐：优先还没看过的（media_attr_flags = 0），
+    /// 只有未看过的不够数时才掺入看过的。id 列表按天缓存，卡片字段每次现查。
     /// </summary>
     [HttpGet("daily-recommend")]
     public IActionResult GetDailyRecommend([FromQuery] int count = 12, [FromQuery] bool refresh = false)
@@ -901,73 +903,123 @@ public class VideoController : ControllerBase
             count = Utils.Paging.ClampCount(count);
             var today = DateTime.Now.ToString("yyyy-MM-dd");
 
-            // 非刷新模式、日期一致、且缓存够长 → 截断复用
+            List<string>? ids = null;
+            var fromCache = false;
             if (!refresh)
             {
-                List<object>? hit = null;
                 lock (_dailyRecommendLock)
                 {
-                    if (_dailyRecommendCache != null && _dailyRecommendDate == today
-                        && _dailyRecommendCacheCount >= count)
+                    if (_dailyRecommendIds != null && _dailyRecommendDate == today
+                        && _dailyRecommendForCount == count)
                     {
-                        hit = _dailyRecommendCache.Take(count).ToList();
+                        ids = _dailyRecommendIds.ToList();
+                        fromCache = true;
                     }
                 }
-                if (hit != null) return Ok(new { success = true, data = hit, cached = true });
             }
 
             using var conn = GetConnection();
             conn.Open();
 
-            // 获取有文件的视频总数
-            using var countCmd = new SqliteCommand(
-                "SELECT COUNT(*) FROM videos WHERE file_size > 0", conn);
-            int total = Convert.ToInt32(countCmd.ExecuteScalar());
-            if (total == 0)
-                return Ok(new { success = true, data = new List<object>() });
-
-            // 随机种子
-            int seed = (int)(DateTime.Now.Ticks % int.MaxValue);
-            var rng = new Random(seed);
-
-            // 单条 SQL：CASE WHEN 二分排序，优先 media_attr_flags=0，非0同等优先级
-            int poolSize = Math.Min(total, Math.Max(count * 3, (int)(total * 0.6)));
-
-            var sql = $@"
-                SELECT {VideoCardQuery.ColumnsWithSeries}
-                FROM videos v
-                LEFT JOIN video_series s ON v.seriesid = s.id
-                WHERE v.file_size > 0
-                ORDER BY CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, like_count ASC, v.id
-                LIMIT @limit";
-            using var poolCmd = new SqliteCommand(sql, conn);
-            poolCmd.Parameters.AddWithValue("@limit", poolSize);
-            var pool = new List<object>();
-            using (var reader = poolCmd.ExecuteReader())
+            if (ids == null)
             {
-                while (reader.Read()) pool.Add(VideoCardQuery.Map(reader));
+                ids = PickDailyRecommendIds(conn, count);
+                lock (_dailyRecommendLock)
+                {
+                    _dailyRecommendDate = today;
+                    _dailyRecommendIds = ids.ToList();
+                    _dailyRecommendForCount = count;
+                }
             }
 
-            // 从候选池中随机选 count 条
-            var indices = Enumerable.Range(0, pool.Count).OrderBy(_ => rng.Next()).Take(Math.Min(count, pool.Count)).ToList();
-            var selected = new List<object>();
-            foreach (var i in indices) selected.Add(pool[i]);
-
-            // 写入内存缓存
-            lock (_dailyRecommendLock)
-            {
-                _dailyRecommendDate = today;
-                _dailyRecommendCache = selected;
-                _dailyRecommendCacheCount = selected.Count;
-            }
-
-            return Ok(new { success = true, data = selected, cached = false });
+            // 只缓存 id，字段现查：中途被改过番号/片名/大小或已删除的影片不会带着旧数据出现
+            var data = LoadCardsByIds(conn, ids);
+            return Ok(new { success = true, data, cached = fromCache });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetDailyRecommend failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
+    }
+
+    /// <summary>
+    /// 挑今日推荐的 id：未看过（media_attr_flags 为 0 或未设置）的先占满名额，
+    /// 不够 count 才从看过的里补。
+    ///
+    /// 旧实现是先取"全库 60%"做候选池再在池子里均匀随机，
+    /// ORDER BY 的优先级只决定谁进池、进池后就不起作用了，
+    /// 所以只要未看过的数量小于池子大小，看过的会被按比例抽回来——不是"优先未看过"。
+    /// </summary>
+    private static List<string> PickDailyRecommendIds(SqliteConnection conn, int count)
+    {
+        var picked = new List<string>(count);
+
+        // 两个查询的 WHERE 互斥，补位时不必再排除已选 id
+        using (var cmd = new SqliteCommand(@"
+            SELECT v.id FROM videos v
+            WHERE v.file_size > 0 AND (v.media_attr_flags IS NULL OR v.media_attr_flags = 0)
+            ORDER BY RANDOM()
+            LIMIT @count", conn))
+        {
+            cmd.Parameters.AddWithValue("@count", count);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) picked.Add(reader.GetString(0));
+        }
+
+        var missing = count - picked.Count;
+        if (missing > 0)
+        {
+            using (var cmd = new SqliteCommand(@"
+                SELECT v.id FROM videos v
+                WHERE v.file_size > 0 AND v.media_attr_flags IS NOT NULL AND v.media_attr_flags <> 0
+                ORDER BY RANDOM()
+                LIMIT @missing", conn))
+            {
+                cmd.Parameters.AddWithValue("@missing", missing);
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read()) picked.Add(reader.GetString(0));
+            }
+        }
+
+        return picked;
+    }
+
+    /// <summary>
+    /// 按 id 现查卡片字段，并保持 id 原本的顺序。
+    /// 缓存 id 之后信息变更、或影片在缓存期间被删除，都在这里得到纠正。
+    /// </summary>
+    private static List<Dictionary<string, object?>> LoadCardsByIds(SqliteConnection conn, List<string> ids)
+    {
+        var result = new List<Dictionary<string, object?>>(ids.Count);
+        if (ids.Count == 0) return result;
+
+        var names = ids.Select((_, i) => "@i" + i).ToArray();
+        var sql = $@"
+            SELECT {VideoCardQuery.ColumnsWithSeries}
+            FROM videos v
+            LEFT JOIN video_series s ON v.seriesid = s.id
+            WHERE v.id IN ({string.Join(", ", names)})";
+
+        using var cmd = new SqliteCommand(sql, conn);
+        for (var i = 0; i < ids.Count; i++) cmd.Parameters.AddWithValue(names[i], ids[i]);
+
+        var byId = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                var card = VideoCardQuery.Map(reader);
+                byId[card["id"]?.ToString() ?? ""] = card;
+            }
+        }
+
+        foreach (var id in ids)
+        {
+            if (byId.TryGetValue(id, out var card)) result.Add(card);
+        }
+
+        return result;
     }
 
     /// <summary>
