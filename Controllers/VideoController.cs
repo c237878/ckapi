@@ -884,6 +884,10 @@ public class VideoController : ControllerBase
     // 今日推荐内存缓存：按天缓存，refresh=true 清除
     private static string? _dailyRecommendDate = null;
     private static List<object>? _dailyRecommendCache = null;
+
+    /// 缓存里那份是当天随机出来的前 N 条；请求的 count 不超过 N 时直接截断复用，
+    /// 否则重新生成。只按日期判等会让"首页分类数量"改小改大都整天不生效。
+    private static int _dailyRecommendCacheCount = 0;
     private static readonly object _dailyRecommendLock = new();
 
     /// <summary>
@@ -897,10 +901,19 @@ public class VideoController : ControllerBase
             count = Utils.Paging.ClampCount(count);
             var today = DateTime.Now.ToString("yyyy-MM-dd");
 
-            // 非刷新模式且日期一致 → 直接返回缓存
-            if (!refresh && _dailyRecommendCache != null && _dailyRecommendDate == today)
+            // 非刷新模式、日期一致、且缓存够长 → 截断复用
+            if (!refresh)
             {
-                return Ok(new { success = true, data = _dailyRecommendCache, cached = true });
+                List<object>? hit = null;
+                lock (_dailyRecommendLock)
+                {
+                    if (_dailyRecommendCache != null && _dailyRecommendDate == today
+                        && _dailyRecommendCacheCount >= count)
+                    {
+                        hit = _dailyRecommendCache.Take(count).ToList();
+                    }
+                }
+                if (hit != null) return Ok(new { success = true, data = hit, cached = true });
             }
 
             using var conn = GetConnection();
@@ -945,6 +958,7 @@ public class VideoController : ControllerBase
             {
                 _dailyRecommendDate = today;
                 _dailyRecommendCache = selected;
+                _dailyRecommendCacheCount = selected.Count;
             }
 
             return Ok(new { success = true, data = selected, cached = false });
