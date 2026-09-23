@@ -317,21 +317,16 @@ public class SeriesController : ControllerBase
     }
 
     /// <summary>
-    /// 获取所有现有地区列表（去重）
+    /// 地区可选列表（统一取设置里的规范值，与影片/演员一致）
     /// </summary>
     [HttpGet("countries")]
     public IActionResult GetCountries()
     {
         try
         {
-            var dt = _db.ExecuteDataTable(
-                "SELECT DISTINCT country FROM video_series WHERE country IS NOT NULL AND country != '' ORDER BY country");
-            var countries = new List<string>();
-            foreach (System.Data.DataRow row in dt.Rows)
-            {
-                var name = row["country"].ToString();
-                if (!string.IsNullOrEmpty(name)) countries.Add(name);
-            }
+            using var conn = GetConnection();
+            conn.Open();
+            var countries = Utils.Options.CommaList(conn, Utils.Options.Countries);
             return Ok(new { success = true, data = countries });
         }
         catch (Exception ex)

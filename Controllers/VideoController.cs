@@ -218,21 +218,11 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var categories = new List<string>();
-            var countries = new List<string>();
+            // 地区与分类来自设置里的规范列表，不再从本表 DISTINCT——
+            // 否则各页面选项数量不一致，且没记录过的取值选不出来
+            var categories = Utils.Options.CommaList(conn, Utils.Options.Categories);
+            var countries = Utils.Options.CommaList(conn, Utils.Options.Countries);
             var series = new List<object>();
-
-            using (var catCmd = new SqliteCommand("SELECT DISTINCT category FROM videos WHERE category != '' ORDER BY category", conn))
-            using (var reader = catCmd.ExecuteReader())
-            {
-                while (reader.Read()) categories.Add(reader.GetString(0));
-            }
-
-            using (var countryCmd = new SqliteCommand("SELECT DISTINCT country FROM videos WHERE country != '' ORDER BY country", conn))
-            using (var reader = countryCmd.ExecuteReader())
-            {
-                while (reader.Read()) countries.Add(reader.GetString(0));
-            }
 
             using (var seriesCmd = new SqliteCommand("SELECT id, name FROM video_series ORDER BY name", conn))
             using (var reader = seriesCmd.ExecuteReader())

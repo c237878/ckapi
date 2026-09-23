@@ -153,6 +153,8 @@ public class DataService : IDataService
                 RunMigrations(conn);
             }
 
+            SeedTaxonomy(conn);
+
             CreateIndexes(conn);
             Analyze(conn);
 
@@ -449,6 +451,60 @@ public class DataService : IDataService
             // 转存失败不阻断迁移：每日全库快照已经覆盖了这份数据
             _logger.LogWarning(ex, "转存待删除表 [{Table]} 失败，仍继续迁移", table);
         }
+    }
+
+    /// <summary>
+    /// 播种地区与分类的规范列表（system_settings.countries / .categories）。
+    ///
+    /// 只在键不存在时写一次：用户后来在设置里清空是有意为之，不该被启动流程复活。
+    /// 全新库和既有库都走这里，所以不占迁移版本号——只加数据，不改结构。
+    /// </summary>
+    private static void SeedTaxonomy(SqliteConnection conn)
+    {
+        SeedListIfMissing(conn, "countries", @"
+            SELECT country FROM videos   WHERE country IS NOT NULL AND country <> ''
+            UNION
+            SELECT country FROM actors   WHERE country IS NOT NULL AND country <> ''
+            UNION
+            SELECT country FROM video_series WHERE country IS NOT NULL AND country <> ''
+            ORDER BY country");
+
+        // 分类还要并上首页已配置的，否则 homePageCategories 里会有选项不在可选集中
+        SeedListIfMissing(conn, "categories", @"
+            SELECT category FROM videos WHERE category IS NOT NULL AND category <> ''
+            ORDER BY category", "homePageCategories");
+    }
+
+    /// <summary>从 selectSql 取值，再并入 extraFromKey 这个设置里已有的值，保序去重。</summary>
+    private static void SeedListIfMissing(SqliteConnection conn, string name, string selectSql, string? extraFromKey = null)
+    {
+        if (Scalar(conn, "SELECT content FROM system_settings WHERE name = @n", P("@n", name)) != null)
+            return;
+
+        var values = new List<string>();
+        using (var cmd = new SqliteCommand(selectSql, conn))
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(0)) values.Add(reader.GetString(0));
+            }
+        }
+
+        if (extraFromKey != null)
+        {
+            var extra = Scalar(conn, "SELECT content FROM system_settings WHERE name = @n", P("@n", extraFromKey)) as string;
+            if (!string.IsNullOrWhiteSpace(extra))
+                values.AddRange(extra.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
+        var distinct = values.Distinct().ToList();
+        NonQuery(conn,
+            "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @n, @v, @t, @t)",
+            P("@id", Guid.NewGuid().ToString("N").ToUpper()),
+            P("@n", name),
+            P("@v", string.Join(",", distinct)),
+            P("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
     }
 
     private static SqliteParameter P(string name, object value) => new(name, value);

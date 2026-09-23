@@ -275,7 +275,7 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
-    /// 获取所有现有地区列表（去重）
+    /// 地区可选列表（统一取设置里的规范值，与影片/系列一致）
     /// </summary>
     [HttpGet("countries")]
     public IActionResult GetCountries()
@@ -284,14 +284,7 @@ public class ActorController : ControllerBase
         {
             using var conn = GetConnection();
             conn.Open();
-            var sql = "SELECT DISTINCT country FROM actors WHERE country IS NOT NULL AND country != '' ORDER BY country";
-            using var cmd = new SqliteCommand(sql, conn);
-            var countries = new List<string>();
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                countries.Add(reader.GetString(0));
-            }
+            var countries = Utils.Options.CommaList(conn, Utils.Options.Countries);
             return Ok(new { success = true, data = countries });
         }
         catch (Exception ex)
