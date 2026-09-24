@@ -27,6 +27,19 @@ public static class Thumbs
         => Sizes.FirstOrDefault(x => x.Name == size).Width;
 
     /// <summary>
+    /// 缩略图缓存根目录。没配 Media:ThumbCache 就贴着库文件放：
+    /// 那是本地盘而不是图片所在的挂载卷，读写快一个量级。
+    /// </summary>
+    public static string CacheRoot(IConfiguration config, string dbPath)
+    {
+        var configured = config.GetValue<string>("Media:ThumbCache");
+        if (!string.IsNullOrWhiteSpace(configured)) return configured;
+
+        var dir = Path.GetDirectoryName(dbPath);
+        return Path.Combine(string.IsNullOrEmpty(dir) ? "." : dir, "ckthumbs");
+    }
+
+    /// <summary>
     /// 生成（或复用）一张缩略图，返回落盘路径与源图尺寸；源图读不出来时返回 null。
     /// 源图尺寸顺带回填给 actor_images，省掉一次单独的 Image.Identify。
     /// 复用已有缓存时源尺寸不重新解码，返回 0 表示"这次没读到"。

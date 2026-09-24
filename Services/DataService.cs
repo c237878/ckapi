@@ -382,7 +382,7 @@ public class DataService : IDataService
             )");
 
         // 演员图片的元数据：文件名/尺寸/主图标记，一行一张。
-        // 建这张表就是为了不再"每次打开详情页扫一遍目录"——扫描由界面上的同步动作触发（见 ActorController.ScanImages）。
+        // 建这张表就是为了不再"每次打开详情页扫一遍目录"——扫描由界面上的同步动作触发（见 ActorController.SyncImages）。
         // 不加版本号迁移：纯新增表没有数据要搬，全新库与历史库都会走 CreateBaseTables 这条同样的路。
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS actor_images (
@@ -395,6 +395,18 @@ public class DataService : IDataService
                 mtime      TEXT,
                 ctime      TEXT,
                 PRIMARY KEY (actor_id, file_name)
+            )");
+
+        // 艳图池（<艳图目录>/default/）的图片清单，与 actor_images 同一套同步口径，
+        // 只是这一池没有归属列，所以文件名本身就是主键。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS highlight_images (
+                file_name TEXT    PRIMARY KEY,
+                width     INTEGER,
+                height    INTEGER,
+                size      INTEGER NOT NULL DEFAULT 0,
+                mtime     TEXT,
+                ctime     TEXT
             )");
 
         NonQuery(conn, @"
