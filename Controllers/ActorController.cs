@@ -88,7 +88,9 @@ public class ActorController : ControllerBase
                         (SELECT COUNT(*) FROM video_actors va3 
                          JOIN videos v2 ON va3.video_id = v2.id 
                          WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count,
-                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa2 WHERE aa2.actor_id = a.id) as aliases
+                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa2 WHERE aa2.actor_id = a.id) as aliases,
+                        -- 列表也要带 links：编辑框是从列表行打开的，缺了它一保存就把外链抹掉
+                        (SELECT GROUP_CONCAT(kind || char(31) || url, char(30)) FROM actor_links al WHERE al.actor_id = a.id) as links
                     FROM actors a
                     {whereClause}
                     ORDER BY " + orderBy + @"
@@ -108,6 +110,7 @@ public class ActorController : ControllerBase
                         id = reader["id"].ToString(),
                         name = reader["name"].ToString(),
                         aliases = SplitAliases(reader["aliases"]),
+                        links = SplitLinks(reader["links"]),
                         country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
@@ -157,6 +160,7 @@ public class ActorController : ControllerBase
                 aliases = SplitAliases(reader["aliases"]),
                 country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
+                links = ReadLinks(conn, id),
                 likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
             };
 
@@ -204,6 +208,7 @@ public class ActorController : ControllerBase
             cmd.ExecuteNonQuery();
 
             SaveAliases(conn, id, request.Name, request.Aliases);
+            SaveLinks(conn, id, request.Links);
 
             return Ok(new { success = true, data = new { id, name = request.Name }, message = "添加成功" });
         }
@@ -236,6 +241,7 @@ public class ActorController : ControllerBase
                 return Ok(new { success = false, message = "演员不存在" });
 
             SaveAliases(conn, id, request.Name, request.Aliases);
+            SaveLinks(conn, id, request.Links);
             return Ok(new { success = true, message = "更新成功" });
         }
         catch (Exception ex)
@@ -264,10 +270,11 @@ public class ActorController : ControllerBase
             }
 
             // 连接串没开 FK 强制，级联不会自己触发，子表一律显式清
-            using (var aliasCmd = new SqliteCommand("DELETE FROM actor_aliases WHERE actor_id = @actorId", conn))
+            foreach (var child in new[] { "actor_aliases", "actor_links" })
             {
-                aliasCmd.Parameters.Add(new SqliteParameter("@actorId", id));
-                aliasCmd.ExecuteNonQuery();
+                using var cmd = new SqliteCommand($"DELETE FROM [{child}] WHERE actor_id = @actorId", conn);
+                cmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                cmd.ExecuteNonQuery();
             }
 
             // 删除演员
@@ -475,6 +482,58 @@ public class ActorController : ControllerBase
 
         tx.Commit();
     }
+
+    /// <summary>列表里用 GROUP_CONCAT 一次带出：条目间 char(30)，kind 与 url 间 char(31)</summary>
+    private static List<object> SplitLinks(object? value)
+    {
+        var raw = value is null or DBNull ? null : value.ToString();
+        if (string.IsNullOrEmpty(raw)) return new List<object>();
+
+        return raw.Split((char)30, StringSplitOptions.RemoveEmptyEntries)
+            .Select((entry) => entry.Split((char)31, 2))
+            .Where((parts) => parts.Length == 2 && parts[1].Length > 0)
+            .Select((parts) => (object)new { kind = parts[0], url = parts[1] })
+            .ToList();
+    }
+
+    /// <summary>详情单独查一次即可，不必走列表那套 GROUP_CONCAT 编码</summary>
+    private static List<object> ReadLinks(SqliteConnection conn, string actorId)
+    {
+        var list = new List<object>();
+        using var cmd = new SqliteCommand(
+            "SELECT kind, url FROM actor_links WHERE actor_id = @id ORDER BY kind, url", conn);
+        cmd.Parameters.Add(new SqliteParameter("@id", actorId));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            list.Add(new { kind = reader.GetString(0), url = reader.GetString(1) });
+        return list;
+    }
+
+    /// <summary>整组替换；非法 scheme、超长、重复的地址在这里被丢掉</summary>
+    private void SaveLinks(SqliteConnection conn, string actorId, List<Utils.ActorLink>? raw)
+    {
+        var links = Utils.Links.Normalize(raw);
+
+        using var tx = conn.BeginTransaction();
+        using (var del = new SqliteCommand("DELETE FROM actor_links WHERE actor_id = @id", conn, tx))
+        {
+            del.Parameters.Add(new SqliteParameter("@id", actorId));
+            del.ExecuteNonQuery();
+        }
+
+        foreach (var link in links)
+        {
+            using var ins = new SqliteCommand(
+                "INSERT INTO actor_links (id, actor_id, kind, url) VALUES (@id, @actorId, @kind, @url)", conn, tx);
+            ins.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
+            ins.Parameters.Add(new SqliteParameter("@actorId", actorId));
+            ins.Parameters.Add(new SqliteParameter("@kind", link.Kind));
+            ins.Parameters.Add(new SqliteParameter("@url", link.Url));
+            ins.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
 }
 
 public class AddActorRequest
@@ -483,6 +542,8 @@ public class AddActorRequest
     public string Name { get; set; } = "";
     [JsonPropertyName("aliases")]
     public List<string>? Aliases { get; set; }
+    [JsonPropertyName("links")]
+    public List<Utils.ActorLink>? Links { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
     [JsonPropertyName("bio")]
@@ -495,6 +556,8 @@ public class UpdateActorRequest
     public string? Name { get; set; }
     [JsonPropertyName("aliases")]
     public List<string>? Aliases { get; set; }
+    [JsonPropertyName("links")]
+    public List<Utils.ActorLink>? Links { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
     [JsonPropertyName("bio")]

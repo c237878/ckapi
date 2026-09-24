@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 3;
+    private const int TargetVersion = 4;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -173,6 +173,67 @@ public class DataService : IDataService
                 review.Count, string.Join("\n", review));
     }
 
+    /// <summary>
+    /// 把塞在 actors.bio 里的外链拆到 actor_links。
+    ///
+    /// 实测 382 位演员的 bio 含 URL，抽出 528 条；其中 379 条抽掉 URL 后什么都不剩
+    /// （它们被当成了链接容器，不是简介），只有 3 条还有正文，那些正文原样留在 bio 里。
+    /// 幂等：先清表再抽，重放不会产生重复行。
+    /// </summary>
+    private void ExtractActorLinks(SqliteConnection conn)
+    {
+        var rows = new List<(string Id, string Bio)>();
+        using (var read = new SqliteCommand(
+                   "SELECT id, bio FROM actors WHERE bio IS NOT NULL AND bio LIKE '%http%'", conn))
+        using (var reader = read.ExecuteReader())
+        {
+            while (reader.Read())
+                rows.Add((reader.GetString(0), reader.IsDBNull(1) ? "" : reader.GetString(1)));
+        }
+
+        var linkRows = 0;
+        var clearedBio = 0;
+        var keptBio = 0;
+
+        using (var tx = conn.BeginTransaction())
+        {
+            using (var del = new SqliteCommand("DELETE FROM actor_links", conn, tx))
+                del.ExecuteNonQuery();
+
+            using var ins = new SqliteCommand(
+                "INSERT INTO actor_links (id, actor_id, kind, url) VALUES (@id, @actorId, @kind, @url)", conn, tx);
+            using var upd = new SqliteCommand("UPDATE actors SET bio = @bio WHERE id = @id", conn, tx);
+
+            foreach (var (id, bio) in rows)
+            {
+                var (found, rest) = Utils.Links.ExtractFromBio(bio);
+                if (found.Count == 0) continue;
+
+                foreach (var link in found)
+                {
+                    ins.Parameters.Clear();
+                    ins.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
+                    ins.Parameters.Add(new SqliteParameter("@actorId", id));
+                    ins.Parameters.Add(new SqliteParameter("@kind", link.Kind));
+                    ins.Parameters.Add(new SqliteParameter("@url", link.Url));
+                    linkRows += ins.ExecuteNonQuery();
+                }
+
+                upd.Parameters.Clear();
+                upd.Parameters.Add(new SqliteParameter("@bio", string.IsNullOrEmpty(rest) ? DBNull.Value : (object)rest));
+                upd.Parameters.Add(new SqliteParameter("@id", id));
+                upd.ExecuteNonQuery();
+                if (string.IsNullOrEmpty(rest)) clearedBio++; else keptBio++;
+            }
+
+            tx.Commit();
+        }
+
+        _logger.LogInformation(
+            "外链拆分完成：{Actors} 位演员 → {Rows} 行 actor_links（{Cleared} 条简介清空、{Kept} 条保留正文）",
+            rows.Count, linkRows, clearedBio, keptBio);
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -184,6 +245,7 @@ public class DataService : IDataService
         Migrations = AdditiveMigrations
             .Append((2, "移除零引用的列与遗留表（见 DropDeadFields 注释）", DropDeadFields))
             .Append((3, "演员别名规范化为 actor_aliases（见 NormalizeActorAliases 注释）", NormalizeActorAliases))
+            .Append((4, "演员外链从 bio 里拆到 actor_links（见 ExtractActorLinks 注释）", ExtractActorLinks))
             .ToArray();
     }
 
@@ -309,6 +371,16 @@ public class DataService : IDataService
                 PRIMARY KEY (actor_id, alias)
             )");
 
+        // 外链一条一行：kind 是白名单枚举（见 Utils/Links），url 只允许 http/https。
+        // 以前这些地址混在 bio 里，既点不了也让简介显得很乱
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS actor_links (
+                id       TEXT    PRIMARY KEY,
+                actor_id TEXT    NOT NULL,
+                kind     TEXT    NOT NULL,
+                url      TEXT    NOT NULL
+            )");
+
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS video_actors (
                 video_id TEXT,
@@ -418,6 +490,8 @@ public class DataService : IDataService
             ("idx_series_name", "CREATE INDEX IF NOT EXISTS idx_series_name ON video_series(name)"),
             // 按曾用名精确/前缀检索；按演员取自己的别名走主键 (actor_id, alias) 前缀
             ("idx_actor_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_actor_aliases_alias ON actor_aliases(alias)"),
+            // 详情页取外链、按 kind 排查
+            ("idx_actor_links_actor", "CREATE INDEX IF NOT EXISTS idx_actor_links_actor ON actor_links(actor_id, kind)"),
         };
 
         foreach (var (name, sql) in indexes)
