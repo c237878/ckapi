@@ -644,7 +644,13 @@ public class ActorController : ControllerBase
             }
 
             var stat = SyncDir(conn, id, Path.Combine(posterDir, id));
-            return Ok(new { success = true, data = stat, message = StatMessage(stat) });
+            // 命名元组直接塞进响应会被序列化成 {}（ValueTuple 只有字段没有属性），显式摊开
+            return Ok(new
+            {
+                success = true,
+                data = new { stat.Added, stat.Updated, stat.Removed, stat.Total, primary = stat.Primary },
+                message = StatMessage(stat)
+            });
         }
         catch (Exception ex)
         {
@@ -723,6 +729,262 @@ public class ActorController : ControllerBase
             _logger.LogError(ex, "批量同步演员图片失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
+    }
+
+    /// <summary>
+    /// 给一位演员抓头像：按已有的 av-wiki 档案链接、再按姓名与曾用名去查，
+    /// 命中"确定"的那一个才下载并落盘。拿不准就什么都不做。
+    /// </summary>
+    [HttpPost("{id}/avatar/fetch")]
+    public async Task<IActionResult> FetchAvatar(string id, CancellationToken ct)
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            var posterDir = Utils.ImageIndex.PosterDir(conn);
+            if (string.IsNullOrEmpty(posterDir))
+                return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
+
+            var res = await FetchOneAsync(conn, id, posterDir, DuplicateRiskIds(conn), ct);
+            return Ok(new { success = res.Ok, message = res.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "抓取演员头像失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 批量抓头像：每次只处理 limit 位"还没有任何照片"的演员，按影片数多的先来。
+    /// 分批是为了让每个请求都短——全库一千多人，一次跑完既会超时也看不到进度，
+    /// 前端反复调用直到 remaining 归零即可。
+    /// </summary>
+    [HttpPost("avatars/fetch")]
+    public async Task<IActionResult> FetchAvatars([FromQuery] int limit = 40, CancellationToken ct = default)
+    {
+        try
+        {
+            limit = Math.Clamp(limit, 1, 200);
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            var posterDir = Utils.ImageIndex.PosterDir(conn);
+            if (string.IsNullOrEmpty(posterDir))
+                return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
+
+            var risk = DuplicateRiskIds(conn);
+
+            var candidates = new List<string>();
+            using (var q = new SqliteCommand(
+                       @"SELECT a.id FROM actors a
+                          WHERE NOT EXISTS (SELECT 1 FROM actor_images i WHERE i.actor_id = a.id)
+                          ORDER BY (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) DESC, a.name
+                          LIMIT 20000", conn))
+            using (var reader = q.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var id = reader.GetString(0);
+                    // 查重没定的演员先跳过：合并完再抓，免得同一张脸在两个名字下各存一份
+                    if (!risk.Contains(id)) candidates.Add(id);
+                }
+            }
+
+            var pending = candidates.Count;
+            var batch = candidates.Take(limit).ToList();
+            var fetched = 0;
+            var failures = 0;
+            var notes = new List<string>();
+
+            foreach (var id in batch)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                var res = await FetchOneAsync(conn, id, posterDir, risk, ct);
+                if (res.Ok)
+                {
+                    fetched++;
+                    failures = 0;
+                }
+                else if (res.Message.StartsWith("站点"))
+                {
+                    // 连续失败说明被限流或断网，再问下去只是给人添堵
+                    failures++;
+                    if (failures >= 3) { notes.Add("站点连续无响应，本轮提前结束"); break; }
+                }
+                else
+                {
+                    failures = 0;
+                }
+
+                // 站间节流：这是别人的服务器，一次跑几百个请求不能没有间隔
+                await Task.Delay(300, ct);
+            }
+
+            return Ok(new
+            {
+                success = true,
+                data = new { processed = batch.Count, fetched, remaining = Math.Max(0, pending - batch.Count), stopped = notes.Count > 0 },
+                message = notes.Count > 0
+                    ? string.Join("；", notes)
+                    : $"本轮查了 {batch.Count} 位，抓到 {fetched} 张头像，还剩 {Math.Max(0, pending - batch.Count)} 位待查"
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            return Ok(new { success = false, message = "已中止" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "批量抓取演员头像失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 单个演员的抓取过程。返回的 Message 既是给用户看的说明，也是"为什么没抓"的记录。
+    /// </summary>
+    private async Task<(bool Ok, string Message)> FetchOneAsync(
+        SqliteConnection conn, string id, string posterDir, HashSet<string> risk, CancellationToken ct)
+    {
+        string? name = null;
+        var ourNames = new List<string>();
+        var slugs = new List<string>();
+
+        using (var q = new SqliteCommand("SELECT name FROM actors WHERE id = @id", conn))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", id));
+            name = q.ExecuteScalar()?.ToString();
+        }
+
+        if (string.IsNullOrEmpty(name)) return (false, "演员不存在");
+        ourNames.Add(name);
+
+        using (var q = new SqliteCommand("SELECT alias FROM actor_aliases WHERE actor_id = @id", conn))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", id));
+            using var reader = q.ExecuteReader();
+            while (reader.Read()) ourNames.Add(reader.GetString(0));
+        }
+
+        using (var q = new SqliteCommand(
+                   "SELECT url FROM actor_links WHERE actor_id = @id AND url LIKE '%av-wiki.net%'", conn))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", id));
+            using var reader = q.ExecuteReader();
+            while (reader.Read())
+            {
+                var slug = Utils.AvWiki.SlugOf(reader.GetString(0));
+                if (!string.IsNullOrEmpty(slug)) slugs.Add(slug);
+            }
+        }
+
+        int images;
+        using (var q = new SqliteCommand("SELECT COUNT(*) FROM actor_images WHERE actor_id = @id", conn))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", id));
+            images = Convert.ToInt32(q.ExecuteScalar());
+        }
+
+        if (images > 0) return (false, $"已有 {images} 张照片，不动手");
+        if (risk.Contains(id)) return (false, "该演员还在查重候选里，先合并再抓");
+
+        // 查询顺序：档案链接（我们自己的数据已经指向它）→ 含假名的曾用名（最接近站点的写法）
+        // → 其余曾用名 → 本名。每人最多问 5 次，问不到就算了
+        var probes = slugs.Select(s => ("slug", s))
+            .Concat(OrderQueries(ourNames).Take(5).Select(q => ("search", q)))
+            .ToList();
+
+        foreach (var (kind, value) in probes)
+        {
+            List<Utils.AvWiki.Profile> hits;
+            try
+            {
+                hits = kind == "slug"
+                    ? await Utils.AvWiki.BySlugAsync(value, ct)
+                    : await Utils.AvWiki.SearchAsync(value, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return (false, $"站点请求失败（{ex.Message}）");
+            }
+
+            var hit = Utils.AvWiki.Certify(hits, ourNames);
+            if (!hit.Ok) continue;
+
+            var profile = hit.Profile!.Value;
+            byte[] bytes;
+            string ext;
+            try
+            {
+                var dl = await Utils.AvWiki.DownloadAsync(profile.Portrait!, ct);
+                if (dl is null) return (false, $"档案「{profile.Name}」的头像下载失败");
+                (bytes, ext) = dl.Value;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return (false, $"头像下载失败（{ex.Message}）");
+            }
+
+            // 文件名固定用「默认」：ImageIndex 补选主图时第一个就认它，不用额外置位
+            var dir = Path.Combine(posterDir, id);
+            Directory.CreateDirectory(dir);
+            var target = Path.Combine(dir, $"默认{ext}");
+            var temp = target + ".tmp";
+            // 控制器自己有个 File(...) 方法，这里必须写全 System.IO.File
+            await System.IO.File.WriteAllBytesAsync(temp, bytes, ct);
+            System.IO.File.Move(temp, target, overwrite: true);
+
+            SyncDir(conn, id, dir);
+
+            // 留一行审计：批量跑的时候这是唯一能回看"这张脸是从哪个档案抓来的"的地方
+            _logger.LogInformation(
+                "头像已抓取：演员 {ActorId}「{OurName}」← 档案「{ProfileName}」(https://av-wiki.net/av-actress/{Slug})",
+                id, name, profile.Name, profile.Slug);
+
+            return (true, $"已抓到「{profile.Name}」的头像（av-wiki.net/av-actress/{profile.Slug}）");
+        }
+
+        return (false, "没找到能确认的档案");
+    }
+
+    /// <summary>含假名的曾用名排前面：站上的 tag 名基本就是假名/日文汉字写法</summary>
+    private static List<string> OrderQueries(List<string> names)
+    {
+        return names
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim())
+            .Distinct()
+            .OrderByDescending(n => n.Any(c => c >= 0x3041 && c <= 0x30F6))
+            .ThenByDescending(n => n.Length)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 出现在查重候选里的演员。抓头像前要跳过他们：同一张脸在两个名字下各存一份，
+    /// 之后合并时还得处理两套磁盘目录，比先合并再抓麻烦得多。
+    /// </summary>
+    private HashSet<string> DuplicateRiskIds(SqliteConnection conn)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        const string sql = @"
+            SELECT t1.actor_id FROM actor_aliases t1
+              JOIN actor_aliases t2 ON t1.alias = t2.alias AND t1.actor_id < t2.actor_id
+            UNION
+            SELECT t2.actor_id FROM actor_aliases t1
+              JOIN actor_aliases t2 ON t1.alias = t2.alias AND t1.actor_id < t2.actor_id
+            UNION
+            SELECT a1.id FROM actors a1 JOIN actor_aliases t ON t.alias = a1.name
+            UNION
+            SELECT t.actor_id FROM actors a1 JOIN actor_aliases t ON t.alias = a1.name";
+        using var cmd = new SqliteCommand(sql, conn);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) ids.Add(reader.GetString(0));
+        return ids;
     }
 
     /// <summary>
