@@ -54,13 +54,16 @@ public class ActorController : ControllerBase
 
             if (!string.IsNullOrEmpty(keyword))
             {
-                whereClause += " AND (name LIKE @keyword OR alias LIKE @keyword)";
+                // 曾用名也要命中：actor_aliases 一行一个，检索走 EXISTS 而不是字符串 LIKE
+                whereClause += @" AND (a.name LIKE @keyword
+                            OR EXISTS (SELECT 1 FROM actor_aliases aa
+                                       WHERE aa.actor_id = a.id AND aa.alias LIKE @keyword))";
                 parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
             }
 
             if (!string.IsNullOrEmpty(country))
             {
-                whereClause += " AND country = @country";
+                whereClause += " AND a.country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
@@ -68,7 +71,7 @@ public class ActorController : ControllerBase
             conn.Open();
 
             // 总数
-            var countSql = $"SELECT COUNT(*) FROM actors {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM actors a {whereClause}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
                 foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
@@ -84,7 +87,8 @@ public class ActorController : ControllerBase
                          WHERE va2.actor_id = a.id) as like_count,
                         (SELECT COUNT(*) FROM video_actors va3 
                          JOIN videos v2 ON va3.video_id = v2.id 
-                         WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count
+                         WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count,
+                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa2 WHERE aa2.actor_id = a.id) as aliases
                     FROM actors a
                     {whereClause}
                     ORDER BY " + orderBy + @"
@@ -103,7 +107,7 @@ public class ActorController : ControllerBase
                     {
                         id = reader["id"].ToString(),
                         name = reader["name"].ToString(),
-                        alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                        aliases = SplitAliases(reader["aliases"]),
                         country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
@@ -136,7 +140,8 @@ public class ActorController : ControllerBase
             var sql = @"SELECT a.*, 
                         (SELECT COUNT(*) FROM video_likes vl 
                          JOIN video_actors va ON vl.video_id = va.video_id 
-                         WHERE va.actor_id = a.id) as like_count
+                         WHERE va.actor_id = a.id) as like_count,
+                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa WHERE aa.actor_id = a.id) as aliases
                         FROM actors a WHERE a.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
@@ -149,7 +154,7 @@ public class ActorController : ControllerBase
             {
                 id = reader["id"].ToString(),
                 name = reader["name"].ToString(),
-                alias = reader["alias"] == DBNull.Value ? null : reader["alias"].ToString(),
+                aliases = SplitAliases(reader["aliases"]),
                 country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                 bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                 likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
@@ -189,15 +194,16 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, alias, country, bio, ctime) VALUES (@id, @name, @alias, @country, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, country, bio, ctime) VALUES (@id, @name, @country, @bio, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
-            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
             cmd.ExecuteNonQuery();
+
+            SaveAliases(conn, id, request.Name, request.Aliases);
 
             return Ok(new { success = true, data = new { id, name = request.Name }, message = "添加成功" });
         }
@@ -219,18 +225,18 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"UPDATE actors SET name = @name, alias = @alias, country = @country, bio = @bio WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, country = @country, bio = @bio WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@alias", (object?)request.Alias ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
 
-            if (cmd.ExecuteNonQuery() > 0)
-                return Ok(new { success = true, message = "更新成功" });
-            else
+            if (cmd.ExecuteNonQuery() <= 0)
                 return Ok(new { success = false, message = "演员不存在" });
+
+            SaveAliases(conn, id, request.Name, request.Aliases);
+            return Ok(new { success = true, message = "更新成功" });
         }
         catch (Exception ex)
         {
@@ -255,6 +261,13 @@ public class ActorController : ControllerBase
             {
                 relCmd.Parameters.Add(new SqliteParameter("@actorId", id));
                 relCmd.ExecuteNonQuery();
+            }
+
+            // 连接串没开 FK 强制，级联不会自己触发，子表一律显式清
+            using (var aliasCmd = new SqliteCommand("DELETE FROM actor_aliases WHERE actor_id = @actorId", conn))
+            {
+                aliasCmd.Parameters.Add(new SqliteParameter("@actorId", id));
+                aliasCmd.ExecuteNonQuery();
             }
 
             // 删除演员
@@ -429,14 +442,47 @@ public class ActorController : ControllerBase
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
+
+    /// <summary>列表与详情都用 GROUP_CONCAT 一次带出别名，避免每行再查一次</summary>
+    private static List<string> SplitAliases(object? value)
+    {
+        var raw = value is null or DBNull ? null : value.ToString();
+        if (string.IsNullOrEmpty(raw)) return new List<string>();
+        // 分隔符是 char(31)：别名里可能出现逗号，不会出现单元分隔符
+        return raw.Split((char)31, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    }
+
+    /// <summary>整组替换：先清后写，规则与迁移共用 Utils.Aliases</summary>
+    private void SaveAliases(SqliteConnection conn, string actorId, string? name, List<string>? raw)
+    {
+        var aliases = Utils.Aliases.Normalize(raw, name);
+
+        using var tx = conn.BeginTransaction();
+        using (var del = new SqliteCommand("DELETE FROM actor_aliases WHERE actor_id = @id", conn, tx))
+        {
+            del.Parameters.Add(new SqliteParameter("@id", actorId));
+            del.ExecuteNonQuery();
+        }
+
+        foreach (var alias in aliases)
+        {
+            using var ins = new SqliteCommand(
+                "INSERT OR IGNORE INTO actor_aliases (actor_id, alias) VALUES (@id, @alias)", conn, tx);
+            ins.Parameters.Add(new SqliteParameter("@id", actorId));
+            ins.Parameters.Add(new SqliteParameter("@alias", alias));
+            ins.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
 }
 
 public class AddActorRequest
 {
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
-    [JsonPropertyName("alias")]
-    public string? Alias { get; set; }
+    [JsonPropertyName("aliases")]
+    public List<string>? Aliases { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
     [JsonPropertyName("bio")]
@@ -447,8 +493,8 @@ public class UpdateActorRequest
 {
     [JsonPropertyName("name")]
     public string? Name { get; set; }
-    [JsonPropertyName("alias")]
-    public string? Alias { get; set; }
+    [JsonPropertyName("aliases")]
+    public List<string>? Aliases { get; set; }
     [JsonPropertyName("country")]
     public string? Country { get; set; }
     [JsonPropertyName("bio")]

@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 2;
+    private const int TargetVersion = 3;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -107,6 +107,72 @@ public class DataService : IDataService
             _logger.LogInformation("已清理 {Count} 个 daily_recommend_* 孤儿设置行", removed);
     }
 
+    /// <summary>
+    /// actors.alias（空格分隔）→ actor_aliases 一行一个。
+    ///
+    /// 拆分规则：按空白切、去空、去重、丢掉与本人姓名相同的项、单项最长 60 字。
+    /// 实测 1342 条别名只用空格分隔（无 、，/ 等），所以按空白切不会误拆中文名；
+    /// 唯一有歧义的是含拉丁字母的 30 条（如「志保 Shiho」是一个别名还是两个），
+    /// 这类整条记进日志当复核清单，人工在界面上修——写启发式规则不如人眼一遍。
+    /// </summary>
+    private void NormalizeActorAliases(SqliteConnection conn)
+    {
+        if (!ColumnExists(conn, "actors", "alias"))
+        {
+            _logger.LogInformation("actors.alias 已不存在，跳过别名规范化");
+            return;
+        }
+
+        var rows = new List<(string Id, string Name, string Raw)>();
+        using (var read = new SqliteCommand(
+                   "SELECT id, name, alias FROM actors WHERE alias IS NOT NULL AND TRIM(alias) <> ''", conn))
+        using (var reader = read.ExecuteReader())
+        {
+            while (reader.Read())
+                rows.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        }
+
+        var inserted = 0;
+        var review = new List<string>();
+
+        using (var tx = conn.BeginTransaction())
+        {
+            using (var del = new SqliteCommand("DELETE FROM actor_aliases", conn, tx))
+                del.ExecuteNonQuery();
+
+            using var ins = new SqliteCommand(
+                "INSERT OR IGNORE INTO actor_aliases (actor_id, alias) VALUES (@id, @alias)", conn, tx);
+
+            foreach (var (id, name, raw) in rows)
+            {
+                // 含拉丁字母的那批拆出来可能有歧义（"志保 Shiho"是一个别名还是两个），记进日志复核
+                if (raw.Any(char.IsAsciiLetter))
+                    review.Add($"{name} | {raw}");
+
+                foreach (var alias in Utils.Aliases.Normalize(new[] { raw }, name))
+                {
+                    ins.Parameters.Clear();
+                    ins.Parameters.Add(new SqliteParameter("@id", id));
+                    ins.Parameters.Add(new SqliteParameter("@alias", alias));
+                    inserted += ins.ExecuteNonQuery();
+                }
+            }
+
+            tx.Commit();
+        }
+
+        NonQuery(conn, "ALTER TABLE actors DROP COLUMN alias");
+
+        _logger.LogInformation(
+            "别名规范化完成：{Actors} 位演员 → {Rows} 行 actor_aliases，已删除 actors.alias 列",
+            rows.Count, inserted);
+
+        if (review.Count > 0)
+            _logger.LogInformation(
+                "以下 {Count} 位演员的别名含拉丁字母，按空格拆分可能有歧义，请在界面上复核：\n{List}",
+                review.Count, string.Join("\n", review));
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -117,6 +183,7 @@ public class DataService : IDataService
 
         Migrations = AdditiveMigrations
             .Append((2, "移除零引用的列与遗留表（见 DropDeadFields 注释）", DropDeadFields))
+            .Append((3, "演员别名规范化为 actor_aliases（见 NormalizeActorAliases 注释）", NormalizeActorAliases))
             .ToArray();
     }
 
@@ -230,8 +297,16 @@ public class DataService : IDataService
                 name        TEXT    UNIQUE NOT NULL,
                 bio         TEXT,
                 ctime       TEXT,
-                alias       TEXT,
                 country     TEXT
+            )");
+
+        // 曾用名一条一行。原先全塞在 actors.alias 里用空格分隔，
+        // 既没法精确检索一个曾用名，也没法区分"志保 Shiho"是一个别名还是两个
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS actor_aliases (
+                actor_id TEXT NOT NULL,
+                alias    TEXT NOT NULL,
+                PRIMARY KEY (actor_id, alias)
             )");
 
         NonQuery(conn, @"
@@ -341,6 +416,8 @@ public class DataService : IDataService
             ("idx_comics_ctime", "CREATE INDEX IF NOT EXISTS idx_comics_ctime ON comics(ctime DESC)"),
             ("idx_comic_chapters_comic", "CREATE INDEX IF NOT EXISTS idx_comic_chapters_comic ON comic_chapters(comic_id, sort_order)"),
             ("idx_series_name", "CREATE INDEX IF NOT EXISTS idx_series_name ON video_series(name)"),
+            // 按曾用名精确/前缀检索；按演员取自己的别名走主键 (actor_id, alias) 前缀
+            ("idx_actor_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_actor_aliases_alias ON actor_aliases(alias)"),
         };
 
         foreach (var (name, sql) in indexes)

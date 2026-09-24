@@ -372,7 +372,6 @@ public class VideoController : ControllerBase
                 {
                     id = actorReader["id"].ToString(),
                     name = actorReader["name"].ToString(),
-                    alias = actorReader["alias"] == DBNull.Value ? null : actorReader["alias"].ToString(),
                     country = actorReader["country"] == DBNull.Value ? null : actorReader["country"].ToString()
                 });
             }
