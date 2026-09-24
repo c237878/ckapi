@@ -92,7 +92,10 @@ public class ActorController : ControllerBase
                          WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count,
                         (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa2 WHERE aa2.actor_id = a.id) as aliases,
                         -- 列表也要带 links：编辑框是从列表行打开的，缺了它一保存就把外链抹掉
-                        (SELECT GROUP_CONCAT(kind || char(31) || url, char(30)) FROM actor_links al WHERE al.actor_id = a.id) as links
+                        (SELECT GROUP_CONCAT(kind || char(31) || url, char(30)) FROM actor_links al WHERE al.actor_id = a.id) as links,
+                        -- 只有主图参与列表展示：脸只出现在演员列表这一页，别处仍不放头像
+                        (SELECT ai2.file_name FROM actor_images ai2
+                          WHERE ai2.actor_id = a.id AND ai2.is_primary = 1 LIMIT 1) as avatar
                     FROM actors a
                     {whereClause}
                     ORDER BY " + orderBy + @"
@@ -113,6 +116,7 @@ public class ActorController : ControllerBase
                         name = reader["name"].ToString(),
                         aliases = SplitAliases(reader["aliases"]),
                         links = SplitLinks(reader["links"]),
+                        avatar = reader["avatar"] is null or DBNull ? null : reader["avatar"].ToString(),
                         country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
@@ -501,6 +505,55 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
+    /// 指定某张图为演员的主图（列表页那张脸）。
+    /// 先全清再置一：部分唯一索引不允许同时有两张，单条 UPDATE 会撞约束。
+    /// </summary>
+    [HttpPut("{id}/image/primary")]
+    public IActionResult SetPrimaryImage(string id, [FromBody] PrimaryImageRequest request)
+    {
+        try
+        {
+            var fileName = Utils.SafePath.AsFileName(request.FileName);
+            if (fileName is null)
+                return Ok(new { success = false, message = "文件名不合法" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            using var tx = conn.BeginTransaction();
+            using (var clear = new SqliteCommand("UPDATE actor_images SET is_primary = 0 WHERE actor_id = @id", conn, tx))
+            {
+                clear.Parameters.Add(new SqliteParameter("@id", id));
+                clear.ExecuteNonQuery();
+            }
+
+            int hit;
+            using (var set = new SqliteCommand(
+                       "UPDATE actor_images SET is_primary = 1 WHERE actor_id = @id AND file_name = @file", conn, tx))
+            {
+                set.Parameters.Add(new SqliteParameter("@id", id));
+                set.Parameters.Add(new SqliteParameter("@file", fileName));
+                hit = set.ExecuteNonQuery();
+            }
+
+            // 影响行数为 0 说明这张图不在表里（没同步过或已删），回滚让主图保持原样
+            if (hit == 0)
+            {
+                tx.Rollback();
+                return Ok(new { success = false, message = "这张图片还没同步进库" });
+            }
+
+            tx.Commit();
+            return Ok(new { success = true, message = "已设为头像" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "设置演员主图失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
     /// 目录 ↔ 表 的一次对齐：新增入库、同名但换过内容的刷新、文件不见的删掉，最后保证有一张主图。
     /// 只 stat 文件，不打开文件 —— 一次同步几百张也就几百次 stat，冷卷上也扛得住。
     /// </summary>
@@ -855,6 +908,13 @@ public class AddActorRequest
     public string? Country { get; set; }
     [JsonPropertyName("bio")]
     public string? Bio { get; set; }
+}
+
+/// <summary>把哪张图设为演员主图（列表页那张脸）</summary>
+public class PrimaryImageRequest
+{
+    [JsonPropertyName("fileName")]
+    public string? FileName { get; set; }
 }
 
 public class UpdateActorRequest
