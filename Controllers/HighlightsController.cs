@@ -22,7 +22,7 @@ public class HighlightsController : ControllerBase
     }
 
     /// <summary>
-    /// 获取掠影照片列表（default 文件夹）
+    /// 获取艳图照片列表（default 文件夹）
     /// </summary>
     [HttpGet("posters")]
     public IActionResult GetPosters()
@@ -36,7 +36,7 @@ public class HighlightsController : ControllerBase
 
             if (string.IsNullOrEmpty(posterDir))
             {
-                return Ok(new { success = true, data = new string[0], message = "未配置掠影目录" });
+                return Ok(new { success = true, data = new string[0], message = "未配置艳图目录" });
             }
 
             var defaultDir = Path.Combine(posterDir, "default");
@@ -57,13 +57,13 @@ public class HighlightsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "获取掠影照片列表失败");
+            _logger.LogError(ex, "获取艳图照片列表失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
     /// <summary>
-    /// 获取掠影照片图片
+    /// 获取艳图照片图片
     /// </summary>
     [HttpGet("poster/{fileName}")]
     public IActionResult GetPoster(string fileName)
@@ -95,7 +95,7 @@ public class HighlightsController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "获取掠影照片失败");
+            _logger.LogError(ex, "获取艳图照片失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
