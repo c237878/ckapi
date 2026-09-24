@@ -365,7 +365,7 @@ public class ActorController : ControllerBase
 
             if (string.IsNullOrEmpty(posterDir))
             {
-                return Ok(new { success = true, data = new string[0], message = "未配置海报墙目录" });
+                return Ok(new { success = true, data = new string[0], message = "未配置掠影目录" });
             }
 
             var actorDir = Path.Combine(posterDir, id);
