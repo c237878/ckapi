@@ -381,6 +381,22 @@ public class DataService : IDataService
                 url      TEXT    NOT NULL
             )");
 
+        // 演员图片的元数据：文件名/尺寸/主图标记，一行一张。
+        // 建这张表就是为了不再"每次打开详情页扫一遍目录"——扫描由界面上的同步动作触发（见 ActorController.ScanImages）。
+        // 不加版本号迁移：纯新增表没有数据要搬，全新库与历史库都会走 CreateBaseTables 这条同样的路。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS actor_images (
+                actor_id   TEXT    NOT NULL,
+                file_name  TEXT    NOT NULL,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                width      INTEGER,
+                height     INTEGER,
+                size       INTEGER NOT NULL DEFAULT 0,
+                mtime      TEXT,
+                ctime      TEXT,
+                PRIMARY KEY (actor_id, file_name)
+            )");
+
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS video_actors (
                 video_id TEXT,
@@ -492,6 +508,10 @@ public class DataService : IDataService
             ("idx_actor_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_actor_aliases_alias ON actor_aliases(alias)"),
             // 详情页取外链、按 kind 排查
             ("idx_actor_links_actor", "CREATE INDEX IF NOT EXISTS idx_actor_links_actor ON actor_links(actor_id, kind)"),
+            // 相册一次取某人全部图片并按主图打头；列表页的头像也走这条
+            ("idx_actor_images_actor", "CREATE INDEX IF NOT EXISTS idx_actor_images_actor ON actor_images(actor_id, is_primary DESC, file_name)"),
+            // 每人最多一张主图：部分唯一索引，NULL/0 行不受约束
+            ("idx_actor_images_primary", "CREATE UNIQUE INDEX IF NOT EXISTS idx_actor_images_primary ON actor_images(actor_id) WHERE is_primary = 1"),
         };
 
         foreach (var (name, sql) in indexes)

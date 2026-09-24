@@ -14,11 +14,13 @@ public class ActorController : ControllerBase
 {
     private readonly ILogger<ActorController> _logger;
     private readonly IConfiguration _config;
+    private readonly Utils.SQLiteHelper _db;
 
-    public ActorController(ILogger<ActorController> logger, IConfiguration config)
+    public ActorController(ILogger<ActorController> logger, IConfiguration config, Utils.SQLiteHelper db)
     {
         _logger = logger;
         _config = config;
+        _db = db;
     }
 
     private SqliteConnection GetConnection()
@@ -148,23 +150,39 @@ public class ActorController : ControllerBase
                         FROM actors a WHERE a.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
-            using var reader = cmd.ExecuteReader();
 
-            if (!reader.Read())
-                return NotFound(new { success = false, message = "演员不存在" });
-
-            var actor = new
+            string? name, country, bio;
+            List<string> aliases;
+            int likeCount;
+            using (var reader = cmd.ExecuteReader())
             {
-                id = reader["id"].ToString(),
-                name = reader["name"].ToString(),
-                aliases = SplitAliases(reader["aliases"]),
-                country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
-                bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
-                links = ReadLinks(conn, id),
-                likeCount = reader["like_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["like_count"])
-            };
+                if (!reader.Read())
+                    return NotFound(new { success = false, message = "演员不存在" });
 
-            return Ok(new { success = true, data = actor });
+                name = reader["name"].ToString();
+                country = reader["country"] is null or DBNull ? null : reader["country"].ToString();
+                bio = reader["bio"] is null or DBNull ? null : reader["bio"].ToString();
+                aliases = SplitAliases(reader["aliases"]);
+                likeCount = reader["like_count"] is null or DBNull ? 0 : Convert.ToInt32(reader["like_count"]);
+            }
+
+            // 外链与图片各要一次查询，所以前面的 reader 必须先关掉：
+            // Microsoft.Data.Sqlite 不支持多个活动结果集，叠着发会把连接状态搞乱
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    id,
+                    name,
+                    aliases,
+                    country,
+                    bio,
+                    likeCount,
+                    links = ReadLinks(conn, id),
+                    images = ReadImages(conn, id)
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -270,7 +288,7 @@ public class ActorController : ControllerBase
             }
 
             // 连接串没开 FK 强制，级联不会自己触发，子表一律显式清
-            foreach (var child in new[] { "actor_aliases", "actor_links" })
+            foreach (var child in new[] { "actor_aliases", "actor_links", "actor_images" })
             {
                 using var cmd = new SqliteCommand($"DELETE FROM [{child}] WHERE actor_id = @actorId", conn);
                 cmd.Parameters.Add(new SqliteParameter("@actorId", id));
@@ -370,49 +388,268 @@ public class ActorController : ControllerBase
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
+    /// <summary>艳图目录：演员图片实际放在 &lt;posterDir&gt;/&lt;演员ID&gt;/ 下面</summary>
+    private static string? ReadPosterDir(SqliteConnection conn)
+    {
+        using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
+        return cmd.ExecuteScalar()?.ToString();
+    }
+
     /// <summary>
-    /// 获取演员海报列表
+    /// 把一位演员的图片目录同步进 actor_images。
+    /// 只有界面上的「同步照片」会调它 —— 打开详情页不再扫盘，这就是这张表存在的全部理由。
     /// </summary>
-    [HttpGet("{id}/posters")]
-    public IActionResult GetPosters(string id)
+    [HttpPost("{id}/images/sync")]
+    public IActionResult SyncImages(string id)
     {
         try
         {
             using var conn = GetConnection();
             conn.Open();
-            using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
-            var posterDir = cmd.ExecuteScalar()?.ToString();
 
+            var posterDir = ReadPosterDir(conn);
             if (string.IsNullOrEmpty(posterDir))
+                return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
+
+            using (var exists = new SqliteCommand("SELECT COUNT(*) FROM actors WHERE id = @id", conn))
             {
-                return Ok(new { success = true, data = new string[0], message = "未配置艳图目录" });
+                exists.Parameters.Add(new SqliteParameter("@id", id));
+                if (Convert.ToInt32(exists.ExecuteScalar()) == 0)
+                    return NotFound(new { success = false, message = "演员不存在" });
             }
 
-            var actorDir = Path.Combine(posterDir, id);
-            if (!Directory.Exists(actorDir))
-            {
-                return Ok(new { success = true, data = new string[0], message = "该演员无海报" });
-            }
-
-            var files = Directory.GetFiles(actorDir, "*.*")
-                .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-                            f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
-                .Select(f => Path.GetFileName(f))
-                .ToList();
-
-            return Ok(new { success = true, data = files });
+            var stat = SyncDir(conn, id, Path.Combine(posterDir, id));
+            return Ok(new { success = true, data = stat, message = StatMessage(stat) });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "获取演员海报失败");
+            _logger.LogError(ex, "同步演员图片失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
     /// <summary>
-    /// 获取演员海报图片
+    /// 一次同步全部演员：把艳图目录下的子目录逐个对一遍（目录名就是演员 ID）。
+    /// 根目录不存在时直接报错返回、一个字都不写 —— 挂载卷暂时没挂上时，
+    /// "按差集删除"会把整张表清空，而照片元数据一旦丢了只能重扫。
+    /// </summary>
+    [HttpPost("images/sync")]
+    public IActionResult SyncAllImages()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+
+            var posterDir = ReadPosterDir(conn);
+            if (string.IsNullOrEmpty(posterDir))
+                return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
+            if (!Directory.Exists(posterDir))
+                return Ok(new { success = false, message = $"艳图目录不存在：{posterDir}" });
+
+            var actorIds = new HashSet<string>(StringComparer.Ordinal);
+            using (var read = new SqliteCommand("SELECT id FROM actors", conn))
+            using (var reader = read.ExecuteReader())
+            {
+                while (reader.Read()) actorIds.Add(reader.GetString(0));
+            }
+
+            var added = 0; var updated = 0; var removed = 0; var scanned = 0;
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var dir in Directory.GetDirectories(posterDir).OrderBy(x => x, StringComparer.Ordinal))
+            {
+                // default/ 是艳图页自己的图池，不是哪位演员
+                var id = Path.GetFileName(dir);
+                if (!actorIds.Contains(id)) continue;
+
+                visited.Add(id);
+                var stat = SyncDir(conn, id, dir);
+                added += stat.Added;
+                updated += stat.Updated;
+                removed += stat.Removed;
+                scanned++;
+            }
+
+            // 整个目录被人删掉的演员：只有走到这一步才说明根目录确实可读，差集删除才是安全的
+            var stale = new List<string>();
+            using (var read = new SqliteCommand("SELECT DISTINCT actor_id FROM actor_images", conn))
+            using (var reader = read.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    var id = reader.GetString(0);
+                    if (!visited.Contains(id)) stale.Add(id);
+                }
+            }
+
+            foreach (var id in stale)
+            {
+                using var del = new SqliteCommand("DELETE FROM actor_images WHERE actor_id = @id", conn);
+                del.Parameters.Add(new SqliteParameter("@id", id));
+                removed += del.ExecuteNonQuery();
+            }
+
+            var data = new { actors = scanned, added, updated, removed, stale = stale.Count };
+            return Ok(new { success = true, data, message = $"扫了 {scanned} 位演员：新增 {added}、更新 {updated}、移除 {removed}" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "批量同步演员图片失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 目录 ↔ 表 的一次对齐：新增入库、同名但换过内容的刷新、文件不见的删掉，最后保证有一张主图。
+    /// 只 stat 文件，不打开文件 —— 一次同步几百张也就几百次 stat，冷卷上也扛得住。
+    /// </summary>
+    private (int Added, int Updated, int Removed, int Total, string? Primary) SyncDir(
+        SqliteConnection conn, string actorId, string dir)
+    {
+        var onDisk = new HashSet<string>(StringComparer.Ordinal);
+        if (Directory.Exists(dir))
+        {
+            foreach (var path in Directory.GetFiles(dir))
+            {
+                var name = Path.GetFileName(path);
+                // AsFileName 顺手挡掉 .DS_Store 这类点开头的隐藏文件
+                if (Utils.SafePath.AsFileName(name) is not null && Utils.SafePath.IsImageFile(name))
+                    onDisk.Add(name);
+            }
+        }
+
+        var known = new Dictionary<string, string?>(StringComparer.Ordinal);
+        using (var read = new SqliteCommand("SELECT file_name, mtime FROM actor_images WHERE actor_id = @id", conn))
+        {
+            read.Parameters.Add(new SqliteParameter("@id", actorId));
+            using var reader = read.ExecuteReader();
+            while (reader.Read())
+                known[reader.GetString(0)] = reader.IsDBNull(1) ? null : reader.GetString(1);
+        }
+
+        var added = 0;
+        var updated = 0;
+        var removed = 0;
+        var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+        using var tx = conn.BeginTransaction();
+
+        foreach (var file in onDisk.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            var info = new FileInfo(Path.Combine(dir, file));
+            if (!info.Exists) continue;   // 列完目录到 stat 之间被删掉的小概率窗口，跳过即可
+
+            var mtime = info.LastWriteTimeUtc.ToString("yyyy-MM-dd HH:mm:ss");
+            if (!known.TryGetValue(file, out var old))
+            {
+                added++;
+                using var ins = new SqliteCommand(
+                    @"INSERT OR IGNORE INTO actor_images (actor_id, file_name, is_primary, size, mtime, ctime)
+                      VALUES (@id, @file, 0, @size, @mtime, @now)", conn, tx);
+                ins.Parameters.Add(new SqliteParameter("@id", actorId));
+                ins.Parameters.Add(new SqliteParameter("@file", file));
+                ins.Parameters.Add(new SqliteParameter("@size", info.Length));
+                ins.Parameters.Add(new SqliteParameter("@mtime", mtime));
+                ins.Parameters.Add(new SqliteParameter("@now", now));
+                ins.ExecuteNonQuery();
+            }
+            else if (old != mtime)
+            {
+                updated++;
+                // 同名文件被换掉：宽高清空，等下次出缩略图时重新回填
+                using var upd = new SqliteCommand(
+                    "UPDATE actor_images SET size = @size, mtime = @mtime, width = NULL, height = NULL WHERE actor_id = @id AND file_name = @file",
+                    conn, tx);
+                upd.Parameters.Add(new SqliteParameter("@id", actorId));
+                upd.Parameters.Add(new SqliteParameter("@file", file));
+                upd.Parameters.Add(new SqliteParameter("@size", info.Length));
+                upd.Parameters.Add(new SqliteParameter("@mtime", mtime));
+                upd.ExecuteNonQuery();
+            }
+        }
+
+        foreach (var file in known.Keys.Where(k => !onDisk.Contains(k)).OrderBy(x => x, StringComparer.Ordinal).ToList())
+        {
+            removed++;
+            using var del = new SqliteCommand(
+                "DELETE FROM actor_images WHERE actor_id = @id AND file_name = @file", conn, tx);
+            del.Parameters.Add(new SqliteParameter("@id", actorId));
+            del.Parameters.Add(new SqliteParameter("@file", file));
+            del.ExecuteNonQuery();
+        }
+
+        var total = known.Count + added - removed;
+        string? primary = null;
+        using (var q = new SqliteCommand("SELECT file_name FROM actor_images WHERE actor_id = @id AND is_primary = 1", conn, tx))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", actorId));
+            primary = q.ExecuteScalar()?.ToString();
+        }
+
+        if (primary is null && total > 0)
+        {
+            // 每人只留一张主图（部分唯一索引兜底），这里只在一张都没有时补选
+            primary = PickPrimary(onDisk);
+            if (primary is not null)
+            {
+                using var set = new SqliteCommand(
+                    "UPDATE actor_images SET is_primary = 1 WHERE actor_id = @id AND file_name = @file", conn, tx);
+                set.Parameters.Add(new SqliteParameter("@id", actorId));
+                set.Parameters.Add(new SqliteParameter("@file", primary));
+                set.ExecuteNonQuery();
+            }
+        }
+
+        tx.Commit();
+        return (added, updated, removed, total, primary);
+    }
+
+    /// <summary>手工放图时最常见的几种"这就是头像"命名，都命中不了就按文件名取第一张</summary>
+    private static readonly string[] PrimaryHints =
+        { "默认", "头像", "default", "avatar", "cover", "main", "profile", "primary", "1", "01", "first" };
+
+    private static string? PickPrimary(ICollection<string> files)
+    {
+        var ordered = files.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (ordered.Count == 0) return null;
+
+        foreach (var hint in PrimaryHints)
+        {
+            var hit = ordered.FirstOrDefault(f =>
+                string.Equals(Path.GetFileNameWithoutExtension(f), hint, StringComparison.OrdinalIgnoreCase));
+            if (hit is not null) return hit;
+        }
+
+        return ordered[0];
+    }
+
+    private static string StatMessage((int Added, int Updated, int Removed, int Total, string? Primary) stat)
+        => $"新增 {stat.Added}、更新 {stat.Updated}、移除 {stat.Removed}，共 {stat.Total} 张";
+
+    /// <summary>相册用：主图排最前，顺序稳定，翻页时才不会跳</summary>
+    private static List<object> ReadImages(SqliteConnection conn, string actorId)
+    {
+        var list = new List<object>();
+        using var cmd = new SqliteCommand(
+            @"SELECT file_name, is_primary, IFNULL(width, 0), IFNULL(height, 0), size
+              FROM actor_images WHERE actor_id = @id ORDER BY is_primary DESC, file_name", conn);
+        cmd.Parameters.Add(new SqliteParameter("@id", actorId));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            list.Add(new
+            {
+                fileName = reader.GetString(0),
+                primary = reader.GetInt32(1) == 1,
+                width = reader.GetInt32(2),
+                height = reader.GetInt32(3),
+                size = reader.GetInt64(4)
+            });
+        return list;
+    }
+
+    /// <summary>
+    /// 演员图片原图。列表来自 actor_images（不再扫盘），字节仍从挂载卷直读。
     /// </summary>
     [HttpGet("{id}/poster/{fileName}")]
     public IActionResult GetPoster(string id, string fileName)
@@ -426,17 +663,13 @@ public class ActorController : ControllerBase
 
             using var conn = GetConnection();
             conn.Open();
-            using var cmd = new SqliteCommand("SELECT content FROM system_settings WHERE name = 'posterDir'", conn);
-            var posterDir = cmd.ExecuteScalar()?.ToString();
+            var posterDir = ReadPosterDir(conn);
+            if (string.IsNullOrEmpty(posterDir)) return NotFound();
 
-            if (string.IsNullOrEmpty(posterDir))
-            {
-                return NotFound();
-            }
+            if (!ImageKnown(conn, safeId, safeFileName)) return NotFound();
 
             var filePath = Path.Combine(posterDir, safeId, safeFileName);
-            if (!Utils.SafePath.IsInside(filePath, posterDir))
-                return NotFound();
+            if (!Utils.SafePath.IsInside(filePath, posterDir)) return NotFound();
 
             var result = Utils.CachedFile.TryServe(this, filePath);
             if (result is not null) return result;
@@ -448,6 +681,80 @@ public class ActorController : ControllerBase
             _logger.LogError(ex, "获取海报图片失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
+    }
+
+    /// <summary>
+    /// 缩略图：s=160 给列表页头像，m=400 给详情页相册。
+    /// 只认表里有的文件名 —— 表就是白名单，没同步过的路径一律 404。
+    /// </summary>
+    [HttpGet("{id}/thumb/{size}/{fileName}")]
+    public IActionResult GetThumb(string id, string size, string fileName)
+    {
+        try
+        {
+            var safeFileName = Utils.SafePath.AsFileName(fileName);
+            var safeId = Utils.SafePath.AsFileName(id);
+            var width = Utils.Thumbs.WidthOf(size);
+            if (safeFileName is null || safeId is null || width == 0 || !Utils.SafePath.IsImageFile(safeFileName))
+                return NotFound();
+
+            using var conn = GetConnection();
+            conn.Open();
+            var posterDir = ReadPosterDir(conn);
+            if (string.IsNullOrEmpty(posterDir)) return NotFound();
+            if (!ImageKnown(conn, safeId, safeFileName)) return NotFound();
+
+            var source = Path.Combine(posterDir, safeId, safeFileName);
+            if (!Utils.SafePath.IsInside(source, posterDir)) return NotFound();
+
+            var thumb = Utils.Thumbs.Ensure(source, ThumbRoot(), safeId, safeFileName, width, out var sw, out var sh);
+            if (thumb is null)
+                // 解码不了的（损坏或没编进来的格式）退回原图，页面至少还有东西可看
+                return Utils.CachedFile.TryServe(this, source) ?? NotFound();
+
+            if (sw > 0)
+            {
+                // 顺手回填宽高：前端靠它预留画框，不用每张都解码一次。只在缺失时写，避免每次命中都产生写操作
+                using var back = new SqliteCommand(
+                    "UPDATE actor_images SET width = @w, height = @h WHERE actor_id = @id AND file_name = @file AND width IS NULL",
+                    conn);
+                back.Parameters.Add(new SqliteParameter("@w", sw));
+                back.Parameters.Add(new SqliteParameter("@h", sh));
+                back.Parameters.Add(new SqliteParameter("@id", safeId));
+                back.Parameters.Add(new SqliteParameter("@file", safeFileName));
+                back.ExecuteNonQuery();
+            }
+
+            return Utils.CachedFile.TryServe(this, thumb.Value.Path, "image/webp") ?? NotFound();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "生成演员缩略图失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>这张图片是否已经同步进表（并且属于这位演员）</summary>
+    private static bool ImageKnown(SqliteConnection conn, string actorId, string fileName)
+    {
+        using var cmd = new SqliteCommand(
+            "SELECT 1 FROM actor_images WHERE actor_id = @id AND file_name = @file", conn);
+        cmd.Parameters.Add(new SqliteParameter("@id", actorId));
+        cmd.Parameters.Add(new SqliteParameter("@file", fileName));
+        return cmd.ExecuteScalar() is not null;
+    }
+
+    /// <summary>
+    /// 缩略图缓存根目录。没配 Media:ThumbCache 就贴着库文件放：
+    /// 那是本地盘而不是照片所在的挂载卷，读写快一个量级。
+    /// </summary>
+    private string ThumbRoot()
+    {
+        var configured = _config.GetValue<string>("Media:ThumbCache");
+        if (!string.IsNullOrWhiteSpace(configured)) return configured;
+
+        var dir = Path.GetDirectoryName(_db.GetDbPath());
+        return Path.Combine(string.IsNullOrEmpty(dir) ? "." : dir, "ckthumbs");
     }
 
     /// <summary>列表与详情都用 GROUP_CONCAT 一次带出别名，避免每行再查一次</summary>
