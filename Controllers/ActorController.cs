@@ -317,6 +317,234 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
+    /// 疑似重复演员，两类证据：其中一人的本名恰好挂在对方的曾用名里（强），
+    /// 或两人共享某个曾用名（弱，按强→影片数排序）。
+    /// 共享曾用名并不等于同一个人（实测里就有把第三个女优的名字同时挂到两人名下的脏数据），
+    /// 所以这里只负责把候选摆出来，合不合由人在界面上判断。
+    /// </summary>
+    [HttpGet("duplicates")]
+    public IActionResult GetDuplicates()
+    {
+        try
+        {
+            const string sql = @"
+                WITH rel AS (
+                    -- 强证据：其中一人的本名，恰好挂在另一人的曾用名里
+                    SELECT min(a1.id, a2.id) AS id1, max(a1.id, a2.id) AS id2,
+                           a1.name AS evidence, 1 AS strong
+                    FROM actors a1
+                    JOIN actor_aliases t2 ON t2.alias = a1.name
+                    JOIN actors a2 ON a2.id = t2.actor_id
+                    WHERE a1.id <> a2.id
+                    UNION ALL
+                    -- 弱证据：共享某个曾用名（也可能是第三个女优的名字被同时挂到两人名下）
+                    SELECT min(t1.actor_id, t2.actor_id), max(t1.actor_id, t2.actor_id), t1.alias, 0
+                    FROM actor_aliases t1
+                    JOIN actor_aliases t2 ON t1.alias = t2.alias AND t1.actor_id < t2.actor_id
+                ),
+                pairs AS (SELECT id1, id2, evidence, max(strong) AS strong FROM rel GROUP BY id1, id2, evidence),
+                -- SQLite 不允许 group_concat(DISTINCT x, sep)：带两个参数就不行，所以上一层先去重
+                grouped AS (SELECT id1, id2, group_concat(evidence, char(31)) AS evidences, max(strong) AS strong
+                            FROM pairs GROUP BY id1, id2)
+                SELECT g.id1, g.id2, g.evidences, g.strong,
+                       a1.name AS name1, a2.name AS name2,
+                       a1.country AS country1, a2.country AS country2,
+                       (SELECT COUNT(*) FROM video_actors v WHERE v.actor_id = g.id1) AS c1,
+                       (SELECT COUNT(*) FROM video_actors v WHERE v.actor_id = g.id2) AS c2
+                FROM grouped g
+                JOIN actors a1 ON a1.id = g.id1
+                JOIN actors a2 ON a2.id = g.id2
+                ORDER BY g.strong DESC, (c1 + c2) DESC, name1";
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            var list = new List<object>();
+            using var cmd = new SqliteCommand(sql, conn);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                list.Add(new
+                {
+                    id1 = reader.GetString(0),
+                    id2 = reader.GetString(1),
+                    name1 = reader["name1"].ToString(),
+                    name2 = reader["name2"].ToString(),
+                    country1 = reader["country1"] is null or DBNull ? null : reader["country1"].ToString(),
+                    country2 = reader["country2"] is null or DBNull ? null : reader["country2"].ToString(),
+                    videoCount1 = Convert.ToInt32(reader["c1"]),
+                    videoCount2 = Convert.ToInt32(reader["c2"]),
+                    strong = Convert.ToInt32(reader["strong"]) == 1,
+                    sharedAliases = SplitAliases(reader["evidences"])
+                });
+
+            return Ok(new { success = true, data = list, total = list.Count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "查询疑似重复演员失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 把 from 并入 to：影片关系改挂、曾用名与外链合并，from 删除。
+    ///
+    /// 这是全站唯一一个不可撤销的写操作，所以动手前先做一次即时快照。
+    /// 被合并方名下还有照片时直接拒绝 —— 图片按 &lt;艳图目录&gt;/&lt;演员ID&gt;/ 定位，
+    /// 只把行改挂到目标名下会得到一批 404，磁盘目录得由人先挪。
+    /// </summary>
+    [HttpPost("merge")]
+    public IActionResult MergeActors([FromBody] MergeActorsRequest request)
+    {
+        try
+        {
+            var from = request.From;
+            var to = request.To;
+            if (string.IsNullOrEmpty(from) || string.IsNullOrEmpty(to))
+                return Ok(new { success = false, message = "要合并的两个演员都要指定" });
+            if (from == to)
+                return Ok(new { success = false, message = "不能把自己和自己合并" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            string? fromName = null, toName = null;
+            using (var q = new SqliteCommand("SELECT id, name FROM actors WHERE id IN (@from, @to)", conn))
+            {
+                q.Parameters.Add(new SqliteParameter("@from", from));
+                q.Parameters.Add(new SqliteParameter("@to", to));
+                using var reader = q.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (reader.GetString(0) == from) fromName = reader.GetString(1);
+                    else toName = reader.GetString(1);
+                }
+            }
+
+            if (fromName is null || toName is null)
+                return Ok(new { success = false, message = "演员不存在或已被删除" });
+
+            int fromImages;
+            using (var q = new SqliteCommand("SELECT COUNT(*) FROM actor_images WHERE actor_id = @id", conn))
+            {
+                q.Parameters.Add(new SqliteParameter("@id", from));
+                fromImages = Convert.ToInt32(q.ExecuteScalar());
+            }
+
+            if (fromImages > 0)
+                return Ok(new { success = false, message = $"「{fromName}」名下还有 {fromImages} 张照片，请先把照片目录挪到「{toName}」下再合并" });
+
+            _db.BackupDatabase("合并演员前", tag: "pre-merge");
+
+            int movedVideos = 0;
+            int mergedAliases = 0;
+            int keptLinks = 0;
+
+            using var tx = conn.BeginTransaction();
+
+            // 影片关系：先补到目标名下（同一部片两人都挂着时 OR IGNORE 自然跳过），再清掉来源的
+            using (var mv = new SqliteCommand(
+                       @"INSERT OR IGNORE INTO video_actors (video_id, actor_id)
+                         SELECT video_id, @to FROM video_actors WHERE actor_id = @from;
+                         DELETE FROM video_actors WHERE actor_id = @from;", conn, tx))
+            {
+                mv.Parameters.Add(new SqliteParameter("@from", from));
+                mv.Parameters.Add(new SqliteParameter("@to", to));
+                mv.ExecuteNonQuery();
+                using var cnt = new SqliteCommand("SELECT COUNT(*) FROM video_actors WHERE actor_id = @to", conn, tx);
+                cnt.Parameters.Add(new SqliteParameter("@to", to));
+                movedVideos = Convert.ToInt32(cnt.ExecuteScalar());
+            }
+
+            // 曾用名整组搬过去，并把"她原来叫什么"也留成一条曾用名——艺名换过的人，旧名就是检索入口
+            using (var al = new SqliteCommand(
+                       @"INSERT OR IGNORE INTO actor_aliases (actor_id, alias)
+                         SELECT @to, alias FROM actor_aliases WHERE actor_id = @from;", conn, tx))
+            {
+                al.Parameters.Add(new SqliteParameter("@from", from));
+                al.Parameters.Add(new SqliteParameter("@to", to));
+                mergedAliases = al.ExecuteNonQuery();
+            }
+
+            using (var own = new SqliteCommand(
+                       "INSERT OR IGNORE INTO actor_aliases (actor_id, alias) VALUES (@to, @name)", conn, tx))
+            {
+                own.Parameters.Add(new SqliteParameter("@to", to));
+                own.Parameters.Add(new SqliteParameter("@name", fromName));
+                mergedAliases += own.ExecuteNonQuery();
+            }
+
+            // 外链走一遍统一规则（按地址去重、每人 ≤10 条），不在 SQL 里另起一套判重口径
+            var links = new List<Utils.ActorLink>();
+            using (var q = new SqliteCommand("SELECT kind, url FROM actor_links WHERE actor_id IN (@from, @to) ORDER BY actor_id = @to DESC", conn, tx))
+            {
+                q.Parameters.Add(new SqliteParameter("@from", from));
+                q.Parameters.Add(new SqliteParameter("@to", to));
+                using var reader = q.ExecuteReader();
+                while (reader.Read())
+                    links.Add(new Utils.ActorLink { Kind = reader.GetString(0), Url = reader.GetString(1) });
+            }
+
+            var merged = Utils.Links.Normalize(links);
+            using (var del = new SqliteCommand("DELETE FROM actor_links WHERE actor_id IN (@from, @to)", conn, tx))
+            {
+                del.Parameters.Add(new SqliteParameter("@from", from));
+                del.Parameters.Add(new SqliteParameter("@to", to));
+                del.ExecuteNonQuery();
+            }
+
+            foreach (var link in merged)
+            {
+                using var ins = new SqliteCommand(
+                    "INSERT INTO actor_links (id, actor_id, kind, url) VALUES (@id, @to, @kind, @url)", conn, tx);
+                ins.Parameters.Add(new SqliteParameter("@id", Guid.NewGuid().ToString("N").ToUpper()));
+                ins.Parameters.Add(new SqliteParameter("@to", to));
+                ins.Parameters.Add(new SqliteParameter("@kind", link.Kind));
+                ins.Parameters.Add(new SqliteParameter("@url", link.Url));
+                keptLinks += ins.ExecuteNonQuery();
+            }
+
+            // 目标缺的字段用来源的补上，已有的不覆盖
+            using (var fill = new SqliteCommand(
+                       @"UPDATE actors SET
+                           country = IFNULL(country, (SELECT country FROM actors WHERE id = @from)),
+                           bio     = IFNULL(bio,     (SELECT bio     FROM actors WHERE id = @from))
+                         WHERE id = @to", conn, tx))
+            {
+                fill.Parameters.Add(new SqliteParameter("@from", from));
+                fill.Parameters.Add(new SqliteParameter("@to", to));
+                fill.ExecuteNonQuery();
+            }
+
+            foreach (var child in new[] { "actor_aliases", "actor_links", "actor_images" })
+            {
+                using var del = new SqliteCommand($"DELETE FROM [{child}] WHERE actor_id = @from", conn, tx);
+                del.Parameters.Add(new SqliteParameter("@from", from));
+                del.ExecuteNonQuery();
+            }
+
+            using (var del = new SqliteCommand("DELETE FROM actors WHERE id = @from", conn, tx))
+            {
+                del.Parameters.Add(new SqliteParameter("@from", from));
+                del.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+
+            return Ok(new {
+                success = true,
+                data = new { to, name = toName, videoCount = movedVideos, aliases = mergedAliases, links = keptLinks },
+                message = $"已把「{fromName}」并入「{toName}」：现挂 {movedVideos} 部影片、{keptLinks} 条外链"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "合并演员失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
     /// 地区可选列表（统一取设置里的规范值，与影片/系列一致）
     /// </summary>
     [HttpGet("countries")]
@@ -915,6 +1143,15 @@ public class PrimaryImageRequest
 {
     [JsonPropertyName("fileName")]
     public string? FileName { get; set; }
+}
+
+/// <summary>合并重复演员：from 并进 to，to 是活下来的那个名字</summary>
+public class MergeActorsRequest
+{
+    [JsonPropertyName("from")]
+    public string? From { get; set; }
+    [JsonPropertyName("to")]
+    public string? To { get; set; }
 }
 
 public class UpdateActorRequest
