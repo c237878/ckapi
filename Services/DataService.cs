@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 4;
+    private const int TargetVersion = 5;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -234,6 +234,26 @@ public class DataService : IDataService
             rows.Count, linkRows, clearedBio, keptBio);
     }
 
+    /// <summary>
+    /// actors 加 birthdate 列。
+    ///
+    /// 新列必须走迁移：CreateBaseTables 里的 CREATE TABLE IF NOT EXISTS 对已存在的表不做任何事，
+    /// 历史库不会凭空长出这一列。
+    /// 存 ISO 文本（1987-05-16），只到月的存 1987-05 —— 补成 01 号是造假数据；
+    /// 没查到的就留 NULL，不用空串占位。
+    /// </summary>
+    private void AddActorBirthdate(SqliteConnection conn)
+    {
+        if (ColumnExists(conn, "actors", "birthdate"))
+        {
+            _logger.LogInformation("actors.birthdate 已存在，跳过");
+            return;
+        }
+
+        NonQuery(conn, "ALTER TABLE actors ADD COLUMN birthdate TEXT");
+        _logger.LogInformation("已为 actors 添加 birthdate 列");
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -246,6 +266,7 @@ public class DataService : IDataService
             .Append((2, "移除零引用的列与遗留表（见 DropDeadFields 注释）", DropDeadFields))
             .Append((3, "演员别名规范化为 actor_aliases（见 NormalizeActorAliases 注释）", NormalizeActorAliases))
             .Append((4, "演员外链从 bio 里拆到 actor_links（见 ExtractActorLinks 注释）", ExtractActorLinks))
+            .Append((5, "演员加出生日期列 birthdate（见 AddActorBirthdate 注释）", AddActorBirthdate))
             .ToArray();
     }
 
@@ -355,11 +376,12 @@ public class DataService : IDataService
 
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS actors (
-                id          TEXT    PRIMARY KEY,
-                name        TEXT    UNIQUE NOT NULL,
-                bio         TEXT,
-                ctime       TEXT,
-                country     TEXT
+                id         TEXT    PRIMARY KEY,
+                name       TEXT    UNIQUE NOT NULL,
+                bio        TEXT,
+                ctime      TEXT,
+                country    TEXT,
+                birthdate  TEXT
             )");
 
         // 曾用名一条一行。原先全塞在 actors.alias 里用空格分隔，

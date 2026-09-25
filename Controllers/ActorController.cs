@@ -15,17 +15,17 @@ public class ActorController : ControllerBase
     private readonly ILogger<ActorController> _logger;
     private readonly IConfiguration _config;
     private readonly Utils.SQLiteHelper _db;
-    private readonly Services.AvatarFetcher _fetcher;
-    private readonly Services.AvatarJob _job;
+    private readonly Services.ActorScraper _scraper;
+    private readonly Services.ScrapeJob _job;
 
     public ActorController(
         ILogger<ActorController> logger, IConfiguration config, Utils.SQLiteHelper db,
-        Services.AvatarFetcher fetcher, Services.AvatarJob job)
+        Services.ActorScraper scraper, Services.ScrapeJob job)
     {
         _logger = logger;
         _config = config;
         _db = db;
-        _fetcher = fetcher;
+        _scraper = scraper;
         _job = job;
     }
 
@@ -123,6 +123,7 @@ public class ActorController : ControllerBase
                         aliases = SplitAliases(reader["aliases"]),
                         links = SplitLinks(reader["links"]),
                         avatar = reader["avatar"] is null or DBNull ? null : reader["avatar"].ToString(),
+                        birthdate = reader["birthdate"] is null or DBNull ? null : reader["birthdate"].ToString(),
                         country = reader["country"] == DBNull.Value ? null : reader["country"].ToString(),
                         bio = reader["bio"] == DBNull.Value ? null : reader["bio"].ToString(),
                         videoCount = reader["video_count"] == DBNull.Value ? 0 : Convert.ToInt32(reader["video_count"]),
@@ -161,7 +162,7 @@ public class ActorController : ControllerBase
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
 
-            string? name, country, bio;
+            string? name, country, bio, birthdate;
             List<string> aliases;
             int likeCount;
             using (var reader = cmd.ExecuteReader())
@@ -172,6 +173,7 @@ public class ActorController : ControllerBase
                 name = reader["name"].ToString();
                 country = reader["country"] is null or DBNull ? null : reader["country"].ToString();
                 bio = reader["bio"] is null or DBNull ? null : reader["bio"].ToString();
+                birthdate = reader["birthdate"] is null or DBNull ? null : reader["birthdate"].ToString();
                 aliases = SplitAliases(reader["aliases"]);
                 likeCount = reader["like_count"] is null or DBNull ? 0 : Convert.ToInt32(reader["like_count"]);
             }
@@ -188,6 +190,7 @@ public class ActorController : ControllerBase
                     aliases,
                     country,
                     bio,
+                    birthdate,
                     likeCount,
                     links = ReadLinks(conn, id),
                     images = ReadImages(conn, id)
@@ -226,12 +229,14 @@ public class ActorController : ControllerBase
                     return Ok(new { success = false, message = "演员已存在" });
             }
 
-            var sql = @"INSERT INTO actors (id, name, country, bio, ctime) VALUES (@id, @name, @country, @bio, @addedAt)";
+            var sql = @"INSERT INTO actors (id, name, country, bio, birthdate, ctime)
+                        VALUES (@id, @name, @country, @bio, @birthdate, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@birthdate", (object?)NormalizeBirthdate(request.Birthdate) ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
             cmd.ExecuteNonQuery();
 
@@ -258,12 +263,13 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"UPDATE actors SET name = @name, country = @country, bio = @bio WHERE id = @id";
+            var sql = @"UPDATE actors SET name = @name, country = @country, bio = @bio, birthdate = @birthdate WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@birthdate", (object?)NormalizeBirthdate(request.Birthdate) ?? DBNull.Value));
 
             if (cmd.ExecuteNonQuery() <= 0)
                 return Ok(new { success = false, message = "演员不存在" });
@@ -737,12 +743,17 @@ public class ActorController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// 给一位演员抓头像：按已有的 av-wiki 档案链接、再按姓名与曾用名去查，
-    /// 命中"确定"的那一个才下载并落盘。拿不准就什么都不做。
-    /// </summary>
+    /// <summary>给一位演员抓头像（只补头像，不动已填好的简介与生日）</summary>
     [HttpPost("{id}/avatar/fetch")]
-    public async Task<IActionResult> FetchAvatar(string id, CancellationToken ct)
+    public Task<IActionResult> FetchAvatar(string id, CancellationToken ct)
+        => FetchOne(id, Services.Want.Avatar, ct, "抓取演员头像");
+
+    /// <summary>给一位演员抓资料：出生日期与简介，只填当前空着的字段</summary>
+    [HttpPost("{id}/profile/fetch")]
+    public Task<IActionResult> FetchProfile(string id, CancellationToken ct)
+        => FetchOne(id, Services.Want.Profile, ct, "抓取演员资料");
+
+    private async Task<IActionResult> FetchOne(string id, Services.Want want, CancellationToken ct, string logTag)
     {
         try
         {
@@ -753,39 +764,48 @@ public class ActorController : ControllerBase
             if (string.IsNullOrEmpty(posterDir))
                 return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
 
-            var res = await _fetcher.FetchOneAsync(conn, id, posterDir, _fetcher.DuplicateRiskIds(conn), ct);
+            var res = await _scraper.ScrapeAsync(
+                conn, id, posterDir, _scraper.DuplicateRiskIds(conn), want, ct);
             return Ok(new { success = res.Ok, message = res.Message });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "抓取演员头像失败");
+            _logger.LogError(ex, "{Tag}失败", logTag);
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
 
     /// <summary>
-    /// 启动全站头像抓取：立刻返回，进度靠 GET /avatars/fetch/status 轮询。
+    /// 启动全站抓取：立刻返回，进度靠 GET /scrape/status 轮询。
     /// 这是小时级的活，放在请求里跑的话前端一离开页面就断了，所以挪到服务端。
+    /// what = avatar | profile | all，同一时刻只允许一个任务在跑。
     /// </summary>
-    [HttpPost("avatars/fetch")]
-    public IActionResult StartAvatarFetch()
+    [HttpPost("scrape/fetch")]
+    public IActionResult StartScrape([FromBody] ScrapeRequest? request)
     {
-        var (started, message) = _job.Start();
+        var (started, message) = _job.Start(Parse(request?.What));
         return Ok(new { success = started, message, data = _job.Status() });
     }
 
     /// <summary>当前进度。没跑过也返回一份全零，前端好统一处理</summary>
-    [HttpGet("avatars/fetch/status")]
-    public IActionResult AvatarFetchStatus() => Ok(new { success = true, data = _job.Status() });
+    [HttpGet("scrape/status")]
+    public IActionResult ScrapeStatus() => Ok(new { success = true, data = _job.Status() });
 
     /// <summary>请求停止：正在处理的那一位会做完，然后任务收尾</summary>
-    [HttpDelete("avatars/fetch")]
-    public IActionResult StopAvatarFetch()
+    [HttpDelete("scrape/fetch")]
+    public IActionResult StopScrape()
     {
         if (!_job.IsRunning) return Ok(new { success = false, message = "当前没有在跑的抓取任务" });
         _job.Stop();
         return Ok(new { success = true, message = "正在停止…", data = _job.Status() });
     }
+
+    private static Services.Want Parse(string? what) => what?.ToLowerInvariant() switch
+    {
+        "avatar" => Services.Want.Avatar,
+        "profile" => Services.Want.Profile,
+        _ => Services.Want.All
+    };
 
 
     /// <summary>
@@ -958,6 +978,18 @@ public class ActorController : ControllerBase
         return cmd.ExecuteScalar() is not null;
     }
 
+    /// <summary>
+    /// 出生日期只收 YYYY / YYYY-MM / YYYY-MM-DD 三种写法，其余一律当没填。
+    /// 抓取来的是这三种，手工填也限定这三种——不引日期库做"智能解析"，
+    /// 猜错年份比留空更难发现。
+    /// </summary>
+    private static string? NormalizeBirthdate(string? raw)
+    {
+        var v = raw?.Trim();
+        if (string.IsNullOrEmpty(v)) return null;
+        return System.Text.RegularExpressions.Regex.IsMatch(v, @"^\d{4}(-\d{2}(-\d{2})?)?$") ? v : null;
+    }
+
     /// <summary>列表与详情都用 GROUP_CONCAT 一次带出别名，避免每行再查一次</summary>
     private static List<string> SplitAliases(object? value)
     {
@@ -1056,6 +1088,8 @@ public class AddActorRequest
     public string? Country { get; set; }
     [JsonPropertyName("bio")]
     public string? Bio { get; set; }
+    [JsonPropertyName("birthdate")]
+    public string? Birthdate { get; set; }
 }
 
 /// <summary>把哪张图设为演员主图（列表页那张脸）</summary>
@@ -1063,6 +1097,13 @@ public class PrimaryImageRequest
 {
     [JsonPropertyName("fileName")]
     public string? FileName { get; set; }
+}
+
+/// <summary>批量抓取的范围：avatar 只补头像、profile 只补生日与简介、all 一次查档把缺的都补上</summary>
+public class ScrapeRequest
+{
+    [JsonPropertyName("what")]
+    public string? What { get; set; }
 }
 
 /// <summary>合并重复演员：from 并进 to，to 是活下来的那个名字</summary>
@@ -1086,4 +1127,6 @@ public class UpdateActorRequest
     public string? Country { get; set; }
     [JsonPropertyName("bio")]
     public string? Bio { get; set; }
+    [JsonPropertyName("birthdate")]
+    public string? Birthdate { get; set; }
 }

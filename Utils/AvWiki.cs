@@ -15,7 +15,9 @@ namespace ckapi.Utils;
 /// </summary>
 public static class AvWiki
 {
-    public readonly record struct Profile(string Name, string Slug, string? Portrait, HashSet<string> Names, string? X);
+    public readonly record struct Profile(
+        string Name, string Slug, string? Portrait, HashSet<string> Names, string? X,
+        string? Birthdate, string? Intro);
 
     /// <summary>抓取结论：Portrait 非空即成功；否则 Reason 说明为什么不动手</summary>
     public readonly record struct Hit(Profile? Profile, string Reason)
@@ -91,6 +93,7 @@ public static class AvWiki
         var names = new HashSet<string>(StringComparer.Ordinal) { Norm(name) };
         string? portrait = null;
         string? x = null;
+        string? birthdate = null;
 
         // 档案块是 <dt>字段名</dt><dd>值</dd> 的结构，逐对取出来比按整段正则稳
         foreach (Match m in Regex.Matches(desc, @"<dt>(.*?)</dt>\s*<dd>(.*?)</dd>", RegexOptions.Singleline))
@@ -107,6 +110,10 @@ public static class AvWiki
                 foreach (var part in Regex.Split(val, "[、,，]"))
                     names.Add(Norm(CutName(part)));
             }
+            else if (key.StartsWith("生年月日"))
+            {
+                birthdate = ParseDate(val);
+            }
             else if (key.StartsWith("SNS"))
             {
                 var mx = Regex.Match(val, @"X[：:]\s*@?([A-Za-z0-9_]+)");
@@ -119,8 +126,43 @@ public static class AvWiki
         if (img.Success) portrait = img.Groups[1].Value;
 
         names.RemoveWhere(n => string.IsNullOrEmpty(n));
-        return new Profile(name, slug, portrait, names, x);
+        return new Profile(name, slug, portrait, names, x, birthdate, ParseIntro(desc));
     }
+
+    /// <summary>「1987年5月16日」→ 1987-05-16；只给到年月就存 1987-05，不补成 01 号；拿不到返回 null</summary>
+    private static string? ParseDate(string raw)
+    {
+        var m = Regex.Match(raw ?? "", @"(\d{4})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?");
+        if (!m.Success) return null;
+
+        var year = m.Groups[1].Value;
+        var month = m.Groups[2].Value;
+        var day = m.Groups[3].Value;
+        if (month.Length == 0) return year;
+        var mm = month.PadLeft(2, '0');
+        return day.Length == 0 ? $"{year}-{mm}" : $"{year}-{mm}-{day.PadLeft(2, '0')}";
+    }
+
+    /// <summary>
+    /// 档案块之前那段叙述就是站上给这位演员写的简介（出道时间、改名经历之类）。
+    /// 有的档案没有这段，返回 null 让调用方决定要不要留空。
+    /// </summary>
+    private static string? ParseIntro(string desc)
+    {
+        var cut = desc.IndexOf("AV女優名", StringComparison.Ordinal);
+        var head = cut > 0 ? desc[..cut] : desc;
+        var text = Regex.Replace(StripTags(head), @"\s+", " ").Trim();
+        if (text.Length == 0) return null;
+
+        if (text.Length <= IntroMax) return text;
+
+        // 超长就截到最近的句号，别把半句话塞进简介里
+        var slice = text[..IntroMax];
+        var stop = slice.LastIndexOfAny(new[] { '。', '．', '.' });
+        return (stop > IntroMax / 2 ? slice[..(stop + 1)] : slice).Trim();
+    }
+
+    private const int IntroMax = 400;
 
     private static string StripTags(string html) =>
         System.Net.WebUtility.HtmlDecode(Regex.Replace(html, "<[^>]+>", "")).Trim();
