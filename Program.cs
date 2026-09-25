@@ -35,6 +35,9 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddSingleton<ckapi.Utils.SQLiteHelper>(sp =>
     new ckapi.Utils.SQLiteHelper(sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<ILogger<ckapi.Utils.SQLiteHelper>>()));
 builder.Services.AddScoped<IDataService, DataService>();
+// 头像抓取：Fetcher 无状态、Job 持有进程内进度，都只需一个实例
+builder.Services.AddSingleton<ckapi.Services.AvatarFetcher>();
+builder.Services.AddSingleton<ckapi.Services.AvatarJob>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

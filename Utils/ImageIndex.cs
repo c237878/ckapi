@@ -126,4 +126,65 @@ public static class ImageIndex
 
     private static void Add(SqliteCommand cmd, string name, object value)
         => cmd.Parameters.Add(new SqliteParameter(name, value));
+
+    /// <summary>手工放图时最常见的几种"这就是头像"命名，都命中不了就按文件名取第一张</summary>
+    private static readonly string[] PrimaryHints =
+        { "默认", "头像", "default", "avatar", "cover", "main", "profile", "primary", "1", "01", "first" };
+
+    /// <summary>
+    /// 同步一位演员的目录，并保证有一张主图（列表页那张脸）。
+    /// 主图逻辑只有演员这一池有，所以留在这一层而不是通用 Sync 里。
+    /// </summary>
+    public static (int Added, int Updated, int Removed, int Total, string? Primary) SyncActor(
+        SqliteConnection conn, string actorId, string dir)
+    {
+        var stat = Sync(conn, "actor_images", "actor_id", actorId, dir);
+
+        string? primary;
+        using (var q = new SqliteCommand(
+                   "SELECT file_name FROM actor_images WHERE actor_id = @id AND is_primary = 1", conn))
+        {
+            q.Parameters.Add(new SqliteParameter("@id", actorId));
+            primary = q.ExecuteScalar()?.ToString();
+        }
+
+        if (primary is null && stat.Total > 0)
+        {
+            var files = new List<string>();
+            using (var q = new SqliteCommand(
+                       "SELECT file_name FROM actor_images WHERE actor_id = @id ORDER BY file_name", conn))
+            {
+                q.Parameters.Add(new SqliteParameter("@id", actorId));
+                using var reader = q.ExecuteReader();
+                while (reader.Read()) files.Add(reader.GetString(0));
+            }
+
+            primary = PickPrimary(files);
+            if (primary is not null)
+            {
+                using var set = new SqliteCommand(
+                    "UPDATE actor_images SET is_primary = 1 WHERE actor_id = @id AND file_name = @file", conn);
+                set.Parameters.Add(new SqliteParameter("@id", actorId));
+                set.Parameters.Add(new SqliteParameter("@file", primary));
+                set.ExecuteNonQuery();
+            }
+        }
+
+        return (stat.Added, stat.Updated, stat.Removed, stat.Total, primary);
+    }
+
+    private static string? PickPrimary(List<string> files)
+    {
+        var ordered = files.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (ordered.Count == 0) return null;
+
+        foreach (var hint in PrimaryHints)
+        {
+            var hit = ordered.FirstOrDefault(f =>
+                string.Equals(Path.GetFileNameWithoutExtension(f), hint, StringComparison.OrdinalIgnoreCase));
+            if (hit is not null) return hit;
+        }
+
+        return ordered[0];
+    }
 }
