@@ -153,16 +153,19 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            var sql = @"SELECT a.*, 
+            var sql = $@"SELECT a.*, 
                         (SELECT COUNT(*) FROM video_likes vl 
                          JOIN video_actors va ON vl.video_id = va.video_id 
                          WHERE va.actor_id = a.id) as like_count,
-                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa WHERE aa.actor_id = a.id) as aliases
+                        (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa WHERE aa.actor_id = a.id) as aliases,
+                        -- 值不值得去 av-wiki 问一句：不值得时前端直接把两个抓取按钮藏掉
+                        IFNULL({Services.ActorScraper.EligibleSql}, 0) as scrapeable
                         FROM actors a WHERE a.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
 
             string? name, country, bio, birthdate;
+            bool scrapeable;
             List<string> aliases;
             int likeCount;
             using (var reader = cmd.ExecuteReader())
@@ -174,6 +177,7 @@ public class ActorController : ControllerBase
                 country = reader["country"] is null or DBNull ? null : reader["country"].ToString();
                 bio = reader["bio"] is null or DBNull ? null : reader["bio"].ToString();
                 birthdate = reader["birthdate"] is null or DBNull ? null : reader["birthdate"].ToString();
+                scrapeable = Convert.ToInt32(reader["scrapeable"]) == 1;
                 aliases = SplitAliases(reader["aliases"]);
                 likeCount = reader["like_count"] is null or DBNull ? 0 : Convert.ToInt32(reader["like_count"]);
             }
@@ -191,6 +195,7 @@ public class ActorController : ControllerBase
                     country,
                     bio,
                     birthdate,
+                    scrapeable,
                     likeCount,
                     links = ReadLinks(conn, id),
                     images = ReadImages(conn, id)

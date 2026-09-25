@@ -20,11 +20,45 @@ public enum Want
 /// </summary>
 public sealed class ActorScraper
 {
+    /// <summary>
+    /// av-wiki 只收日本 AV 女优，所以「国家是日本」且「名下有 av 分类的影片」才值得去问。
+    ///
+    /// 省时间只是次要收益（你这库里 1598 位有 1492 位符合，跳过 106 位）；
+    /// 主要是不给错配留机会：一个中国网红的名字恰好撞上某个日文 tag，
+    /// 就会把别人的脸和简介安到她身上，而这种错法长期没人会去核对。
+    ///
+    /// '日本' 与 'av' 是 设置 → 数据源 里的规范取值；在那里改掉这两个名字，
+    /// 这里的判断要跟着改（写在 SQL 字面量里，是为了让候选查询走一个计划）。
+    /// </summary>
+    public const string EligibleSql =
+        "a.country = '日本' AND EXISTS (SELECT 1 FROM video_actors va JOIN videos v ON v.id = va.video_id" +
+        " WHERE va.actor_id = a.id AND v.category = 'av')";
+
     private readonly ILogger<ActorScraper> _logger;
 
     public ActorScraper(ILogger<ActorScraper> logger)
     {
         _logger = logger;
+    }
+
+    /// <summary>这位演员值不值得去 av-wiki 问一句；返回 null 表示值得</summary>
+    public static string? SkipReason(SqliteConnection conn, string id)
+    {
+        using var cmd = new SqliteCommand(
+            @"SELECT a.country,
+                     EXISTS (SELECT 1 FROM video_actors va JOIN videos v ON v.id = va.video_id
+                             WHERE va.actor_id = a.id AND v.category = 'av')
+              FROM actors a WHERE a.id = @id", conn);
+        cmd.Parameters.Add(new SqliteParameter("@id", id));
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) return null;   // 不存在由调用方处理
+
+        var country = reader.IsDBNull(0) ? null : reader.GetString(0);
+        var hasAv = reader.GetInt32(1) == 1;
+
+        if (country != "日本") return $"国家是「{(string.IsNullOrEmpty(country) ? "未填" : country)}」，av-wiki 只收日本片源";
+        if (!hasAv) return "名下没有 av 分类的影片，av-wiki 只收日本片源";
+        return null;
     }
 
     /// <summary>
@@ -67,7 +101,7 @@ public sealed class ActorScraper
         var list = new List<string>();
         using var cmd = new SqliteCommand(
             $@"SELECT a.id FROM actors a
-                WHERE {missing}
+                WHERE {missing} AND {EligibleSql}
                 ORDER BY (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) DESC, a.name", conn);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -133,6 +167,10 @@ public sealed class ActorScraper
         var needAvatar = want.HasFlag(Want.Avatar) && images == 0;
         var needProfile = want.HasFlag(Want.Profile) && (birthdate is null || string.IsNullOrWhiteSpace(bio));
 
+        // 先按片源挡一道：非日本、名下没有 av 片的，av-wiki 上本来就没有对应档案，
+        // 硬去问只会浪费时间，还可能撞上同名的另一个人
+        var skip = SkipReason(conn, id);
+        if (skip is not null) return (false, $"{skip}，跳过");
         if (risk.Contains(id)) return (false, "该演员还在查重候选里，先合并再抓");
         if (!needAvatar && !needProfile)
         {
