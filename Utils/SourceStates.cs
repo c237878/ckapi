@@ -22,16 +22,21 @@ public static class SourceStates
 
     /// <summary>
     /// 分辨率档位 → SQL 条件。全是写死的常量，没有一处拼用户输入。
-    /// 档位按显示高的常见分界切；"未扫描"单开一档，好让人看出还有哪些没量过。
+    ///
+    /// 按**短边**（min(宽,高)）切档，不按高度：横屏的短边就是高度，两种口径对横屏完全等价；
+    /// 差别只在竖屏那 188 条——720×1280 按高度会报成"1280p"、1440×2560 更是直接掉进 4K 档，
+    /// 而手机视频通行的叫法就是按短边叫 720p / 1440p。
+    /// 两个值都在库里存着，详情页原样显示"720×1280"，这里只管归档。
+    /// 未扫描的单开一档，好让人看出还有哪些没量过。
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> Resolutions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["unscanned"] = "v.res_h IS NULL",
-            ["sd"] = "v.res_h > 0 AND v.res_h < 480",
-            ["480"] = "v.res_h >= 480 AND v.res_h < 720",
-            ["720"] = "v.res_h >= 720 AND v.res_h < 1080",
-            ["1080"] = "v.res_h >= 1080 AND v.res_h < 2048",
-            ["2160"] = "v.res_h >= 2048"
+            ["sd"] = "MIN(v.res_w, v.res_h) < 480",
+            ["480"] = "MIN(v.res_w, v.res_h) >= 480 AND MIN(v.res_w, v.res_h) < 720",
+            ["720"] = "MIN(v.res_w, v.res_h) >= 720 AND MIN(v.res_w, v.res_h) < 1080",
+            ["1080"] = "MIN(v.res_w, v.res_h) >= 1080 AND MIN(v.res_w, v.res_h) < 2048",
+            ["2160"] = "MIN(v.res_w, v.res_h) >= 2048"
         };
 }
