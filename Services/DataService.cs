@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 6;
+    private const int TargetVersion = 7;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -269,9 +269,8 @@ public class DataService : IDataService
     /// 1 劣质在新口径里没有对应维度（它说的是清晰度，而清晰度这次由扫描客观量出来），
     /// 所以两个状态都留 unknown，不去猜它当年指的是广告还是糊。
     ///
-    /// watched 这一列不是为了展示，是为了保住旧代码里"非 0 就是看过"的暗号：
-    /// 今日推荐和首页排序都拿 media_attr_flags = 0 当"没看过"用。拆分后不能再用两个状态推这个结论，
-    /// 因为字幕与分辨率是扫描自动填的——一扫完所有影片都变成"有结论"，今日推荐就再也推不出东西了。
+    /// 这里曾经还多建了一列 watched 来存"非 0 就是看过"的暗号，v7 又删掉了：
+    /// 扫描只写分辨率之后，两个状态有结论只可能是人工标的，直接推导即可，不必存两份会分叉的事实。
     /// </summary>
     private void SplitSourceAttributes(SqliteConnection conn)
     {
@@ -304,9 +303,34 @@ public class DataService : IDataService
         int Of(int flag) => byFlag.TryGetValue(flag, out var n) ? n : 0;
         _logger.LogInformation(
             "片源标记拆分完成：无字幕 {Missing} 条 → subtitle_state=missing，完美 {Has} 条 → has，" +
-            "劣质 {Poor} 条不映射（清晰度改由扫描量），未标记 {Blank} 条两维均为 unknown；" +
-            "已标记的 {Watched} 条转成 watched=1，media_attr_flags 列已删除",
-            Of(2), Of(3), Of(1), Of(0), byFlag.Where(kv => kv.Key != 0).Sum(kv => kv.Value));
+            "劣质 {Poor} 条不映射（清晰度改由扫描量），未标记 {Blank} 条两维均为 unknown；media_attr_flags 列已删除",
+            Of(2), Of(3), Of(1), Of(0));
+    }
+
+    /// <summary>
+    /// 删掉 v6 顺手加的 videos.watched。
+    ///
+    /// 加它是因为旧代码拿"media_attr_flags 非 0"当"看过"用，拆成两维后怕推不回来：
+    /// 那时扫描还会顺带把字幕填成 has，一扫完全站就都成"有结论"了，今日推荐没有片可推。
+    /// 现在扫描只写分辨率，两个状态只要有一个不是 unknown 就必定是人工标的，
+    /// 直接推导即可（见 Utils.SourceStates.Unrated），存一份副本只会和真值分叉。
+    ///
+    /// 代价说清楚：v6 里那 300 条"劣质"两维都是 unknown，从此按"没看过"算，
+    /// 会重新进今日推荐——按新口径它们确实还没给过结论，等再看到时顺手按两维标一次。
+    /// </summary>
+    private void DropWatchedFlag(SqliteConnection conn)
+    {
+        if (!ColumnExists(conn, "videos", "watched"))
+        {
+            _logger.LogInformation("videos.watched 已不存在，跳过");
+            return;
+        }
+
+        var rated = Convert.ToInt32(Scalar(conn, "SELECT COUNT(*) FROM videos WHERE watched = 1") ?? 0);
+        NonQuery(conn, "ALTER TABLE videos DROP COLUMN watched");
+        _logger.LogInformation(
+            "已删除 videos.watched 列（{Rated} 条曾标过看过）：改由两维是否均未标记推导，" +
+            "其中两维都是 unknown 的那些会重新按没看过参与推荐", rated);
     }
 
     private readonly ILogger<DataService> _logger;
@@ -323,6 +347,7 @@ public class DataService : IDataService
             .Append((4, "演员外链从 bio 里拆到 actor_links（见 ExtractActorLinks 注释）", ExtractActorLinks))
             .Append((5, "演员加出生日期列 birthdate（见 AddActorBirthdate 注释）", AddActorBirthdate))
             .Append((6, "片源复合标记拆成字幕 + 广告水印两维，加分辨率列（见 SplitSourceAttributes 注释）", SplitSourceAttributes))
+            .Append((7, "删掉 videos.watched，看过与否改由两维是否均未标记推导（见 DropWatchedFlag 注释）", DropWatchedFlag))
             .ToArray();
     }
 
@@ -429,7 +454,6 @@ public class DataService : IDataService
                 sort_order      INTEGER DEFAULT 0,
                 subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
                 watermark_state TEXT    NOT NULL DEFAULT 'unknown',
-                watched         INTEGER NOT NULL DEFAULT 0,
                 res_w           INTEGER,
                 res_h           INTEGER,
                 scan_time       TEXT

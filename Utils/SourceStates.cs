@@ -21,6 +21,17 @@ public static class SourceStates
     public static bool IsWatermark(string? value) => value is not null && Array.IndexOf(Watermark, value) >= 0;
 
     /// <summary>
+    /// "没看过"的 SQL 口径：**两维都没给结论**（都还是 unknown）。
+    /// 今日推荐与首页排序用它挑片，不再单开一列存"看过"——
+    /// 扫描只写分辨率、不写字幕，所以"有结论"这件事只可能来自人工标记，反推是可靠的。
+    /// 反过来也提醒一句：哪天让扫描或别的自动途径去填这两个状态，这个口径就当场失效了
+    /// （全站都会变成"有结论"，今日推荐没有片可推）。
+    /// 表别名固定为 v，与 VideoCardQuery 一致。
+    /// </summary>
+    public const string Unrated =
+        "(v.subtitle_state = 'unknown' AND v.watermark_state = 'unknown')";
+
+    /// <summary>
     /// 分辨率档位 → SQL 条件。全是写死的常量，没有一处拼用户输入。
     ///
     /// 按**短边**（min(宽,高)）切档，不按高度：横屏的短边就是高度，两种口径对横屏完全等价；

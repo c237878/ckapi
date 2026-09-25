@@ -51,10 +51,7 @@ public class VideoSourceController : ControllerBase
             const string update = @"
                 UPDATE videos
                 SET subtitle_state  = COALESCE(@subtitle, subtitle_state),
-                    watermark_state = COALESCE(@watermark, watermark_state),
-                    watched = CASE WHEN COALESCE(NULLIF(@subtitle, 'unknown'),
-                                                 NULLIF(@watermark, 'unknown')) IS NOT NULL
-                                   THEN 1 ELSE watched END
+                    watermark_state = COALESCE(@watermark, watermark_state)
                 WHERE id = @id";
 
             using (var cmd = new SqliteCommand(update, conn))
@@ -66,17 +63,8 @@ public class VideoSourceController : ControllerBase
                     return NotFound(new { success = false, message = "视频不存在" });
             }
 
-            // 两维都清回未标，就当这次结论没给过：今日推荐要能重新推出来
-            using (var clear = new SqliteCommand(@"
-                UPDATE videos SET watched = 0
-                WHERE id = @id AND subtitle_state = 'unknown' AND watermark_state = 'unknown'", conn))
-            {
-                clear.Parameters.AddWithValue("@id", id);
-                clear.ExecuteNonQuery();
-            }
-
             using var read = new SqliteCommand(
-                "SELECT subtitle_state, watermark_state, watched FROM videos WHERE id = @id", conn);
+                "SELECT subtitle_state, watermark_state FROM videos WHERE id = @id", conn);
             read.Parameters.AddWithValue("@id", id);
             using var reader = read.ExecuteReader();
             if (!reader.Read()) return NotFound(new { success = false, message = "视频不存在" });
@@ -88,8 +76,7 @@ public class VideoSourceController : ControllerBase
                 data = new
                 {
                     subtitleState = reader.GetString(0),
-                    watermarkState = reader.GetString(1),
-                    watched = reader.GetInt32(2) == 1
+                    watermarkState = reader.GetString(1)
                 }
             });
         }

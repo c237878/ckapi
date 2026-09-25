@@ -16,7 +16,7 @@ public static class VideoCardQuery
     /// <summary>不含系列名</summary>
     public const string Columns = """
         v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-        v.seriesid, v.ctime, v.subtitle_state, v.watermark_state, v.res_w, v.res_h, v.watched,
+        v.seriesid, v.ctime, v.subtitle_state, v.watermark_state, v.res_w, v.res_h,
         (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
         (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a
          JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) AS actor_names
@@ -47,7 +47,6 @@ public static class VideoCardQuery
             ["watermarkState"] = Str(reader, "watermark_state") ?? Utils.SourceStates.Unknown,
             ["resW"] = Int(reader, "res_w"),
             ["resH"] = Int(reader, "res_h"),
-            ["watched"] = Int(reader, "watched") == 1,
         };
 
         if (HasColumn(reader, "scan_time")) result["scanTime"] = Str(reader, "scan_time");

@@ -54,15 +54,15 @@ public class VideoController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            // 排序：首页分类板块优先没给过片源结论的（watched=0），给过的同等优先级。
-            // 这里不能用两个状态推"没看过"——字幕与分辨率是扫描自动填的，那样全站都会变成看过。
+            // 排序：首页分类板块优先"没给过片源结论"的（两维都还是 unknown），给过的同等优先级。
+            // 这个口径可靠的前提是扫描不碰这两个状态（只写分辨率），否则一扫完全站都成"有结论"。
             var orderBy = sortBy?.ToLower() switch
             {
                 "code" => "v.code ASC",
                 "name" => "v.name ASC",
                 "likecount" => "like_count DESC",
                 _ => prioritizeUnrated == true
-                    ? "CASE WHEN v.watched = 0 THEN 0 ELSE 1 END, v.ctime DESC"
+                    ? $"CASE WHEN {Utils.SourceStates.Unrated} THEN 0 ELSE 1 END, v.ctime DESC"
                     : "v.ctime DESC"
             };
             // 并列行按 id 收尾：否则 like_count/ctime 相同的影片在翻页时来回换位
@@ -290,7 +290,7 @@ public class VideoController : ControllerBase
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.category = @category AND v.file_size > 0
-                ORDER BY CASE WHEN v.watched = 0 THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
+                ORDER BY CASE WHEN {Utils.SourceStates.Unrated} THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
                 LIMIT @limit";
 
             var sections = new List<object>();
@@ -867,7 +867,7 @@ public class VideoController : ControllerBase
     private static readonly object _dailyRecommendLock = new();
 
     /// <summary>
-    /// 首页 - 今日推荐：优先还没看过的（watched = 0），
+    /// 首页 - 今日推荐：优先还没看过片的（两维都还没给结论），
     /// 只有未看过的不够数时才掺入看过的。id 列表按天缓存，卡片字段每次现查。
     /// </summary>
     [HttpGet("daily-recommend")]
@@ -919,8 +919,8 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 挑今日推荐的 id：未看过（watched = 0 或列未设置）的先占满名额，
-    /// 不够 count 才从看过的里补。
+    /// 挑今日推荐的 id：没给过片源结论的（两维都还是 unknown）先占满名额，
+    /// 不够 count 才从有结论的里补。
     ///
     /// 旧实现是先取"全库 60%"做候选池再在池子里均匀随机，
     /// ORDER BY 的优先级只决定谁进池、进池后就不起作用了，
@@ -929,11 +929,12 @@ public class VideoController : ControllerBase
     private static List<string> PickDailyRecommendIds(SqliteConnection conn, int count)
     {
         var picked = new List<string>(count);
+        var unrated = Utils.SourceStates.Unrated;
 
         // 两个查询的 WHERE 互斥，补位时不必再排除已选 id
-        using (var cmd = new SqliteCommand(@"
+        using (var cmd = new SqliteCommand($@"
             SELECT v.id FROM videos v
-            WHERE v.file_size > 0 AND IFNULL(v.watched, 0) = 0
+            WHERE v.file_size > 0 AND {unrated}
             ORDER BY RANDOM()
             LIMIT @count", conn))
         {
@@ -945,9 +946,9 @@ public class VideoController : ControllerBase
         var missing = count - picked.Count;
         if (missing > 0)
         {
-            using (var cmd = new SqliteCommand(@"
+            using (var cmd = new SqliteCommand($@"
                 SELECT v.id FROM videos v
-                WHERE v.file_size > 0 AND IFNULL(v.watched, 0) <> 0
+                WHERE v.file_size > 0 AND NOT {unrated}
                 ORDER BY RANDOM()
                 LIMIT @missing", conn))
             {

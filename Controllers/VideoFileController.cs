@@ -138,7 +138,6 @@ public class VideoFileController : ControllerBase
                     cover_path = @cp,
                     subtitle_state = 'unknown',
                     watermark_state = 'unknown',
-                    watched = 0,
                     res_w = NULL,
                     res_h = NULL,
                     scan_time = NULL,
