@@ -586,7 +586,8 @@ public class ActorController : ControllerBase
     /// </summary>
     [HttpGet("{id}/videos")]
     public IActionResult GetActorVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
-        [FromQuery] int? mediaAttrFlags = null, [FromQuery] bool? hasFile = null)
+        [FromQuery] string? subtitle = null, [FromQuery] string? watermark = null,
+        [FromQuery] string? resolution = null, [FromQuery] bool? hasFile = null)
     {
         try
         {
@@ -596,11 +597,11 @@ public class ActorController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 片源/下载状态筛选下沉到 SQL：原先前端在已分页的结果里再过滤一次，
+            // 片源两维/分辨率/下载状态筛选下沉到 SQL：原先前端在已分页的结果里再过滤一次，
             // 只能筛到当前页，页数不同结果就不同。
             var where = "WHERE va.actor_id = @actorId";
             var parameters = new List<SqliteParameter> { new("@actorId", id) };
-            VideoCardQuery.AppendCommonFilters(ref where, parameters, mediaAttrFlags, hasFile);
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, subtitle, watermark, resolution, hasFile);
 
             var countSql = $@"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))

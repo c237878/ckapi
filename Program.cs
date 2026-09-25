@@ -38,6 +38,9 @@ builder.Services.AddScoped<IDataService, DataService>();
 // av-wiki 抓取：Scraper 无状态、Job 持有进程内进度，都只需一个实例
 builder.Services.AddSingleton<ckapi.Services.ActorScraper>();
 builder.Services.AddSingleton<ckapi.Services.ScrapeJob>();
+// 片源扫描（分辨率 + 字幕证据）：同上
+builder.Services.AddSingleton<ckapi.Services.SourceScanner>();
+builder.Services.AddSingleton<ckapi.Services.SourceScanJob>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

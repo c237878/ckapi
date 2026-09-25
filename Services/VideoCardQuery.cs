@@ -16,7 +16,7 @@ public static class VideoCardQuery
     /// <summary>不含系列名</summary>
     public const string Columns = """
         v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
-        v.seriesid, v.ctime, v.media_attr_flags,
+        v.seriesid, v.ctime, v.subtitle_state, v.watermark_state, v.res_w, v.res_h, v.watched,
         (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
         (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a
          JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) AS actor_names
@@ -42,9 +42,15 @@ public static class VideoCardQuery
             ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
             ["coverPath"] = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString(),
             ["seriesId"] = reader["seriesid"] == DBNull.Value ? null : reader["seriesid"].ToString(),
-            ["mediaAttrFlags"] = Int(reader, "media_attr_flags"),
+            // 两维都给了默认值：前端只要拿到字符串就能直接查文案表，不必再判空
+            ["subtitleState"] = Str(reader, "subtitle_state") ?? Utils.SourceStates.Unknown,
+            ["watermarkState"] = Str(reader, "watermark_state") ?? Utils.SourceStates.Unknown,
+            ["resW"] = Int(reader, "res_w"),
+            ["resH"] = Int(reader, "res_h"),
+            ["watched"] = Int(reader, "watched") == 1,
         };
 
+        if (HasColumn(reader, "scan_time")) result["scanTime"] = Str(reader, "scan_time");
         if (HasColumn(reader, "like_count")) result["likeCount"] = Int(reader, "like_count");
         if (HasColumn(reader, "series_name")) result["seriesName"] = Str(reader, "series_name");
         if (HasColumn(reader, "actor_names")) result["actorNames"] = Str(reader, "actor_names");
@@ -63,20 +69,33 @@ public static class VideoCardQuery
     }
 
     /// <summary>
-    /// 拼接"片源标记 / 是否已下载"两个共用筛选项。
-    /// 表别名固定为 v，与 Columns / ColumnsWithSeries 一致。
-    /// 返回的片段以 AND 开头，可直接追加到已有 WHERE 之后。
+    /// 列表页共用的片源筛选项：字幕 / 广告水印 / 分辨率档 / 有没有文件。
+    /// 三个字符串条件都过白名单，取值不在口径里就当没筛——不能让前端传来的字符串进 SQL。
+    /// 表别名固定为 v，与 Columns / ColumnsWithSeries 一致；返回的片段以 AND 开头。
     /// </summary>
     public static string AppendCommonFilters(
         ref string where,
         List<SqliteParameter> parameters,
-        int? mediaAttrFlags,
+        string? subtitle,
+        string? watermark,
+        string? resolution,
         bool? hasFile)
     {
-        if (mediaAttrFlags.HasValue)
+        if (Utils.SourceStates.IsSubtitle(subtitle))
         {
-            where += " AND v.media_attr_flags = @mediaAttrFlags";
-            parameters.Add(new SqliteParameter("@mediaAttrFlags", mediaAttrFlags.Value));
+            where += " AND v.subtitle_state = @subtitleState";
+            parameters.Add(new SqliteParameter("@subtitleState", subtitle));
+        }
+
+        if (Utils.SourceStates.IsWatermark(watermark))
+        {
+            where += " AND v.watermark_state = @watermarkState";
+            parameters.Add(new SqliteParameter("@watermarkState", watermark));
+        }
+
+        if (resolution is not null && Utils.SourceStates.Resolutions.TryGetValue(resolution, out var clause))
+        {
+            where += $" AND ({clause})";
         }
 
         if (hasFile == true)

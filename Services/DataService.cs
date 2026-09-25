@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 5;
+    private const int TargetVersion = 6;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -39,6 +39,8 @@ public class DataService : IDataService
     {
         (1, "补齐历史库缺失列（comics.status / scan_directories.category / video_likes.target_type 等）", c =>
         {
+            // media_attr_flags 在 v6 被拆掉，但这里必须留着：从 version=0 的旧备份重放时，
+            // v6 的值映射要读它，少了这一行老库就没有这一列可搬。
             AddColumnIfMissing(c, "videos", "media_attr_flags", "INTEGER DEFAULT 0");
             AddColumnIfMissing(c, "videos", "sort_order", "INTEGER DEFAULT 0");
             AddColumnIfMissing(c, "videos", "code", "TEXT");
@@ -254,6 +256,59 @@ public class DataService : IDataService
         _logger.LogInformation("已为 actors 添加 birthdate 列");
     }
 
+    /// <summary>
+    /// 把复合的 videos.media_attr_flags 拆成两个独立维度，并给分辨率留出位置。
+    ///
+    /// 旧口径是一根一维的梯子：劣质 &lt; 无字幕 &lt; 完美。前两格说的其实是互不相干的两件事
+    /// （画面干不干净 / 字幕在不在），挤在一格里既写不清也筛不准。拆成：
+    ///
+    ///   subtitle_state：unknown 未标 · none 发行版本就没字幕 · missing 这片有字幕但这份没带上 · has 有字幕
+    ///   watermark_state：unknown 未标 · none 没有台标与广告 · light 角落台标 · heavy 满屏广告
+    ///
+    /// 只搬"确定说得通"的值：2 无字幕 → missing（旧的长文案就是"缺少字幕文件"），3 完美 → has。
+    /// 1 劣质在新口径里没有对应维度（它说的是清晰度，而清晰度这次由扫描客观量出来），
+    /// 所以两个状态都留 unknown，不去猜它当年指的是广告还是糊。
+    ///
+    /// watched 这一列不是为了展示，是为了保住旧代码里"非 0 就是看过"的暗号：
+    /// 今日推荐和首页排序都拿 media_attr_flags = 0 当"没看过"用。拆分后不能再用两个状态推这个结论，
+    /// 因为字幕与分辨率是扫描自动填的——一扫完所有影片都变成"有结论"，今日推荐就再也推不出东西了。
+    /// </summary>
+    private void SplitSourceAttributes(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "videos", "subtitle_state", "TEXT NOT NULL DEFAULT 'unknown'");
+        AddColumnIfMissing(conn, "videos", "watermark_state", "TEXT NOT NULL DEFAULT 'unknown'");
+        AddColumnIfMissing(conn, "videos", "watched", "INTEGER NOT NULL DEFAULT 0");
+        AddColumnIfMissing(conn, "videos", "res_w", "INTEGER");
+        AddColumnIfMissing(conn, "videos", "res_h", "INTEGER");
+        AddColumnIfMissing(conn, "videos", "scan_time", "TEXT");
+
+        if (!ColumnExists(conn, "videos", "media_attr_flags"))
+        {
+            _logger.LogInformation("videos.media_attr_flags 已不存在，跳过值映射");
+            return;
+        }
+
+        var byFlag = new Dictionary<int, int>();
+        using (var read = new SqliteCommand(
+                   "SELECT IFNULL(media_attr_flags, 0) AS flag, COUNT(*) AS n FROM videos GROUP BY flag", conn))
+        using (var reader = read.ExecuteReader())
+        {
+            while (reader.Read()) byFlag[reader.GetInt32(0)] = reader.GetInt32(1);
+        }
+
+        NonQuery(conn, "UPDATE videos SET watched = 1 WHERE IFNULL(media_attr_flags, 0) <> 0");
+        NonQuery(conn, "UPDATE videos SET subtitle_state = 'missing' WHERE media_attr_flags = 2");
+        NonQuery(conn, "UPDATE videos SET subtitle_state = 'has' WHERE media_attr_flags = 3");
+        NonQuery(conn, "ALTER TABLE videos DROP COLUMN media_attr_flags");
+
+        int Of(int flag) => byFlag.TryGetValue(flag, out var n) ? n : 0;
+        _logger.LogInformation(
+            "片源标记拆分完成：无字幕 {Missing} 条 → subtitle_state=missing，完美 {Has} 条 → has，" +
+            "劣质 {Poor} 条不映射（清晰度改由扫描量），未标记 {Blank} 条两维均为 unknown；" +
+            "已标记的 {Watched} 条转成 watched=1，media_attr_flags 列已删除",
+            Of(2), Of(3), Of(1), Of(0), byFlag.Where(kv => kv.Key != 0).Sum(kv => kv.Value));
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -267,6 +322,7 @@ public class DataService : IDataService
             .Append((3, "演员别名规范化为 actor_aliases（见 NormalizeActorAliases 注释）", NormalizeActorAliases))
             .Append((4, "演员外链从 bio 里拆到 actor_links（见 ExtractActorLinks 注释）", ExtractActorLinks))
             .Append((5, "演员加出生日期列 birthdate（见 AddActorBirthdate 注释）", AddActorBirthdate))
+            .Append((6, "片源复合标记拆成字幕 + 广告水印两维，加分辨率列（见 SplitSourceAttributes 注释）", SplitSourceAttributes))
             .ToArray();
     }
 
@@ -360,18 +416,23 @@ public class DataService : IDataService
     {
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS videos (
-                id               TEXT    PRIMARY KEY,
-                name             TEXT    NOT NULL,
-                category         TEXT    NOT NULL,
-                file_path        TEXT,
-                file_size        INTEGER,
-                cover_path       TEXT,
-                code             TEXT,
-                country          TEXT DEFAULT '',
-                seriesid         TEXT,
-                ctime            TEXT,
-                media_attr_flags INTEGER DEFAULT 0,
-                sort_order       INTEGER DEFAULT 0
+                id              TEXT    PRIMARY KEY,
+                name            TEXT    NOT NULL,
+                category        TEXT    NOT NULL,
+                file_path       TEXT,
+                file_size       INTEGER,
+                cover_path      TEXT,
+                code            TEXT,
+                country         TEXT DEFAULT '',
+                seriesid        TEXT,
+                ctime           TEXT,
+                sort_order      INTEGER DEFAULT 0,
+                subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
+                watermark_state TEXT    NOT NULL DEFAULT 'unknown',
+                watched         INTEGER NOT NULL DEFAULT 0,
+                res_w           INTEGER,
+                res_h           INTEGER,
+                scan_time       TEXT
             )");
 
         NonQuery(conn, @"

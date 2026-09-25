@@ -155,7 +155,8 @@ public class SeriesController : ControllerBase
     /// </summary>
     [HttpGet("{id}/videos")]
     public IActionResult GetSeriesVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
-        [FromQuery] int? mediaAttrFlags = null, [FromQuery] bool? hasFile = null)
+        [FromQuery] string? subtitle = null, [FromQuery] string? watermark = null,
+        [FromQuery] string? resolution = null, [FromQuery] bool? hasFile = null)
     {
         try
         {
@@ -168,7 +169,7 @@ public class SeriesController : ControllerBase
             // 同演员详情页：筛选下沉到 SQL，前端客户端过滤只能作用当前页。
             var where = "WHERE v.seriesid = @seriesid";
             var parameters = new List<SqliteParameter> { new("@seriesid", id) };
-            VideoCardQuery.AppendCommonFilters(ref where, parameters, mediaAttrFlags, hasFile);
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, subtitle, watermark, resolution, hasFile);
 
             var countSql = $"SELECT COUNT(*) FROM videos v {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))

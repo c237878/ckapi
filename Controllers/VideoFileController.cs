@@ -136,7 +136,12 @@ public class VideoFileController : ControllerBase
                 SET file_path = @fp,
                     file_size = @fs,
                     cover_path = @cp,
-                    media_attr_flags = 0,
+                    subtitle_state = 'unknown',
+                    watermark_state = 'unknown',
+                    watched = 0,
+                    res_w = NULL,
+                    res_h = NULL,
+                    scan_time = NULL,
                     ctime = CASE WHEN @updateCtime = 1 THEN @ctime ELSE ctime END
                 WHERE id = @id";
 
@@ -284,43 +289,6 @@ public class VideoFileController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "UpdateFileInfo failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    /// <summary>
-    /// 更新媒体属性标志（片源质量）
-    /// </summary>
-    [HttpPut("{id}/media-flags")]
-    public IActionResult UpdateMediaFlags(string id, [FromBody] UpdateMediaFlagsRequest req)
-    {
-        try
-        {
-            if (req.Flags < 0 || req.Flags > 3)
-                return Ok(new { success = false, message = "flags 值必须在 0~3 之间" });
-
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 检查当前值，如果已设置（非0）则不允许修改
-            using var checkCmd = new SqliteCommand("SELECT media_attr_flags FROM videos WHERE id = @id", conn);
-            checkCmd.Parameters.Add(new SqliteParameter("@id", id));
-            var current = Convert.ToInt32(checkCmd.ExecuteScalar() ?? 0);
-            if (current != 0)
-                return Ok(new { success = false, message = "片源质量已设置，不可修改。请先重置后再设置。" });
-
-            using var cmd = new SqliteCommand("UPDATE videos SET media_attr_flags = @flags WHERE id = @id", conn);
-            cmd.Parameters.Add(new SqliteParameter("@flags", req.Flags));
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
-            var rows = cmd.ExecuteNonQuery();
-            if (rows == 0)
-                return NotFound(new { success = false, message = "视频不存在" });
-
-            return Ok(new { success = true, message = "片源质量已更新", data = new { mediaAttrFlags = req.Flags } });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "UpdateMediaFlags failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }

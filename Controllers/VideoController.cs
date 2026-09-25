@@ -40,7 +40,9 @@ public class VideoController : ControllerBase
         [FromQuery] string? keyword = null,
         [FromQuery] string? seriesId = null,
         [FromQuery] bool? hasFile = null,
-        [FromQuery] int? mediaAttrFlags = null,
+        [FromQuery] string? subtitle = null,
+        [FromQuery] string? watermark = null,
+        [FromQuery] string? resolution = null,
         [FromQuery] bool? prioritizeUnrated = null,
         [FromQuery] string? sortBy = null)
     {
@@ -52,14 +54,15 @@ public class VideoController : ControllerBase
             var whereClause = "WHERE 1=1";
             var parameters = new List<SqliteParameter>();
 
-            // 排序：首页分类板块优先 media_attr_flags=0，非0同等优先级
+            // 排序：首页分类板块优先没给过片源结论的（watched=0），给过的同等优先级。
+            // 这里不能用两个状态推"没看过"——字幕与分辨率是扫描自动填的，那样全站都会变成看过。
             var orderBy = sortBy?.ToLower() switch
             {
                 "code" => "v.code ASC",
                 "name" => "v.name ASC",
                 "likecount" => "like_count DESC",
                 _ => prioritizeUnrated == true
-                    ? "CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, v.ctime DESC"
+                    ? "CASE WHEN v.watched = 0 THEN 0 ELSE 1 END, v.ctime DESC"
                     : "v.ctime DESC"
             };
             // 并列行按 id 收尾：否则 like_count/ctime 相同的影片在翻页时来回换位
@@ -89,25 +92,8 @@ public class VideoController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            // 根据 hasFile 参数过滤
-            if (hasFile.HasValue)
-            {
-                if (hasFile.Value)
-                {
-                    whereClause += " AND v.file_size > 0";
-                }
-                else
-                {
-                    whereClause += " AND (v.file_size IS NULL OR v.file_size <= 0)";
-                }
-            }
-
-            // 根据 mediaAttrFlags 过滤
-            if (mediaAttrFlags.HasValue)
-            {
-                whereClause += " AND v.media_attr_flags = @mediaAttrFlags";
-                parameters.Add(new SqliteParameter("@mediaAttrFlags", mediaAttrFlags.Value));
-            }
+            // 片源两维 / 分辨率档 / 有没有文件：与系列页、演员页共用一套口径
+            VideoCardQuery.AppendCommonFilters(ref whereClause, parameters, subtitle, watermark, resolution, hasFile);
 
             using var conn = GetConnection();
             conn.Open();
@@ -304,7 +290,7 @@ public class VideoController : ControllerBase
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.category = @category AND v.file_size > 0
-                ORDER BY CASE WHEN v.media_attr_flags = 0 THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
+                ORDER BY CASE WHEN v.watched = 0 THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
                 LIMIT @limit";
 
             var sections = new List<object>();
@@ -881,7 +867,7 @@ public class VideoController : ControllerBase
     private static readonly object _dailyRecommendLock = new();
 
     /// <summary>
-    /// 首页 - 今日推荐：优先还没看过的（media_attr_flags = 0），
+    /// 首页 - 今日推荐：优先还没看过的（watched = 0），
     /// 只有未看过的不够数时才掺入看过的。id 列表按天缓存，卡片字段每次现查。
     /// </summary>
     [HttpGet("daily-recommend")]
@@ -933,7 +919,7 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 挑今日推荐的 id：未看过（media_attr_flags 为 0 或未设置）的先占满名额，
+    /// 挑今日推荐的 id：未看过（watched = 0 或列未设置）的先占满名额，
     /// 不够 count 才从看过的里补。
     ///
     /// 旧实现是先取"全库 60%"做候选池再在池子里均匀随机，
@@ -947,7 +933,7 @@ public class VideoController : ControllerBase
         // 两个查询的 WHERE 互斥，补位时不必再排除已选 id
         using (var cmd = new SqliteCommand(@"
             SELECT v.id FROM videos v
-            WHERE v.file_size > 0 AND (v.media_attr_flags IS NULL OR v.media_attr_flags = 0)
+            WHERE v.file_size > 0 AND IFNULL(v.watched, 0) = 0
             ORDER BY RANDOM()
             LIMIT @count", conn))
         {
@@ -961,7 +947,7 @@ public class VideoController : ControllerBase
         {
             using (var cmd = new SqliteCommand(@"
                 SELECT v.id FROM videos v
-                WHERE v.file_size > 0 AND v.media_attr_flags IS NOT NULL AND v.media_attr_flags <> 0
+                WHERE v.file_size > 0 AND IFNULL(v.watched, 0) <> 0
                 ORDER BY RANDOM()
                 LIMIT @missing", conn))
             {
@@ -1237,12 +1223,6 @@ public class UpdateFileInfoRequest
 {
     public string? FilePath { get; set; }
     public string? CoverPath { get; set; }
-}
-
-public class UpdateMediaFlagsRequest
-{
-    [JsonPropertyName("flags")]
-    public int Flags { get; set; }
 }
 
 #endregion
