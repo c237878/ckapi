@@ -3,7 +3,7 @@ using ckapi.Utils;
 namespace ckapi.Services;
 
 /// <summary>
-/// 全站片源扫描的后台任务（分辨率 + 字幕证据）。
+/// 全站片源扫描的后台任务（只量分辨率）。
 ///
 /// 为什么不放在请求里跑：三千多个文件都在 SMB 共享上，一个来回 0.1~0.5 秒，
 /// 全跑一遍是十分钟级的活。放请求里就得前端一直举着连接，离开页面还得自己中止。
@@ -12,7 +12,7 @@ namespace ckapi.Services;
 /// SQLite 连接不是线程安全的，边并发读边写会把连接状态搞乱。
 ///
 /// 进程内单例、同一时刻只跑一个。重启会丢进度，但已写进去的分辨率都在，
-/// 重跑默认只挑没量过的（要全部重量勾选"强制"）。
+/// 重跑默认只挑没量过的（接口留了 force=true 全库重来，界面上不摆按钮）。
 /// </summary>
 public sealed class SourceScanJob
 {
@@ -34,7 +34,6 @@ public sealed class SourceScanJob
     private volatile int _total;
     private volatile int _ok;
     private volatile int _missed;
-    private volatile int _subtitle;
     private volatile bool _force;
     private DateTime? _startedAt;
     private volatile string? _note;
@@ -57,7 +56,6 @@ public sealed class SourceScanJob
         _total = 0;
         _ok = 0;
         _missed = 0;
-        _subtitle = 0;
         _force = force;
         _note = null;
         _startedAt = DateTime.UtcNow;
@@ -88,14 +86,13 @@ public sealed class SourceScanJob
         return new
         {
             running = IsRunning,
-            what = "分辨率与字幕",
+            what = "分辨率",
             whatKey = "source",
             force = _force,
             processed,
             total,
             ok = _ok,
             missed = _missed,
-            subtitle = _subtitle,
             remaining,
             percent = total == 0 ? 0 : (int)Math.Round(processed * 100.0 / total),
             elapsed,
@@ -116,11 +113,9 @@ public sealed class SourceScanJob
             _total = rows.Count;
             if (rows.Count == 0)
             {
-                _note = "没有要扫的影片（都量过了；要重扫请勾「重扫全部」）";
+                _note = "没有要扫的影片（都量过了；要全库重来用接口 ?force=true）";
                 return;
             }
-
-            var sidecars = _scanner.SidecarCodes(conn);
 
             for (var start = 0; start < rows.Count; start += BatchSize)
             {
@@ -137,7 +132,7 @@ public sealed class SourceScanJob
                         try
                         {
                             // 单个文件读不出不抛异常，Inspect 把原因收在 Error 里
-                            found[i] = _scanner.Inspect(row, sidecars);
+                            found[i] = _scanner.Inspect(row);
                         }
                         finally
                         {
@@ -165,7 +160,6 @@ public sealed class SourceScanJob
 
                         _scanner.Write(conn, tx, batch[i], ins);
                         _ok++;
-                        if (ins.SetSubtitle) _subtitle++;
                     }
                     tx.Commit();
                 }
@@ -181,8 +175,8 @@ public sealed class SourceScanJob
             Interlocked.Exchange(ref _running, 0);
             sem.Dispose();
             _logger.LogInformation(
-                "片源扫描结束（{Mode}）：查 {Processed} 个，量到 {Ok} 个，读不出 {Missed} 个，顺带填上字幕 {Subtitle} 个",
-                _force ? "重扫全部" : "只扫未量", _processed, _ok, _missed, _subtitle);
+                "片源扫描结束（{Mode}）：查 {Processed} 个，量到 {Ok} 个，读不出 {Missed} 个",
+                _force ? "重扫全部" : "只扫未量", _processed, _ok, _missed);
         }
     }
 }

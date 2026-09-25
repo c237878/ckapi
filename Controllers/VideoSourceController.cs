@@ -100,7 +100,7 @@ public class VideoSourceController : ControllerBase
         }
     }
 
-    /// <summary>扫描单条：读容器头拿分辨率，顺带判断有没有字幕</summary>
+    /// <summary>扫描单条：只读容器头拿分辨率。字幕与广告水印两维不参与，由人在界面上给结论</summary>
     [HttpPost("{id}/scan")]
     public IActionResult ScanOne(string id)
     {
@@ -112,27 +112,11 @@ public class VideoSourceController : ControllerBase
             var ins = _scanner.ScanOne(conn, id);
             if (!ins.Ok) return Ok(new { success = false, message = ins.Error ?? "扫描失败" });
 
-            using var read = new SqliteCommand(
-                "SELECT subtitle_state, watermark_state FROM videos WHERE id = @id", conn);
-            read.Parameters.AddWithValue("@id", id);
-            using var reader = read.ExecuteReader();
-            var (sub, mark) = reader.Read()
-                ? (reader.GetString(0), reader.GetString(1))
-                : (ins.SetSubtitle ? "has" : "unknown", "unknown");
-
             return Ok(new
             {
                 success = true,
-                message = $"{ins.Width}×{ins.Height}" + (ins.SetSubtitle ? "，并检测到字幕" : ""),
-                data = new
-                {
-                    resW = ins.Width,
-                    resH = ins.Height,
-                    codec = ins.Codec,
-                    subtitleDetected = ins.Subtitle,
-                    subtitleState = sub,
-                    watermarkState = mark
-                }
+                message = $"{ins.Width}×{ins.Height}",
+                data = new { resW = ins.Width, resH = ins.Height, codec = ins.Codec }
             });
         }
         catch (Exception ex)
