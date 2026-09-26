@@ -54,7 +54,7 @@ public class StudioController : ControllerBase
             var total = Convert.ToInt32(Scalar(conn, $"SELECT COUNT(*) FROM studios s {where}", parameters));
 
             const string sql = @"
-                SELECT s.id, s.name, s.country, s.ctime,
+                SELECT s.id, s.name, s.country, s.link, s.ctime,
                        IFNULL((SELECT COUNT(*) FROM video_studios vs WHERE vs.studio_id = s.id), 0) AS video_count,
                        IFNULL((SELECT GROUP_CONCAT(a.alias, char(31)) FROM studio_aliases a WHERE a.studio_id = s.id), '') AS alias_blob
                 FROM studios s";
@@ -72,9 +72,10 @@ public class StudioController : ControllerBase
                         id = reader.GetString(0),
                         name = reader.GetString(1),
                         country = reader.IsDBNull(2) ? null : reader.GetString(2),
-                        ctime = reader.IsDBNull(3) ? null : reader.GetString(3),
-                        videoCount = reader.GetInt32(4),
-                        aliases = Split(reader.GetString(5))
+                        link = reader.IsDBNull(3) ? null : reader.GetString(3),
+                        ctime = reader.IsDBNull(4) ? null : reader.GetString(4),
+                        videoCount = reader.GetInt32(5),
+                        aliases = Split(reader.GetString(6))
                     });
                 }
             }

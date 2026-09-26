@@ -357,10 +357,12 @@ public class VideoController : ControllerBase
             video["links"] = VideoMeta.Links(conn, id);
 
             // 获取演员列表
+            // birthdate 是给详情页算「发行时年龄」用的，没有它前端只能显示名字
             var actorSql = @"
-                SELECT a.* FROM actors a
+                SELECT a.id, a.name, a.country, a.birthdate FROM actors a
                 INNER JOIN video_actors va ON a.id = va.actor_id
-                WHERE va.video_id = @videoId";
+                WHERE va.video_id = @videoId
+                ORDER BY a.name";
             
             using var actorCmd = new SqliteCommand(actorSql, conn);
             actorCmd.Parameters.Add(new SqliteParameter("@videoId", id));
@@ -371,9 +373,10 @@ public class VideoController : ControllerBase
             {
                 actors.Add(new
                 {
-                    id = actorReader["id"].ToString(),
-                    name = actorReader["name"].ToString(),
-                    country = actorReader["country"] == DBNull.Value ? null : actorReader["country"].ToString()
+                    id = actorReader.GetString(0),
+                    name = actorReader.GetString(1),
+                    country = actorReader.IsDBNull(2) ? null : actorReader.GetString(2),
+                    birthdate = actorReader.IsDBNull(3) ? null : actorReader.GetString(3)
                 });
             }
 

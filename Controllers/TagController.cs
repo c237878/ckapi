@@ -430,7 +430,8 @@ public class TagController : ControllerBase
             cmd.Parameters.AddWithValue("@n", name);
             cmd.Parameters.AddWithValue("@id", id);
             if (cmd.ExecuteNonQuery() == 0) return NotFound(new { success = false, message = "标签不存在" });
-            WriteAliases(conn, id, req.Aliases, name);
+            // 没带 aliases 就等于"这轮只改名"：WriteAliases 是整组替换，传空会连别名一起清掉
+            if (req.Aliases is not null) WriteAliases(conn, id, req.Aliases, name);
             return Ok(new { success = true, message = "标签已更新", data = new { id, name } });
         }
         catch (Exception ex)
