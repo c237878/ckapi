@@ -17,6 +17,9 @@ public sealed class ScrapeJob
     private readonly ActorScraper _scraper;
     private readonly SQLiteHelper _db;
     private readonly ILogger<ScrapeJob> _logger;
+    // 限速、每日配额、连续失败熔断全走抓取通道那张表：
+    // 之前这里是写死的 Task.Delay(300)，正是那种"把自己抓封"的写法
+    private readonly ScrapeChannelService _channels;
     // 每次 Start 都要换一个新的：CancellationTokenSource 一旦 Cancel 就不可复用，
     // 复用会让下一次启动在第一圈就退出（"停止过一次，之后再也启动不起来"）
     private CancellationTokenSource _cts = new();
@@ -30,11 +33,12 @@ public sealed class ScrapeJob
     private DateTime? _startedAt;
     private volatile string? _note;
 
-    public ScrapeJob(ActorScraper scraper, SQLiteHelper db, ILogger<ScrapeJob> logger)
+    public ScrapeJob(ActorScraper scraper, SQLiteHelper db, ILogger<ScrapeJob> logger, ScrapeChannelService channels)
     {
         _scraper = scraper;
         _db = db;
         _logger = logger;
+        _channels = channels;
     }
 
     public bool IsRunning => Volatile.Read(ref _running) == 1;
@@ -106,6 +110,10 @@ public sealed class ScrapeJob
         _ => "头像与资料"
     };
 
+    /// <summary>站点侧失败才算熔断依据；"查无此档"是对话正常结束，不该把通道打死</summary>
+    private static bool IsSiteFault(string message) =>
+        message.StartsWith("站点") || message.StartsWith("头像下载");
+
     private async Task RunAsync(Want want, CancellationTokenSource cts)
     {
         var consecutive = 0;
@@ -121,6 +129,13 @@ public sealed class ScrapeJob
                 return;
             }
 
+            var channel = _channels.FirstFor("actor");
+            if (channel is null)
+            {
+                _note = "没有配置抓取通道（设置 → 抓取通道）";
+                return;
+            }
+
             var risk = _scraper.DuplicateRiskIds(conn);
             var candidates = _scraper.Candidates(conn, risk, want);
             _total = candidates.Count;
@@ -128,6 +143,16 @@ public sealed class ScrapeJob
             foreach (var id in candidates)
             {
                 if (cts.IsCancellationRequested) break;
+
+                // 每条之前重读一次通道状态：Report 会改表，冷却是中途也可能触发的
+                var fresh = _channels.Get(channel.Id) ?? channel;
+                var gate = _channels.Check(fresh);
+                if (!gate.Allowed)
+                {
+                    _note = $"{gate.Why}，本轮到此为止";
+                    break;
+                }
+                await _channels.WaitTurnAsync(fresh, cts.Token);
 
                 (bool Ok, string Message) res;
                 try
@@ -144,33 +169,30 @@ public sealed class ScrapeJob
                 }
 
                 _processed++;
+                var fault = !res.Ok && IsSiteFault(res.Message);
+                _channels.Report(fresh.Id, !fault, fault ? res.Message : null);
+
                 if (res.Ok)
                 {
                     _hit++;
                     consecutive = 0;
                 }
-                else if (res.Message.StartsWith("站点") || res.Message.StartsWith("头像下载"))
+                else if (fault)
                 {
-                    // 连续失败说明被限流或断网，再问下去只是给人添堵
-                    if (++consecutive >= 3)
+                    // 连续失败说明被限流或断网，再问下去只是给人添堵。
+                    // 熔断的"停多久"由通道的 fail_limit / cooldown_minutes 决定，界面上能调
+                    consecutive++;
+                    var limited = _channels.Get(fresh.Id) ?? fresh;
+                    if (!string.IsNullOrEmpty(limited.BlockedUntil) &&
+                        DateTime.TryParse(limited.BlockedUntil, out var until) && until > DateTime.Now)
                     {
-                        _note = "站点连续无响应，本轮提前结束";
+                        _note = $"站点连续无响应，进入冷却（{until:HH:mm} 前不再问）";
                         break;
                     }
                 }
                 else
                 {
                     consecutive = 0;
-                }
-
-                // 站间节流：这是别人的服务器，一次问一千多人不能没有间隔
-                try
-                {
-                    await Task.Delay(300, cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
                 }
             }
         }

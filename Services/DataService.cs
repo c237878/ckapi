@@ -406,6 +406,7 @@ public class DataService : IDataService
             }
 
             SeedTaxonomy(conn);
+            SeedScrapeChannels(conn);
 
             CreateIndexes(conn);
             Analyze(conn);
@@ -650,6 +651,39 @@ public class DataService : IDataService
                 video_id TEXT    NOT NULL,
                 kind     TEXT    NOT NULL,
                 url      TEXT    NOT NULL
+            )");
+
+        // 抓取通道：一个站点一条，把"去哪查、怎么抽、要多礼貌"三段都做成可配置的数据。
+        // 做成可视化配置的原因不是偷懒少写代码，而是通道会换——av-wiki 一被封，
+        // 他要能在界面上填一个新源接着跑，而不是等我改一版重新部署。
+        //
+        // 后六个字段是运行态而不是配置：配额计数、连续失败数、冷却到几点、最后一次为什么被封。
+        // 它们和配置同表同行，是为了让列表页一次就能显示"这条现在能不能用、为什么不能用"。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS scrape_channels (
+                id                 TEXT    NOT NULL PRIMARY KEY,
+                name               TEXT    NOT NULL,
+                entity             TEXT    NOT NULL DEFAULT 'video',
+                enabled            INTEGER NOT NULL DEFAULT 1,
+                query_source       TEXT    NOT NULL DEFAULT 'code',
+                fetch_url          TEXT    NOT NULL DEFAULT '',
+                fetch_kind         TEXT    NOT NULL DEFAULT 'json',
+                referer            TEXT,
+                user_agent         TEXT,
+                rules              TEXT    NOT NULL DEFAULT '[]',
+                min_interval_ms    INTEGER NOT NULL DEFAULT 1500,
+                daily_quota        INTEGER NOT NULL DEFAULT 300,
+                fail_limit         INTEGER NOT NULL DEFAULT 3,
+                cooldown_minutes   INTEGER NOT NULL DEFAULT 60,
+                note               TEXT,
+                used_date          TEXT,
+                used_today         INTEGER NOT NULL DEFAULT 0,
+                consecutive_fails  INTEGER NOT NULL DEFAULT 0,
+                blocked_until      TEXT,
+                last_error         TEXT,
+                last_ok_at         TEXT,
+                ctime              TEXT,
+                utime              TEXT
             )");
 
         NonQuery(conn, @"
@@ -901,6 +935,35 @@ public class DataService : IDataService
         SeedListIfMissing(conn, "categories", @"
             SELECT category FROM videos WHERE category IS NOT NULL AND category <> ''
             ORDER BY category", "homePageCategories");
+    }
+
+    /// <summary>
+    /// 播种一条内置通道：av-wiki 的女优档案（头像 / 生日 / 简介）。
+    ///
+    /// 它的抽取逻辑在代码里（Utils/AvWiki 的"唯一命中才算数"那套判定，不适合降级成配置项），
+    /// 所以 fetch_kind 记 builtin、rules 留空——但**限速、配额、熔断、开关都从这条行走**，
+    /// 于是设置页里能看到它、能关掉它、能调它一天问多少次。
+    /// 只在表为空时种一次，之后他改过的参数不能被启动流程复活。
+    /// </summary>
+    private static void SeedScrapeChannels(SqliteConnection conn)
+    {
+        var any = Convert.ToInt32(Scalar(conn, "SELECT COUNT(*) FROM scrape_channels") ?? 0);
+        if (any > 0) return;
+
+        const string sql = @"
+            INSERT INTO scrape_channels
+                (id, name, entity, enabled, query_source, fetch_url, fetch_kind, referer, user_agent,
+                 rules, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
+            VALUES
+                (@id, 'av-wiki 女优档案', 'actor', 1, 'name',
+                 'https://av-wiki.net/wp-json/wp/v2/tags?search={q}', 'builtin',
+                 'https://av-wiki.net/', NULL, '[]', 1500, 300, 3, 120,
+                 '内置抽取：唯一命中且名字对得上才写；站方上了 Imunify360 反爬，被拒时会自动进入冷却',
+                 @t, @t)";
+        using var cmd = new SqliteCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N").ToUpper());
+        cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>从 selectSql 取值，再并入 extraFromKey 这个设置里已有的值，保序去重。</summary>

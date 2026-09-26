@@ -30,12 +30,14 @@ public static class AvWiki
 
     private static readonly HttpClient Http = CreateClient();
 
+    /// <summary>站点对无 UA 的请求会直接 403；抓取通道的默认 UA 也用这一个值</summary>
+    public const string BrowserUa =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
     private static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
-        // 站点对无 UA 的请求会直接 403
-        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", BrowserUa);
         client.DefaultRequestHeaders.Accept.TryParseAdd("application/json,image/*");
         return client;
     }

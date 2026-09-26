@@ -41,6 +41,8 @@ builder.Services.AddSingleton<ckapi.Services.ScrapeJob>();
 // 片源扫描（分辨率 + 字幕证据）：同上
 builder.Services.AddSingleton<ckapi.Services.SourceScanner>();
 builder.Services.AddSingleton<ckapi.Services.SourceScanJob>();
+// 抓取通道：配置与礼貌策略（限速/配额/熔断）都在 scrape_channels 表里，界面可改
+builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 
 // 配置CORS
 builder.Services.AddCors(options =>
