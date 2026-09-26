@@ -43,6 +43,8 @@ public class VideoController : ControllerBase
         [FromQuery] string? subtitle = null,
         [FromQuery] string? watermark = null,
         [FromQuery] string? resolution = null,
+        [FromQuery] string? studio = null,
+        [FromQuery] string? tag = null,
         [FromQuery] bool? prioritizeUnrated = null,
         [FromQuery] string? sortBy = null)
     {
@@ -93,7 +95,11 @@ public class VideoController : ControllerBase
             }
 
             // 片源两维 / 分辨率档 / 有没有文件：与系列页、演员页共用一套口径
-            VideoCardQuery.AppendCommonFilters(ref whereClause, parameters, subtitle, watermark, resolution, hasFile);
+            VideoCardQuery.AppendCommonFilters(ref whereClause, parameters, new VideoCardQuery.SourceFilter
+            {
+                Subtitle = subtitle, Watermark = watermark, Resolution = resolution,
+                StudioId = studio, TagId = tag, HasFile = hasFile
+            });
 
             using var conn = GetConnection();
             conn.Open();
@@ -324,22 +330,31 @@ public class VideoController : ControllerBase
     {
         try
         {
+            using var conn = GetConnection();
+            conn.Open();
+
+            Dictionary<string, object?> video;
             var sql = @"
                 SELECT v.*, s.name as series_name
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 WHERE v.id = @id";
-            using var conn = GetConnection();
-            conn.Open();
-            
-            using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
-            
-            using var reader = cmd.ExecuteReader();
-            if (!reader.Read())
-                return NotFound(new { success = false, message = "视频不存在" });
+            using (var cmd = new SqliteCommand(sql, conn))
+            {
+                cmd.Parameters.Add(new SqliteParameter("@id", id));
+                using var reader = cmd.ExecuteReader();
+                if (!reader.Read())
+                    return NotFound(new { success = false, message = "视频不存在" });
 
-            var video = VideoCardQuery.Map(reader);
+                video = VideoCardQuery.Map(reader);
+            }
+
+            // 四个扩展块直接并进 video 对象：前端只有一份影片状态，不用分五个 ref 去同步。
+            // 上面那个 reader 必须先关掉再发这些查询——Microsoft.Data.Sqlite 不支持多个活动结果集。
+            video["studios"] = VideoMeta.Studios(conn, id);
+            video["tags"] = VideoMeta.Tags(conn, id);
+            video["groups"] = VideoMeta.Groups(conn, id);
+            video["links"] = VideoMeta.Links(conn, id);
 
             // 获取演员列表
             var actorSql = @"
@@ -615,6 +630,27 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             cmd.ExecuteNonQuery();
 
+            // 原名与发行日期：传了才动，没传保持原样——编辑框以外还有别的调用方整份 PUT 这条记录。
+            // 发行日期先过格式校验，不合法就明确报出来，不静默丢掉（静默丢会让人以为已经存上了）。
+            if (req.OriginalName is not null)
+            {
+                using var cmd2 = new SqliteCommand("UPDATE videos SET original_name = @v WHERE id = @id", conn);
+                cmd2.Parameters.Add(new SqliteParameter("@v", req.OriginalName.Trim().Length == 0 ? (object)DBNull.Value : req.OriginalName.Trim()));
+                cmd2.Parameters.Add(new SqliteParameter("@id", id));
+                cmd2.ExecuteNonQuery();
+            }
+            if (req.ReleaseDate is not null)
+            {
+                var raw = req.ReleaseDate.Trim();
+                if (raw.Length > 0 && VideoMeta.NormalizeReleaseDate(raw) is null)
+                    return Ok(new { success = false, message = "发行日期格式不对，只收 2024 / 2024-03 / 2024-03-15 三种写法" });
+
+                using var cmd3 = new SqliteCommand("UPDATE videos SET release_date = @v WHERE id = @id", conn);
+                cmd3.Parameters.Add(new SqliteParameter("@v", raw.Length == 0 ? (object)DBNull.Value : raw));
+                cmd3.Parameters.Add(new SqliteParameter("@id", id));
+                cmd3.ExecuteNonQuery();
+            }
+
             // 更新演员关联
             if (req.ActorIds != null)
             {
@@ -677,6 +713,9 @@ public class VideoController : ControllerBase
             using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2);
             delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
             delLikesCmd.ExecuteNonQuery();
+
+            // 片商/标签/档案链接/合辑挂接/候选词：外键没开，漏一张就留下点不动的幽灵关系
+            VideoMeta.PurgeVideo(conn2, id);
 
             // 删除视频
             using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn2);
@@ -784,6 +823,8 @@ public class VideoController : ControllerBase
                     using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2, transaction);
                     delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     delLikesCmd.ExecuteNonQuery();
+
+                    VideoMeta.PurgeVideo(conn2, id, transaction);
 
                     // 删除视频
                     using var delCmd = new SqliteCommand("DELETE FROM videos WHERE id = @id", conn2, transaction);
@@ -1193,6 +1234,12 @@ public class AddVideoRequest
     public List<string>? ActorIds { get; set; }
     [JsonPropertyName("seriesId")]
     public string? SeriesId { get; set; }
+    /// <summary>日文原名。null 表示这次不动它（与 "" 清空区分开）</summary>
+    [JsonPropertyName("originalName")]
+    public string? OriginalName { get; set; }
+    /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
+    [JsonPropertyName("releaseDate")]
+    public string? ReleaseDate { get; set; }
 }
 
 public class UpdateVideoRequest
@@ -1213,6 +1260,12 @@ public class UpdateVideoRequest
     public List<string>? ActorIds { get; set; }
     [JsonPropertyName("seriesId")]
     public string? SeriesId { get; set; }
+    /// <summary>日文原名。null 表示这次不动它（与 "" 清空区分开）</summary>
+    [JsonPropertyName("originalName")]
+    public string? OriginalName { get; set; }
+    /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
+    [JsonPropertyName("releaseDate")]
+    public string? ReleaseDate { get; set; }
 }
 
 public class BatchDeleteRequest

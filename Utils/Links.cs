@@ -24,7 +24,8 @@ public static class Links
     /// <summary>kind 白名单；不在表里的值一律按域名重新归类</summary>
     public static readonly string[] Kinds = { Homepage, Profile, Twitter, Instagram, Other };
 
-    public const int MaxPerActor = 10;
+    // 每人/每部片都限 10 条：这个常量原先叫 MaxPerActor，现在演员与影片共用同一套校验
+    public const int MaxPerOwner = 10;
     public const int MaxUrlLength = 300;
 
     private static readonly (string Pattern, string Kind)[] ByHost =
@@ -67,7 +68,7 @@ public static class Links
             if (!seen.Add(url.TrimEnd('/').ToLowerInvariant())) continue;
 
             list.Add(new ActorLink { Kind = kind, Url = url });
-            if (list.Count >= MaxPerActor) return list;
+            if (list.Count >= MaxPerOwner) return list;
         }
 
         return list;

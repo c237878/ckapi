@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 7;
+    private const int TargetVersion = 8;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -333,6 +333,26 @@ public class DataService : IDataService
             "其中两维都是 unknown 的那些会重新按没看过参与推荐", rated);
     }
 
+    /// <summary>
+    /// videos 加 original_name（日文原名）与 release_date（发行日期）。
+    ///
+    /// 现有的 name 其实是**中文译名**——它一直是显示标题，不改名（牵动一片代码，收益只是命名好看），
+    /// 语义在界面与注释里写清楚。原名与发行日期由人填，将来接抓取通道时同一个入口写回。
+    ///
+    /// release_date 沿用 actors.birthdate 那套口径：只收 `YYYY` / `YYYY-MM` / `YYYY-MM-DD`，
+    /// 站点只给到月份就存 `2024-03`，**不补成 01 号**（补出来的是假数据），其余一律 NULL。
+    /// 校验在控制器里（NormalizeReleaseDate）。
+    ///
+    /// 这一版只加两列：片商 / 标签 / 关联分组 / 影片外链四组表是纯新增，
+    /// 任何库启动都会走 CreateBaseTables 建出来，没有数据要搬，所以不进迁移。
+    /// </summary>
+    private void AddVideoTitles(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "videos", "original_name", "TEXT");
+        AddColumnIfMissing(conn, "videos", "release_date", "TEXT");
+        _logger.LogInformation("已为 videos 添加 original_name / release_date 列");
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -348,6 +368,7 @@ public class DataService : IDataService
             .Append((5, "演员加出生日期列 birthdate（见 AddActorBirthdate 注释）", AddActorBirthdate))
             .Append((6, "片源复合标记拆成字幕 + 广告水印两维，加分辨率列（见 SplitSourceAttributes 注释）", SplitSourceAttributes))
             .Append((7, "删掉 videos.watched，看过与否改由两维是否均未标记推导（见 DropWatchedFlag 注释）", DropWatchedFlag))
+            .Append((8, "影片加日文原名与发行日期列（见 AddVideoTitles 注释）", AddVideoTitles))
             .ToArray();
     }
 
@@ -456,7 +477,9 @@ public class DataService : IDataService
                 watermark_state TEXT    NOT NULL DEFAULT 'unknown',
                 res_w           INTEGER,
                 res_h           INTEGER,
-                scan_time       TEXT
+                scan_time       TEXT,
+                original_name   TEXT,
+                release_date    TEXT
             )");
 
         NonQuery(conn, @"
@@ -523,6 +546,110 @@ public class DataService : IDataService
                 PRIMARY KEY (video_id, actor_id),
                 FOREIGN KEY (video_id) REFERENCES videos(id),
                 FOREIGN KEY (actor_id) REFERENCES actors(id)
+            )");
+
+        // ---------------------------------------------------------------- 片商
+
+        // 片商是实体不是字符串：「マドンナ / Madonna / 麦当娜」是同一家，存进 videos 的一列文本
+        // 就会变成用字符串当外键，按片商浏览得靠模糊匹配。别名走 studio_aliases，与演员曾用名同一套做法。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS studios (
+                id      TEXT    NOT NULL PRIMARY KEY,
+                name    TEXT    NOT NULL UNIQUE,
+                country TEXT,
+                link    TEXT,
+                ctime   TEXT,
+                utime   TEXT
+            )");
+
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS studio_aliases (
+                studio_id TEXT NOT NULL,
+                alias     TEXT NOT NULL,
+                PRIMARY KEY (studio_id, alias)
+            )");
+
+        // 多对多：一部片常常是"制作商 A + 发行商 B"两家（TMDB 也是 M:N）。
+        // role 留空表示不区分，只有 maker / label 两种取值有意义。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_studios (
+                video_id  TEXT NOT NULL,
+                studio_id TEXT NOT NULL,
+                role      TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (video_id, studio_id)
+            )");
+
+        // ---------------------------------------------------------------- 题材标签
+
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS tags (
+                id    TEXT NOT NULL PRIMARY KEY,
+                name  TEXT NOT NULL UNIQUE,
+                ctime TEXT
+            )");
+
+        // 打标时输入的近义词归一到正名，避免"巨乳/爆乳/大胸"各管一摊
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS tag_aliases (
+                tag_id TEXT NOT NULL,
+                alias  TEXT NOT NULL,
+                PRIMARY KEY (tag_id, alias)
+            )");
+
+        // source 记这一刀是谁打的：manual 人工、ai 自动。
+        // 分开存是为了能筛出"AI 打的还没复核"的那批，而不是把两种信任度混成一锅。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_tags (
+                video_id TEXT NOT NULL,
+                tag_id   TEXT NOT NULL,
+                source   TEXT NOT NULL DEFAULT 'manual',
+                ctime    TEXT,
+                PRIMARY KEY (video_id, tag_id)
+            )");
+
+        // AI 不许直接往 tags 里造新词：想造就落这条队列，人工批准（转成正式标签）或并入已有。
+        // 词表失控是标签功能唯一的死法，所以把口子收在这里而不是靠提示词自觉。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS tag_suggestions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id   TEXT NOT NULL,
+                tag_id     TEXT,
+                name       TEXT NOT NULL,
+                note       TEXT,
+                status     TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT
+            )");
+
+        // ---------------------------------------------------------------- 关联影片（合辑）
+
+        // 一个文件是几部片子剪在一起时，它们天然是一个"组"而不是两两连线：
+        // 3 部互联要 3 条边、5 部要 10 条，而且语义上就是同一部合辑。
+        // position 给"上/中/下"的顺序；一部片可以同时属于多个组。
+        // 与 videos.seriesid 不冲突：系列是官方续作线，组是他自己剪的合辑。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_groups (
+                id    TEXT NOT NULL PRIMARY KEY,
+                name  TEXT NOT NULL,
+                ctime TEXT
+            )");
+
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_group_items (
+                group_id TEXT NOT NULL,
+                video_id TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (group_id, video_id)
+            )");
+
+        // 影片的外部档案地址（av-wiki / javcup / FANZA 的番号页）。
+        // 与 actor_links 同构、共用 Utils/Links 的校验与归类；它同时是将来抓取的首选定位键：
+        // 自己的数据已经指向档案时，抓取不用再搜一遍、也不会认错片（演员侧的经验）。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_links (
+                id       TEXT    NOT NULL PRIMARY KEY,
+                video_id TEXT    NOT NULL,
+                kind     TEXT    NOT NULL,
+                url      TEXT    NOT NULL
             )");
 
         NonQuery(conn, @"
@@ -631,6 +758,17 @@ public class DataService : IDataService
             ("idx_actor_images_actor", "CREATE INDEX IF NOT EXISTS idx_actor_images_actor ON actor_images(actor_id, is_primary DESC, file_name)"),
             // 每人最多一张主图：部分唯一索引，NULL/0 行不受约束
             ("idx_actor_images_primary", "CREATE UNIQUE INDEX IF NOT EXISTS idx_actor_images_primary ON actor_images(actor_id) WHERE is_primary = 1"),
+            // 片商：按别名找正主、按片商反查它名下有哪些片
+            ("idx_studio_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_studio_aliases_alias ON studio_aliases(alias)"),
+            ("idx_video_studios_studio", "CREATE INDEX IF NOT EXISTS idx_video_studios_studio ON video_studios(studio_id)"),
+            // 标签：按标签筛片是主路径（WHERE tag_id = ? 再取影片），别名同理
+            ("idx_tag_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_tag_aliases_alias ON tag_aliases(alias)"),
+            ("idx_video_tags_tag", "CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)"),
+            // 同一部片同一个候选词只留一条待审；批准/驳回后不再占唯一性，可以再次提出
+            ("idx_tag_sugg_pending", "CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_sugg_pending ON tag_suggestions(video_id, name) WHERE status = 'pending'"),
+            // 详情页"本片属于哪个合辑"：从影片反查所在组，主键 (group_id, video_id) 帮不上这个方向
+            ("idx_video_group_items_video", "CREATE INDEX IF NOT EXISTS idx_video_group_items_video ON video_group_items(video_id)"),
+            ("idx_video_links_video", "CREATE INDEX IF NOT EXISTS idx_video_links_video ON video_links(video_id, kind)"),
         };
 
         foreach (var (name, sql) in indexes)

@@ -47,6 +47,9 @@ public static class VideoCardQuery
             ["watermarkState"] = Str(reader, "watermark_state") ?? Utils.SourceStates.Unknown,
             ["resW"] = Int(reader, "res_w"),
             ["resH"] = Int(reader, "res_h"),
+            // 原名与发行日期只有详情页用得到，卡片不占地方；没有就返回 null
+            ["originalName"] = Str(reader, "original_name"),
+            ["releaseDate"] = Str(reader, "release_date"),
         };
 
         if (HasColumn(reader, "scan_time")) result["scanTime"] = Str(reader, "scan_time");
@@ -68,40 +71,65 @@ public static class VideoCardQuery
     }
 
     /// <summary>
-    /// 列表页共用的片源筛选项：字幕 / 广告水印 / 分辨率档 / 有没有文件。
-    /// 三个字符串条件都过白名单，取值不在口径里就当没筛——不能让前端传来的字符串进 SQL。
+    /// 列表页共用的筛选项。字段名与 query 参数一一对应，
+    /// 五个调用点（影片列表 / 演员详情 / 系列详情 / 片商详情 / 标签详情）都构造这一个对象，
+    /// 免得参数越加越长、各调用点漏传一个还看不出来。
+    /// </summary>
+    public sealed class SourceFilter
+    {
+        public string? Subtitle { get; set; }
+        public string? Watermark { get; set; }
+        public string? Resolution { get; set; }
+        public string? StudioId { get; set; }
+        public string? TagId { get; set; }
+        public bool? HasFile { get; set; }
+    }
+
+    /// <summary>
+    /// 拼接片源两维 / 分辨率档 / 片商 / 标签 / 有没有文件这几项共用筛选。
+    /// 三个字符串条件都过白名单，取值不在口径里一律当"没筛"——不能让前端传来的字符串进 SQL。
     /// 表别名固定为 v，与 Columns / ColumnsWithSeries 一致；返回的片段以 AND 开头。
     /// </summary>
     public static string AppendCommonFilters(
         ref string where,
         List<SqliteParameter> parameters,
-        string? subtitle,
-        string? watermark,
-        string? resolution,
-        bool? hasFile)
+        SourceFilter f)
     {
-        if (Utils.SourceStates.IsSubtitle(subtitle))
+        if (Utils.SourceStates.IsSubtitle(f.Subtitle))
         {
             where += " AND v.subtitle_state = @subtitleState";
-            parameters.Add(new SqliteParameter("@subtitleState", subtitle));
+            parameters.Add(new SqliteParameter("@subtitleState", f.Subtitle));
         }
 
-        if (Utils.SourceStates.IsWatermark(watermark))
+        if (Utils.SourceStates.IsWatermark(f.Watermark))
         {
             where += " AND v.watermark_state = @watermarkState";
-            parameters.Add(new SqliteParameter("@watermarkState", watermark));
+            parameters.Add(new SqliteParameter("@watermarkState", f.Watermark));
         }
 
-        if (resolution is not null && Utils.SourceStates.Resolutions.TryGetValue(resolution, out var clause))
+        if (f.Resolution is not null && Utils.SourceStates.Resolutions.TryGetValue(f.Resolution, out var clause))
         {
             where += $" AND ({clause})";
         }
 
-        if (hasFile == true)
+        // 片商与标签走 EXISTS 而不是 JOIN：一部片挂两家片商时，JOIN 会把同一行翻倍
+        if (!string.IsNullOrWhiteSpace(f.StudioId))
+        {
+            where += " AND EXISTS (SELECT 1 FROM video_studios x WHERE x.video_id = v.id AND x.studio_id = @studioId)";
+            parameters.Add(new SqliteParameter("@studioId", f.StudioId));
+        }
+
+        if (!string.IsNullOrWhiteSpace(f.TagId))
+        {
+            where += " AND EXISTS (SELECT 1 FROM video_tags x WHERE x.video_id = v.id AND x.tag_id = @tagId)";
+            parameters.Add(new SqliteParameter("@tagId", f.TagId));
+        }
+
+        if (f.HasFile == true)
         {
             where += " AND v.file_size > 0";
         }
-        else if (hasFile == false)
+        else if (f.HasFile == false)
         {
             where += " AND (v.file_size IS NULL OR v.file_size <= 0)";
         }

@@ -169,7 +169,10 @@ public class SeriesController : ControllerBase
             // 同演员详情页：筛选下沉到 SQL，前端客户端过滤只能作用当前页。
             var where = "WHERE v.seriesid = @seriesid";
             var parameters = new List<SqliteParameter> { new("@seriesid", id) };
-            VideoCardQuery.AppendCommonFilters(ref where, parameters, subtitle, watermark, resolution, hasFile);
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, new VideoCardQuery.SourceFilter
+            {
+                Subtitle = subtitle, Watermark = watermark, Resolution = resolution, HasFile = hasFile
+            });
 
             var countSql = $"SELECT COUNT(*) FROM videos v {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))

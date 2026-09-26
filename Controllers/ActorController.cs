@@ -601,7 +601,10 @@ public class ActorController : ControllerBase
             // 只能筛到当前页，页数不同结果就不同。
             var where = "WHERE va.actor_id = @actorId";
             var parameters = new List<SqliteParameter> { new("@actorId", id) };
-            VideoCardQuery.AppendCommonFilters(ref where, parameters, subtitle, watermark, resolution, hasFile);
+            VideoCardQuery.AppendCommonFilters(ref where, parameters, new VideoCardQuery.SourceFilter
+            {
+                Subtitle = subtitle, Watermark = watermark, Resolution = resolution, HasFile = hasFile
+            });
 
             var countSql = $@"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))
