@@ -462,9 +462,15 @@ public class VideoController : ControllerBase
         try
         {
             var id = Guid.NewGuid().ToString("N").ToUpper();
+            var release = string.IsNullOrWhiteSpace(req.ReleaseDate) ? null : VideoMeta.NormalizeReleaseDate(req.ReleaseDate);
+            if (req.ReleaseDate is not null && release is null)
+                return Ok(new { success = false, message = "发行日期只收 2024 / 2024-03 / 2024-03-15 三种写法" });
+
             var sql = @"
-                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid)
-                VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId)";
+                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid,
+                                    original_name, release_date)
+                VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId,
+                        @originalName, @releaseDate)";
             
             using var conn = GetConnection();
             conn.Open();
@@ -480,8 +486,14 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@originalName",
+                string.IsNullOrWhiteSpace(req.OriginalName) ? (object)DBNull.Value : req.OriginalName.Trim()));
+            cmd.Parameters.Add(new SqliteParameter("@releaseDate", (object?)release ?? DBNull.Value));
             
             cmd.ExecuteNonQuery();
+
+            // 片商与演员都是"整组替换"语义：新增时也带得上，编辑对话框才不用分两次保存
+            if (req.Studios is not null) VideoMeta.SetStudios(conn, id, req.Studios);
 
             // 关联演员
             if (req.ActorIds != null && req.ActorIds.Any())
@@ -650,6 +662,9 @@ public class VideoController : ControllerBase
                 cmd3.Parameters.Add(new SqliteParameter("@id", id));
                 cmd3.ExecuteNonQuery();
             }
+
+            // null 表示这次不动片商；给了数组就是整组替换（空数组 = 全摘掉）
+            if (req.Studios is not null) VideoMeta.SetStudios(conn, id, req.Studios);
 
             // 更新演员关联
             if (req.ActorIds != null)
@@ -1240,6 +1255,9 @@ public class AddVideoRequest
     /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
     [JsonPropertyName("releaseDate")]
     public string? ReleaseDate { get; set; }
+    /// <summary>片商：给 id 用已有的，只给 name 自动归一/新建；null 表示这次不动</summary>
+    [JsonPropertyName("studios")]
+    public List<VideoMeta.StudioInput>? Studios { get; set; }
 }
 
 public class UpdateVideoRequest
@@ -1266,6 +1284,9 @@ public class UpdateVideoRequest
     /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
     [JsonPropertyName("releaseDate")]
     public string? ReleaseDate { get; set; }
+    /// <summary>片商：给 id 用已有的，只给 name 自动归一/新建；null 表示这次不动</summary>
+    [JsonPropertyName("studios")]
+    public List<VideoMeta.StudioInput>? Studios { get; set; }
 }
 
 public class BatchDeleteRequest
