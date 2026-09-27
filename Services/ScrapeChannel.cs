@@ -93,9 +93,8 @@ public sealed class ScrapeChannelService
         ("actors.birthdate", "birthdate", "演员·出生日期", "actor"),
         ("actors.bio", "bio", "演员·简介", "actor"),
         ("actors.country", "country", "演员·地区", "actor"),
-        // 这两个不是列：片商名会解析/新建 studios 并挂到影片上；标签词进待审队列
+        // 这不是列：片商名会解析/新建 studios 并把影片指向它
         ("videos.studio_name", "", "影片·片商名（自动建/挂）", "video"),
-        ("videos.tag_names", "", "影片·题材标签（进待审队列）", "video"),
     };
 
     public static bool IsTargetAllowed(string key, out (string Column, string Entity) target)
@@ -588,23 +587,6 @@ public sealed class ScrapeChannelService
                     var (sid, _) = VideoMeta.ResolveStudio(conn, null, value);
                     VideoMeta.SetStudio(conn, entityId, sid);
                     written++;
-                    break;
-
-                case "videos.tag_names":
-                    // 机器抽来的题材词一律进待审队列，不进词表——这是标签功能的底线
-                    foreach (var name in value.Split(new[] { ',', '、', '/', '|' }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        using var ins = new SqliteCommand(@"
-                            INSERT INTO tag_suggestions (video_id, name, note, status, created_at)
-                            SELECT @v, @n, @src, 'pending', @t
-                            WHERE NOT EXISTS (SELECT 1 FROM tag_suggestions
-                                              WHERE video_id = @v AND name = @n AND status = 'pending')", conn);
-                        ins.Parameters.AddWithValue("@v", entityId);
-                        ins.Parameters.AddWithValue("@n", name.Trim());
-                        ins.Parameters.AddWithValue("@src", $"通道「{c.Name}」");
-                        ins.Parameters.AddWithValue("@t", Now());
-                        written += ins.ExecuteNonQuery();
-                    }
                     break;
 
                 default:

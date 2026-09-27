@@ -6,8 +6,7 @@ namespace ckapi.Controllers;
 /// <summary>
 /// MCP 端点：大模型按 JSON-RPC 2.0 调工具，走同一个 /mcp 地址 + X-API-Key 头。
 ///
-/// 另外两个是设置页用的管理接口——查状态与换密钥。打标口径本身就是 system_settings 里的
-/// 一条普通设置，界面直接走已有的 /api/systemsetting 保存，这里不再开一份重复的写入口。
+/// 另外两个是设置页用的管理接口——查状态与换密钥。
 /// </summary>
 [ApiController]
 [Route("api/mcp")]
@@ -40,7 +39,7 @@ public class McpController : ControllerBase
     [HttpDelete("/mcp")]
     public IActionResult StreamUnsupported() => StatusCode(405, new { error = "这个端点只收 POST，不提供 SSE 事件流" });
 
-    /// <summary>设置页：开关状态、当前密钥、地址、工具清单与口径文案</summary>
+    /// <summary>设置页：开关状态、当前密钥、地址、工具清单</summary>
     [HttpGet("status")]
     public IActionResult Status()
     {
@@ -55,9 +54,7 @@ public class McpController : ControllerBase
                     enabled = !string.IsNullOrEmpty(key),
                     key,
                     endpoint = $"{Request.Scheme}://{Request.Host}/mcp",
-                    tools = _mcp.ToolNames(),
-                    rule = _mcp.Rule(),
-                    defaultRule = McpService.DefaultRule
+                    tools = _mcp.ToolNames()
                 }
             });
         }

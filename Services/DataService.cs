@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 9;
+    private const int TargetVersion = 10;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -383,6 +383,30 @@ public class DataService : IDataService
         }
     }
 
+    /// <summary>
+    /// 撤掉题材标签与关联合辑两组结构（v10）。
+    ///
+    /// 标签这套东西的前提是"有人来用这些标签浏览"：词表要人维护、AI 提的候选要人审、
+    /// 近义词要人并入，而这几件事每天在做的只有一个人，收益撑不起成本，整组删掉。
+    /// 合辑同理——库里一组都没建过。
+    ///
+    /// 六张表（tags / tag_aliases / video_tags / tag_suggestions / video_groups / video_group_items）
+    /// 都是独立表，videos 上没有列要收，所以只 DROP。结构迁移前 Initialize 已经强制留了一份
+    /// pre-migration 快照，要回滚用那份。
+    /// </summary>
+    private void DropTagAndGroups(SqliteConnection conn)
+    {
+        foreach (var table in new[]
+                 {
+                     "tag_suggestions", "video_tags", "tag_aliases", "tags",
+                     "video_group_items", "video_groups"
+                 })
+        {
+            if (TableExists(conn, table)) NonQuery(conn, $"DROP TABLE {table}");
+        }
+        _logger.LogInformation("已撤除题材标签与关联合辑的六张表");
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -400,6 +424,7 @@ public class DataService : IDataService
             .Append((7, "删掉 videos.watched，看过与否改由两维是否均未标记推导（见 DropWatchedFlag 注释）", DropWatchedFlag))
             .Append((8, "影片加日文原名与发行日期列（见 AddVideoTitles 注释）", AddVideoTitles))
             .Append((9, "片商收成 videos.studioid 单值，删掉 video_studios（见 StudioToOneColumn 注释）", StudioToOneColumn))
+            .Append((10, "撤掉题材标签与关联合辑六张表（见 DropTagAndGroups 注释）", DropTagAndGroups))
             .ToArray();
     }
 
@@ -606,67 +631,7 @@ public class DataService : IDataService
         // 一部片只有一家片商（实测库里 27 部有片商的没有一部挂两家），所以挂在 videos.studioid 上，
         // 不再另建 video_studios 中间表——多对多表在这里换来的只有"界面得假装单选"。
 
-        // ---------------------------------------------------------------- 题材标签
-
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS tags (
-                id    TEXT NOT NULL PRIMARY KEY,
-                name  TEXT NOT NULL UNIQUE,
-                ctime TEXT
-            )");
-
-        // 打标时输入的近义词归一到正名，避免"巨乳/爆乳/大胸"各管一摊
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS tag_aliases (
-                tag_id TEXT NOT NULL,
-                alias  TEXT NOT NULL,
-                PRIMARY KEY (tag_id, alias)
-            )");
-
-        // source 记这一刀是谁打的：manual 人工、ai 自动。
-        // 分开存是为了能筛出"AI 打的还没复核"的那批，而不是把两种信任度混成一锅。
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS video_tags (
-                video_id TEXT NOT NULL,
-                tag_id   TEXT NOT NULL,
-                source   TEXT NOT NULL DEFAULT 'manual',
-                ctime    TEXT,
-                PRIMARY KEY (video_id, tag_id)
-            )");
-
-        // AI 不许直接往 tags 里造新词：想造就落这条队列，人工批准（转成正式标签）或并入已有。
-        // 词表失控是标签功能唯一的死法，所以把口子收在这里而不是靠提示词自觉。
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS tag_suggestions (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                video_id   TEXT NOT NULL,
-                tag_id     TEXT,
-                name       TEXT NOT NULL,
-                note       TEXT,
-                status     TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT
-            )");
-
-        // ---------------------------------------------------------------- 关联影片（合辑）
-
-        // 一个文件是几部片子剪在一起时，它们天然是一个"组"而不是两两连线：
-        // 3 部互联要 3 条边、5 部要 10 条，而且语义上就是同一部合辑。
-        // position 给"上/中/下"的顺序；一部片可以同时属于多个组。
-        // 与 videos.seriesid 不冲突：系列是官方续作线，组是他自己剪的合辑。
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS video_groups (
-                id    TEXT NOT NULL PRIMARY KEY,
-                name  TEXT NOT NULL,
-                ctime TEXT
-            )");
-
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS video_group_items (
-                group_id TEXT NOT NULL,
-                video_id TEXT NOT NULL,
-                position INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (group_id, video_id)
-            )");
+        // 题材标签与关联合辑在 v10 整体撤除（建表与索引都已移除，迁移注释见 DropTagAndGroups）。
 
         // 影片的外部档案地址（av-wiki / javcup / FANZA 的番号页）。
         // 与 actor_links 同构、共用 Utils/Links 的校验与归类；它同时是将来抓取的首选定位键：
@@ -821,13 +786,6 @@ public class DataService : IDataService
             // 片商：按别名找正主；按片商筛片走 videos.studioid
             ("idx_studio_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_studio_aliases_alias ON studio_aliases(alias)"),
             ("idx_videos_studioid", "CREATE INDEX IF NOT EXISTS idx_videos_studioid ON videos(studioid)"),
-            // 标签：按标签筛片是主路径（WHERE tag_id = ? 再取影片），别名同理
-            ("idx_tag_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_tag_aliases_alias ON tag_aliases(alias)"),
-            ("idx_video_tags_tag", "CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)"),
-            // 同一部片同一个候选词只留一条待审；批准/驳回后不再占唯一性，可以再次提出
-            ("idx_tag_sugg_pending", "CREATE UNIQUE INDEX IF NOT EXISTS idx_tag_sugg_pending ON tag_suggestions(video_id, name) WHERE status = 'pending'"),
-            // 详情页"本片属于哪个合辑"：从影片反查所在组，主键 (group_id, video_id) 帮不上这个方向
-            ("idx_video_group_items_video", "CREATE INDEX IF NOT EXISTS idx_video_group_items_video ON video_group_items(video_id)"),
             ("idx_video_links_video", "CREATE INDEX IF NOT EXISTS idx_video_links_video ON video_links(video_id, kind)"),
         };
 

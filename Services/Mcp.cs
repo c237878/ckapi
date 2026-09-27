@@ -10,33 +10,17 @@ namespace ckapi.Services;
 /// 加依赖换来的是版本漂移和一层不受控的 HTTP 栈。形状与 logapi-finance 保持一致——
 /// 同一个 /mcp 端点 + X-API-Key 头。
 ///
-/// 全站仍是局域网免鉴权，只有这里收一道：整站接口是"人看片"用的，AI 能改库这件事得另配一把钥匙。
+/// 全站仍是局域网免鉴权，只有这里收一道：整站接口是"人看片"用的，让外部程序读库得另配一把钥匙。
 /// 密钥存在 system_settings.mcpApiKey，由设置页生成；那行是空的就等于没开门。
 ///
-/// 口子收窄在接口而不是提示词里：AI 永远建不出新标签，新词只能进 tag_suggestions 待审。
-/// 提示词会被改，接口不会。
+/// 只给读与查：这个面上没有任何"改一部片"的写入口，AI 看得懂全库、也改不动全库。
 /// </summary>
 public sealed class McpService
 {
     /// <summary>密钥所在的设置行；空值等于 MCP 未启用</summary>
     public const string KeySetting = "mcpApiKey";
 
-    /// <summary>AI 打标的口径，界面可改，tag_propose 的工具描述会带上它</summary>
-    public const string RuleSetting = "aiTagRule";
 
-    public const string DefaultRule =
-        "从中文片名提炼题材标签。允许推导，不要求片名里出现原词：「爆乳」可以归到已有的「巨乳」，" +
-        "「儿子的同学」这类关系可以推成「友人母」。\n" +
-        "1. 先读 tag_list，按**意思**而不是字面去对：片名表达的特征词表里已经有了，就用那个词的正名，" +
-        "不要再提一个近义新词（巨乳/爆乳/大胸各管一摊，按标签浏览就废了）；\n" +
-        "2. 词表里确实没有对应概念的，照常提交，tag_propose 会放进待审队列由人批准或驳回；" +
-        "响应里带 similar 字段时，说明词表里有近义项，优先考虑改用它；\n" +
-        "3. 标签数量不限，片名里有几个特征就提几个，只有一个就提一个；片名只是番号或泛称、推不出具体特征时，" +
-        "这部片就不提，跳过即可；\n" +
-        "4. 词要有特色、站得住：按 AV 标签的通常写法和规范取（身份 / 场景 / 行为 / 关系，如「人妻」「痴汉」「颜射」），" +
-        "并且要能囊括一批影片——只覆盖这一部的孤立词、以及「好看」「经典」「推荐」这种既烂大街又与 AV 无关的词，都不要提；\n" +
-        "5. 演员名、片商名、番号、系列名都不算题材标签；\n" +
-        "6. 拿不准就不提。错词要人工清理，漏词下次还能补。";
 
     private const string ServerName = "ckapi-media";
     private const string ServerVersion = "1.0";
@@ -133,13 +117,6 @@ public sealed class McpService
         return Setting(conn, KeySetting);
     }
 
-    /// <summary>当前打标口径；库里没存过就给默认文案（不代写回，用户清空是有意为之）</summary>
-    public string Rule()
-    {
-        using var conn = Open();
-        return Setting(conn, RuleSetting) ?? DefaultRule;
-    }
-
     /// <summary>生成并保存新密钥，返回那串十六进制。旧的当场作废，客户端要一起换。</summary>
     public string RotateKey()
     {
@@ -206,55 +183,34 @@ public sealed class McpService
 
     private object Tools()
     {
-        var rule = Rule();
         return new Dictionary<string, object?>
         {
             ["tools"] = new List<object>
             {
                 Tool("video_list",
-                    "按条件找影片，返回卡片级信息（番号、中文片名、原名、发行日期、片商、已有标签、演员、片源状态）。" +
-                    "noTags=true 用来捞还没打过标的片。",
+                    "按条件找影片，返回卡片级信息（番号、中文片名、原名、发行日期、片商、演员、片源状态）。" +
+                    "缺什么字段就用它自己筛：noStudio 捞没填片商的，unscanned 捞还没量过分辨率的。",
                     Props(
                         ("keyword", S("在片名、原名、番号里模糊匹配")),
                         ("country", S("地区精确匹配，如 日本")),
                         ("category", S("分类精确匹配，如 av")),
-                        ("tag", S("按标签浏览：标签正名、别名或 id 都认")),
                         ("studio", S("按片商浏览：片商正名、别名或 id 都认")),
                         ("subtitle", Enum("字幕状态", Utils.SourceStates.Subtitle)),
                         ("watermark", Enum("广告水印", Utils.SourceStates.Watermark)),
                         ("resolution", Enum("分辨率档", Utils.SourceStates.Resolutions.Keys.ToArray())),
-                        ("noTags", B("true 时只要一个标签都没挂的片")),
+                        ("noStudio", B("true 时只要没填片商的片")),
+                        ("unscanned", B("true 时只要还没量过分辨率的片")),
+                        ("unrated", B("true 时只要字幕与广告水印两维都还没标过的片")),
                         ("limit", N($"每页条数，默认 {DefaultLimit}，最多 {MaxLimit}")),
                         ("offset", N("跳过条数，配合 limit 翻页"))),
                     required: []),
 
                 Tool("video_get",
-                    "看一部片的完整档案：档案字段、片商、标签（含谁打的）、演员（含出生日期）、合辑与外链。",
+                    "看一部片的完整档案：档案字段、片商、演员（含出生日期）、外部档案链接。",
                     Props(
                         ("id", S("影片 id")),
                         ("code", S("番号，如 ABC-123；与 id 二选一"))),
                     required: []),
-
-                Tool("tag_list",
-                    "题材标签词表，按挂载影片数倒序。打标前先读这份清单，按意思去对——" +
-                    "片名说的特征只要有对应概念就用它的正名，不要求字面相同。",
-                    Props(
-                        ("keyword", S("在标签正名与别名里模糊匹配")),
-                        ("limit", N($"每页条数，默认 {DefaultLimit}，最多 {MaxLimit}")),
-                        ("offset", N("跳过条数"))),
-                    required: []),
-
-                Tool("tag_propose",
-                    "给一部片提交标签，数量不限（推不出特征就一个都不提）。词表里已有的（正名或别名都算）直接挂上；" +
-                    "没收录的词进待审队列等人工批准——这个接口建不出新标签，所以放心提。" +
-                    "响应里每条带 similar：词表里与这个词最像的几个正名，非空时先考虑改用它，别放个近义词进队列。" +
-                    "note 要写清依据，审核的人要看。" +
-                    $"\n当前口径：{rule}",
-                    Props(
-                        ("videoId", S("影片 id（video_list / video_get 里的那个 id）")),
-                        ("names", StrArray("标签词，一次最多 20 个")),
-                        ("note", S("为什么提这些词，例如「取自中文片名」"))),
-                    required: ["videoId", "names"]),
 
                 Tool("studio_list",
                     "片商词表，含别名、国家、官网与名下影片数。",
@@ -265,7 +221,7 @@ public sealed class McpService
                     required: []),
 
                 Tool("vocab_counts",
-                    "库里各表的规模与待办：影片总数、还没标签的有几部、词表多大、待审候选堆了多少。开工前先看一眼。",
+                    "库里各表的规模与待办：影片总数、没填片商的有几部、两维没标的有几部、没量过分辨率的有几部。开工前先看一眼。",
                     Props(),
                     required: [])
             }
@@ -286,8 +242,6 @@ public sealed class McpService
             {
                 "video_list" => VideoList(input),
                 "video_get" => VideoGet(input),
-                "tag_list" => TagList(input),
-                "tag_propose" => TagPropose(input),
                 "studio_list" => StudioList(input),
                 "vocab_counts" => VocabCounts(),
                 _ => throw new UnknownTool(name!)
@@ -337,11 +291,15 @@ public sealed class McpService
         return new Dictionary<string, object?>
         {
             ["videos"] = Scalar(conn, "SELECT COUNT(*) FROM videos"),
-            ["videosWithoutTag"] = Scalar(conn, "SELECT COUNT(*) FROM videos v WHERE NOT EXISTS (SELECT 1 FROM video_tags vt WHERE vt.video_id = v.id)"),
             ["videosJapanAv"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE country = '日本' AND category = 'av'"),
-            ["tags"] = Scalar(conn, "SELECT COUNT(*) FROM tags"),
+            ["withoutStudio"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE studioid IS NULL OR studioid = ''"),
+            ["unscanned"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE res_h IS NULL OR res_h = 0"),
+            ["unratedSource"] = Scalar(conn, $"SELECT COUNT(*) FROM videos v WHERE {Utils.SourceStates.Unrated}"),
+            ["withoutReleaseDate"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE release_date IS NULL OR release_date = ''"),
+            ["withoutActors"] = Scalar(conn, "SELECT COUNT(*) FROM videos v WHERE NOT EXISTS (SELECT 1 FROM video_actors va WHERE va.video_id = v.id)"),
             ["studios"] = Scalar(conn, "SELECT COUNT(*) FROM studios"),
-            ["pendingSuggestions"] = Scalar(conn, "SELECT COUNT(*) FROM tag_suggestions WHERE status = 'pending'")
+            ["actors"] = Scalar(conn, "SELECT COUNT(*) FROM actors"),
+            ["actorsWithoutBirthdate"] = Scalar(conn, "SELECT COUNT(*) FROM actors WHERE birthdate IS NULL OR birthdate = ''")
         };
     }
 
@@ -371,15 +329,21 @@ public sealed class McpService
             ps.Add(new SqliteParameter("@category", category));
         }
 
-        if (Flag(args, "noTags") == true)
-            where += " AND NOT EXISTS (SELECT 1 FROM video_tags x WHERE x.video_id = v.id)";
+        if (Flag(args, "noStudio") == true)
+            where += " AND (v.studioid IS NULL OR v.studioid = '')";
+
+        if (Flag(args, "unscanned") == true)
+            where += " AND (v.res_h IS NULL OR v.res_h = 0)";
+
+        // "两维都没标"就是"还没看过"的口径，与今日推荐用的是同一个谓词
+        if (Flag(args, "unrated") == true)
+            where += $" AND {Utils.SourceStates.Unrated}";
 
         var (limit, offset) = Paging(args);
 
         using var conn = Open();
 
-        // 标签与片商允许用名字筛：模型手上只有名字，硬要它先查一轮 id 只是白费往返
-        var tagId = Resolve(conn, "tag", Arg(args, "tag"));
+        // 片商允许用名字筛：模型手上只有名字，硬要它先查一轮 id 只是白费往返
         var studioId = Resolve(conn, "studio", Arg(args, "studio"));
 
         VideoCardQuery.AppendCommonFilters(ref where, ps, new VideoCardQuery.SourceFilter
@@ -387,7 +351,6 @@ public sealed class McpService
             Subtitle = Arg(args, "subtitle"),
             Watermark = Arg(args, "watermark"),
             Resolution = Arg(args, "resolution"),
-            TagId = tagId,
             StudioId = studioId
         });
 
@@ -441,58 +404,9 @@ public sealed class McpService
         }
 
         Attach(conn, [video], withActorDetail: true);
-        video["groups"] = VideoMeta.Groups(conn, id);
         video["links"] = VideoMeta.Links(conn, id);
 
         return video;
-    }
-
-    private object TagList(JsonElement args)
-    {
-        var (limit, offset) = Paging(args);
-        var where = "WHERE 1=1";
-        var ps = new List<SqliteParameter>();
-        var keyword = Arg(args, "keyword");
-        if (keyword is not null)
-        {
-            where += " AND (t.name LIKE @kw OR EXISTS (SELECT 1 FROM tag_aliases a WHERE a.tag_id = t.id AND a.alias LIKE @kw))";
-            ps.Add(new SqliteParameter("@kw", $"%{keyword}%"));
-        }
-
-        const string sql = @"
-            SELECT t.id, t.name,
-                   IFNULL((SELECT COUNT(*) FROM video_tags vt WHERE vt.tag_id = t.id), 0) AS video_count,
-                   IFNULL((SELECT GROUP_CONCAT(a.alias, char(31)) FROM tag_aliases a WHERE a.tag_id = t.id), '') AS alias_blob
-            FROM tags t";
-
-        using var conn = Open();
-        var total = Scalar(conn, $"SELECT COUNT(*) FROM tags t {where}", ps);
-
-        var list = new List<object>();
-        using (var cmd = new SqliteCommand($"{sql} {where} ORDER BY video_count DESC, t.name ASC LIMIT @ps OFFSET @off", conn))
-        {
-            foreach (var p in ps) cmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
-            cmd.Parameters.AddWithValue("@ps", limit);
-            cmd.Parameters.AddWithValue("@off", offset);
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-                list.Add(new Dictionary<string, object?>
-                {
-                    ["id"] = reader.GetString(0),
-                    ["name"] = reader.GetString(1),
-                    ["videoCount"] = reader.GetInt32(2),
-                    ["aliases"] = Blob(reader.GetString(3))
-                });
-        }
-
-        return new Dictionary<string, object?>
-        {
-            ["total"] = total,
-            ["limit"] = limit,
-            ["offset"] = offset,
-            ["note"] = "只有这里没出现过的词才需要走 tag_propose 的待审路径",
-            ["items"] = list
-        };
     }
 
     private object StudioList(JsonElement args)
@@ -539,165 +453,14 @@ public sealed class McpService
     }
 
     /// <summary>
-    /// AI 打标唯一的写入口。词表里有的直接挂，没有的进待审——
-    /// 这里刻意不写 tags 表的 INSERT，所以再怎么调用都扩不了词表。
-    /// </summary>
-    private object TagPropose(JsonElement args)
-    {
-        var videoId = Arg(args, "videoId") ?? throw new ToolException("videoId 不能为空");
-        if (!args.TryGetProperty("names", out var names) || names.ValueKind != JsonValueKind.Array)
-            throw new ToolException("names 必须是字符串数组");
-
-        var words = names.EnumerateArray()
-            .Where(n => n.ValueKind == JsonValueKind.String)
-            .Select(n => n.GetString()!.Trim())
-            .Where(s => s.Length > 0)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        if (words.Count == 0) throw new ToolException("names 里一个词都没有");
-        if (words.Count > 20) throw new ToolException("一次最多提 20 个词");
-
-        var note = Arg(args, "note") ?? "AI 提交";
-
-        using var conn = Open();
-        string title;
-        using (var check = new SqliteCommand("SELECT name FROM videos WHERE id = @id", conn))
-        {
-            check.Parameters.AddWithValue("@id", videoId);
-            title = check.ExecuteScalar() as string ?? throw new ToolException($"影片不存在：{videoId}");
-        }
-
-        var vocab = LoadVocab(conn);
-
-        return new Dictionary<string, object?>
-        {
-            ["videoId"] = videoId,
-            ["videoName"] = title,
-            ["results"] = words.Select(w => ProposeOne(conn, videoId, w, note, vocab)).ToList()
-        };
-    }
-
-    /// <summary>
-    /// 词表索引：一条 = (报出来的正名, 用来比对的字符集)。别名也进索引，但报的仍是它所属标签的正名——
-    /// 提示模型归一，而不是又添一个词。词表就几百条，全量拉进内存比每个候选词问一次库便宜。
-    /// </summary>
-    private static List<(string Name, HashSet<char> Chars)> LoadVocab(SqliteConnection conn)
-    {
-        var list = new List<(string, HashSet<char>)>();
-
-        using (var cmd = new SqliteCommand("SELECT name FROM tags", conn))
-        {
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var name = reader.GetString(0);
-                list.Add((name, name.ToHashSet()));
-            }
-        }
-
-        using (var cmd = new SqliteCommand(
-            @"SELECT t.name, a.alias FROM tag_aliases a JOIN tags t ON t.id = a.tag_id", conn))
-        {
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var alias = reader.GetString(1);
-                list.Add((reader.GetString(0), alias.ToHashSet()));
-            }
-        }
-
-        return list;
-    }
-
-    /// <summary>
-    /// 词表里与候选词最像的几个：按共享字占比（重叠系数）排，阈值 0.5。
-    /// 只当提示，不自动挂——"爆乳算不算巨乳"是语义判断，接口不替人拍板。
-    /// </summary>
-    private static List<string> Similar(string word, List<(string Name, HashSet<char> Chars)> vocab)
-    {
-        var chars = word.ToHashSet();
-        if (chars.Count == 0) return [];
-
-        return vocab
-            .Where(v => v.Chars.Count > 0)
-            .Select(v => (v.Name, Score: (double)chars.Count(v.Chars.Contains) / Math.Min(chars.Count, v.Chars.Count)))
-            .Where(x => x.Score >= 0.5)
-            .OrderByDescending(x => x.Score)
-            .ThenBy(x => x.Name.Length)
-            .Select(x => x.Name)
-            .Distinct(StringComparer.Ordinal)
-            .Take(3)
-            .ToList();
-    }
-
-    private Dictionary<string, object?> ProposeOne(
-        SqliteConnection conn, string videoId, string word, string note, List<(string Name, HashSet<char> Chars)> vocab)
-    {
-        var known = VideoMeta.FindTag(conn, word);
-        if (known is not null)
-        {
-            using var attach = new SqliteCommand(
-                @"INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, ctime) VALUES (@v, @t, 'ai', @time); SELECT changes();", conn);
-            attach.Parameters.AddWithValue("@v", videoId);
-            attach.Parameters.AddWithValue("@t", known);
-            attach.Parameters.AddWithValue("@time", VideoMeta.Now());
-            var changed = Convert.ToInt32(attach.ExecuteScalar());
-            return Verdict(word, changed == 0 ? "already" : "attached", known, "词表里已经有，直接挂上了");
-        }
-
-        // 认不出不等于该新建：把词表里的近义项回给模型，让它自己改用它，
-        // 而不是把「爆乳」再塞进队列等人工合并
-        var near = Similar(word, vocab);
-
-        using (var dup = new SqliteCommand(
-            @"SELECT id FROM tag_suggestions WHERE video_id = @v AND name = @n AND status = 'pending' LIMIT 1", conn))
-        {
-            dup.Parameters.AddWithValue("@v", videoId);
-            dup.Parameters.AddWithValue("@n", word);
-            if (dup.ExecuteScalar() is not null)
-                return Verdict(word, "queued", null, "这条候选已经在待审队列里", near);
-        }
-
-        using (var ins = new SqliteCommand(
-            @"INSERT INTO tag_suggestions (video_id, tag_id, name, note, status, created_at)
-              VALUES (@v, NULL, @n, @note, 'pending', @t); SELECT last_insert_rowid();", conn))
-        {
-            ins.Parameters.AddWithValue("@v", videoId);
-            ins.Parameters.AddWithValue("@n", word);
-            ins.Parameters.AddWithValue("@note", note);
-            ins.Parameters.AddWithValue("@t", VideoMeta.Now());
-            var id = Convert.ToInt32(ins.ExecuteScalar());
-            return Verdict(word, "queued", null,
-                near.Count > 0
-                    ? $"新词，已进待审队列 #{id}。词表里有近义项，若说的是一回事请改用正名重新提交"
-                    : $"新词，已进待审队列 #{id}，等人批准或并入",
-                near);
-        }
-    }
-
-    private static Dictionary<string, object?> Verdict(
-        string word, string status, string? tagId, string message, List<string>? similar = null) => new()
-    {
-        ["name"] = word,
-        ["status"] = status,
-        ["tagId"] = tagId,
-        ["message"] = message,
-        ["similar"] = similar ?? []
-    };
-
-    // ---------------------------------------------------------------- 批量取关联
-
-    /// <summary>
-    /// 给一页影片补标签与演员：整页两次批量查询，而不是每行两次单查——
-    /// 模型一次要 50 部，N+1 会变成一百五十个来回。片商不在这儿，它是影片上的一个值，
-    /// 已经随 Columns 那一条 SELECT 一起带出来了。
+    /// 给一页影片补演员：整页一次批量查询，而不是每行单查——
+    /// 模型一次要 50 部，N+1 会变成一百五十个来回。
+    /// 片商与原名/发行不用补，它们是 videos 上的列，已经随那一条 SELECT 出来了。
     /// </summary>
     private static void Attach(SqliteConnection conn, List<Dictionary<string, object?>> rows, bool withActorDetail)
     {
         foreach (var r in rows)
         {
-            r["tags"] = new List<object>();
             r["actors"] = new List<object>();
             // 分辨率按短边报，与前端的 resolutionText 同一个口径，省得模型自己换算
             var w = Convert.ToInt32(r.GetValueOrDefault("resW") ?? 0);
@@ -711,12 +474,8 @@ public sealed class McpService
         var byId = rows.Where(r => r.GetValueOrDefault("id") is string).ToDictionary(r => (string)r["id"]!, r => r);
         var inList = string.Join(",", ids.Select((_, i) => $"@v{i}"));
 
-        Batch(conn, $@"SELECT vt.video_id, t.name, vt.source FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
-                       WHERE vt.video_id IN ({inList})", ids, r => Push(byId, r.GetString(0), "tags",
-                           new Dictionary<string, object?> { ["name"] = r.GetString(1), ["source"] = r.IsDBNull(2) ? "manual" : r.GetString(2) }));
-
         // 列表页不需要演员 id 和生日，用两个空列把两套 SELECT 对齐成同一个 reader
-        var cols = withActorDetail ? "a.id, a.birthdate" : "'' , ''";
+        var cols = withActorDetail ? "a.id, a.birthdate" : "'', ''";
         Batch(conn, $@"SELECT va.video_id, a.name, {cols} FROM actors a JOIN video_actors va ON a.id = va.actor_id
                        WHERE va.video_id IN ({inList}) ORDER BY a.name", ids, r => Push(byId, r.GetString(0), "actors",
                            new Dictionary<string, object?>
@@ -774,12 +533,8 @@ public sealed class McpService
     {
         if (value is null) return null;
 
-        var (table, aliasTable, aliasColumn) = kind switch
-        {
-            "tag" => ("tags", "tag_aliases", "tag_id"),
-            _ => ("studios", "studio_aliases", "studio_id")
-        };
-        var label = kind == "tag" ? "标签" : "片商";
+        var (table, aliasTable, aliasColumn) = ("studios", "studio_aliases", "studio_id");
+        const string label = "片商";
 
         var probes = new[]
         {
@@ -909,11 +664,4 @@ public sealed class McpService
         ["enum"] = values.ToList()
     };
 
-    private static Dictionary<string, object?> StrArray(string itemDescription) => new()
-    {
-        ["type"] = "array",
-        ["description"] = "字符串数组",
-        ["maxItems"] = 20,
-        ["items"] = new Dictionary<string, object?> { ["type"] = "string", ["description"] = itemDescription }
-    };
 }

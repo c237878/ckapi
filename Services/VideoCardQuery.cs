@@ -76,7 +76,7 @@ public static class VideoCardQuery
 
     /// <summary>
     /// 列表页共用的筛选项。字段名与 query 参数一一对应，
-    /// 五个调用点（影片列表 / 演员详情 / 系列详情 / 片商详情 / 标签详情）都构造这一个对象，
+    /// 四个调用点（影片列表 / 演员详情 / 系列详情 / 片商详情）都构造这一个对象，
     /// 免得参数越加越长、各调用点漏传一个还看不出来。
     /// </summary>
     public sealed class SourceFilter
@@ -85,12 +85,11 @@ public static class VideoCardQuery
         public string? Watermark { get; set; }
         public string? Resolution { get; set; }
         public string? StudioId { get; set; }
-        public string? TagId { get; set; }
         public bool? HasFile { get; set; }
     }
 
     /// <summary>
-    /// 拼接片源两维 / 分辨率档 / 片商 / 标签 / 有没有文件这几项共用筛选。
+    /// 拼接片源两维 / 分辨率档 / 片商 / 有没有文件这几项共用筛选。
     /// 三个字符串条件都过白名单，取值不在口径里一律当"没筛"——不能让前端传来的字符串进 SQL。
     /// 表别名固定为 v，与 Columns / ColumnsWithSeries 一致；返回的片段以 AND 开头。
     /// </summary>
@@ -116,17 +115,11 @@ public static class VideoCardQuery
             where += $" AND ({clause})";
         }
 
-        // 片商是一部片的一个值，直接比列；标签仍走 EXISTS（一部片可以挂好几个标签）
+        // 片商是一部片的一个值，直接比列即可
         if (!string.IsNullOrWhiteSpace(f.StudioId))
         {
             where += " AND v.studioid = @studioId";
             parameters.Add(new SqliteParameter("@studioId", f.StudioId));
-        }
-
-        if (!string.IsNullOrWhiteSpace(f.TagId))
-        {
-            where += " AND EXISTS (SELECT 1 FROM video_tags x WHERE x.video_id = v.id AND x.tag_id = @tagId)";
-            parameters.Add(new SqliteParameter("@tagId", f.TagId));
         }
 
         if (f.HasFile == true)

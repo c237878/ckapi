@@ -48,7 +48,6 @@ public class VideoController : ControllerBase
         [FromQuery] string? watermark = null,
         [FromQuery] string? resolution = null,
         [FromQuery] string? studio = null,
-        [FromQuery] string? tag = null,
         [FromQuery] bool? prioritizeUnrated = null,
         [FromQuery] string? sortBy = null)
     {
@@ -102,7 +101,7 @@ public class VideoController : ControllerBase
             VideoCardQuery.AppendCommonFilters(ref whereClause, parameters, new VideoCardQuery.SourceFilter
             {
                 Subtitle = subtitle, Watermark = watermark, Resolution = resolution,
-                StudioId = studio, TagId = tag, HasFile = hasFile
+                StudioId = studio, HasFile = hasFile
             });
 
             using var conn = GetConnection();
@@ -354,11 +353,9 @@ public class VideoController : ControllerBase
                 video = VideoCardQuery.Map(reader);
             }
 
-            // 三个扩展块直接并进 video 对象：前端只有一份影片状态，不用分四个 ref 去同步。
+            // 外链直接并进 video 对象：前端只有一份影片状态，不用分几个 ref 去同步。
             // 上面那个 reader 必须先关掉再发这些查询——Microsoft.Data.Sqlite 不支持多个活动结果集。
             // 片商不在这里：它现在是 videos.studioid，上面那条 SELECT 已经把 id 与名字一起带出来了。
-            video["tags"] = VideoMeta.Tags(conn, id);
-            video["groups"] = VideoMeta.Groups(conn, id);
             video["links"] = VideoMeta.Links(conn, id);
 
             // 获取演员列表
