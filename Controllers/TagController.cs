@@ -460,6 +460,44 @@ public class TagController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 批量删标签：一个事务里逐个 PurgeTag + 删行。
+    /// 界面上一次点十几个词是常态（AI 跑了一轮之后清理），逐条删要点十几次。
+    /// 每个标签各自摘掉影片上的挂接与别名，语义与单条删除完全一致，不做任何"合并"式的挽救。
+    /// </summary>
+    [HttpPost("batch-delete")]
+    public IActionResult BatchDelete([FromBody] BatchDeleteRequest req)
+    {
+        var ids = (req?.Ids ?? new List<string>()).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList();
+        if (ids.Count == 0) return Ok(new { success = false, message = "先勾上要删的标签" });
+        if (ids.Count > 200) return Ok(new { success = false, message = "一次最多删 200 个" });
+
+        try
+        {
+            using var conn = _db.GetConnection();
+            conn.Open();
+
+            var deleted = 0;
+            using (var tx = conn.BeginTransaction())
+            {
+                foreach (var id in ids)
+                {
+                    VideoMeta.PurgeTag(conn, id, tx);
+                    using var del = new SqliteCommand("DELETE FROM tags WHERE id = @id", conn, tx);
+                    del.Parameters.AddWithValue("@id", id);
+                    deleted += del.ExecuteNonQuery();
+                }
+                tx.Commit();
+            }
+            return Ok(new { success = true, message = $"已删除 {deleted} 个标签（影片上的挂接一并摘掉）", data = new { deleted } });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BatchDelete tags failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
     /// <summary>两个标签合并：把 from 挂到 to 上，from 连同别名消失</summary>
     [HttpPost("{id}/merge")]
     public IActionResult Merge(string id, [FromBody] MergeRequest req)

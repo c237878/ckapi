@@ -17,6 +17,7 @@ public static class VideoCardQuery
     public const string Columns = """
         v.id, v.code, v.name, v.category, v.country, v.cover_path, v.file_path, v.file_size,
         v.seriesid, v.ctime, v.subtitle_state, v.watermark_state, v.res_w, v.res_h,
+        v.studioid, (SELECT st.name FROM studios st WHERE st.id = v.studioid) AS studio_name,
         (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
         (SELECT GROUP_CONCAT(a.id || '|' || a.name, ',') FROM actors a
          JOIN video_actors va ON a.id = va.actor_id WHERE va.video_id = v.id) AS actor_names
@@ -50,6 +51,9 @@ public static class VideoCardQuery
             // 原名与发行日期只有详情页用得到，卡片不占地方；没有就返回 null
             ["originalName"] = Str(reader, "original_name"),
             ["releaseDate"] = Str(reader, "release_date"),
+            // 片商是一部片的一个值，与 seriesId/seriesName 同形
+            ["studioId"] = Str(reader, "studioid"),
+            ["studioName"] = Str(reader, "studio_name"),
         };
 
         if (HasColumn(reader, "scan_time")) result["scanTime"] = Str(reader, "scan_time");
@@ -112,10 +116,10 @@ public static class VideoCardQuery
             where += $" AND ({clause})";
         }
 
-        // 片商与标签走 EXISTS 而不是 JOIN：一部片挂两家片商时，JOIN 会把同一行翻倍
+        // 片商是一部片的一个值，直接比列；标签仍走 EXISTS（一部片可以挂好几个标签）
         if (!string.IsNullOrWhiteSpace(f.StudioId))
         {
-            where += " AND EXISTS (SELECT 1 FROM video_studios x WHERE x.video_id = v.id AND x.studio_id = @studioId)";
+            where += " AND v.studioid = @studioId";
             parameters.Add(new SqliteParameter("@studioId", f.StudioId));
         }
 

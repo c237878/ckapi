@@ -19,34 +19,17 @@ namespace ckapi.Services;
 /// </summary>
 public static class VideoMeta
 {
-    public sealed record StudioRef(string Id, string Name, string Role);
     public sealed record TagRef(string Id, string Name, string Source);
     public sealed record LinkRef(string Id, string Kind, string Url);
     public sealed record PeerRef(string Id, string Code, string Name, int Position);
     public sealed record GroupRef(string Id, string Name, int Position, List<PeerRef> Peers);
 
-    /// <summary>role 只认这两个值（TMDB 的 company_type 同理），别的都按"不区分"存空串</summary>
-    public static readonly string[] StudioRoles = { "", "maker", "label" };
-
     private static string NewId() => Guid.NewGuid().ToString("N").ToUpper();
 
     // ---------------------------------------------------------------- 读
 
-    public static List<StudioRef> Studios(SqliteConnection conn, string videoId)
-    {
-        var list = new List<StudioRef>();
-        const string sql = @"
-            SELECT s.id, s.name, vs.role
-            FROM video_studios vs JOIN studios s ON s.id = vs.studio_id
-            WHERE vs.video_id = @id
-            ORDER BY CASE vs.role WHEN 'maker' THEN 0 WHEN 'label' THEN 1 ELSE 2 END, s.name";
-        using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@id", videoId);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-            list.Add(new StudioRef(reader.GetString(0), reader.GetString(1), reader.GetString(2)));
-        return list;
-    }
+    // 片商是一部片的一个值（videos.studioid），读的时候随卡片那一条 SELECT 一起带出来，
+    // 不再单独查一次——原来 Studios(videoId) 那个多对多读法已经跟着 v9 一起废掉了。
 
     public static List<TagRef> Tags(SqliteConnection conn, string videoId)
     {
@@ -185,80 +168,47 @@ public static class VideoMeta
         return id;
     }
 
-    // ---------------------------------------------------------------- 写（整组替换）
+    // ---------------------------------------------------------------- 写
 
-    /// <summary>一行要挂的片商：给 id 用 id，只给 name 就归一/新建</summary>
-    public sealed class StudioInput
+    /// <summary>
+    /// 解析一部片的那一家片商：给 id 就用 id（认不出直接报错，别静默丢掉——界面会显示"挂上了"而实际没挂）；
+    /// 只给 name 就先按正名/别名归一，归不到才新建；两个都空表示"这部片没有片商"。
+    /// </summary>
+    public static (string? Id, bool Created) ResolveStudio(SqliteConnection conn, string? id, string? name)
     {
-        public string? Id { get; set; }
-        public string? Name { get; set; }
-        public string Role { get; set; } = "";
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            using var check = new SqliteCommand("SELECT name FROM studios WHERE id = @id", conn);
+            check.Parameters.AddWithValue("@id", id.Trim());
+            if (check.ExecuteScalar() is null) throw new MetaException($"片商不存在：{id}");
+            return (id.Trim(), false);
+        }
+
+        var key = (name ?? "").Trim();
+        if (key.Length == 0) return (null, false);
+
+        var found = FindStudio(conn, key);
+        return found is not null ? (found, false) : (EnsureStudio(conn, null, key), true);
     }
 
-    /// <summary>返回（挂上几家，其中新建了几家）。role 不在白名单里按空串存，不报错</summary>
-    public static (int Attached, int Created) SetStudios(SqliteConnection conn, string videoId, List<StudioInput>? items)
+    /// <summary>写 videos.studioid（null 就是清空）</summary>
+    public static void SetStudio(SqliteConnection conn, string videoId, string? studioId)
     {
-        var picked = new List<(string Id, string Role)>();
-        var created = 0;
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var item in items ?? new List<StudioInput>())
-        {
-            var id = item.Id;
-            if (string.IsNullOrWhiteSpace(id))
-            {
-                var name = (item.Name ?? "").Trim();
-                if (name.Length == 0) continue;
-                id = FindStudio(conn, name);
-                if (id is null)
-                {
-                    id = EnsureStudio(conn, null, name);
-                    created++;
-                }
-            }
-            else
-            {
-                // 认不出这个 id 就整个请求报错，别静默丢掉一条：界面会显示"挂上了"而实际没挂
-                using var check = new SqliteCommand("SELECT name FROM studios WHERE id = @id", conn);
-                check.Parameters.AddWithValue("@id", id);
-                if (check.ExecuteScalar() is null) throw new MetaException($"片商不存在：{id}");
-            }
-
-            var role = Array.IndexOf(StudioRoles, item.Role) >= 0 ? item.Role : "";
-            if (!seen.Add(id)) continue;   // 同一家挂两次（一家兼制作与发行）只留第一条
-            picked.Add((id, role));
-        }
-
-        using (var tx = conn.BeginTransaction())
-        {
-            using (var del = new SqliteCommand("DELETE FROM video_studios WHERE video_id = @id", conn, tx))
-            {
-                del.Parameters.AddWithValue("@id", videoId);
-                del.ExecuteNonQuery();
-            }
-            using var ins = new SqliteCommand(
-                "INSERT INTO video_studios (video_id, studio_id, role) VALUES (@v, @s, @r)", conn, tx);
-            foreach (var (id, role) in picked)
-            {
-                ins.Parameters.Clear();
-                ins.Parameters.AddWithValue("@v", videoId);
-                ins.Parameters.AddWithValue("@s", id);
-                ins.Parameters.AddWithValue("@r", role);
-                ins.ExecuteNonQuery();
-            }
-            tx.Commit();
-        }
-        return (picked.Count, created);
+        using var cmd = new SqliteCommand("UPDATE videos SET studioid = @s WHERE id = @id", conn);
+        cmd.Parameters.AddWithValue("@s", (object?)studioId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@id", videoId);
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>
-    /// 把这部片的片商补到**同系列还没片商**的影片上，返回补了几部。
-    ///
-    /// 一个系列基本就是同一家在做，逐部手填没有意义；但只填一条挂接都没有的，
-    /// 已有片商的绝不覆盖——系列里混进别家（联名、复刻、换牌）时那几部已有的结论得留着。
+    /// 把这家片商补到同系列**还没填片商**的影片上，返回补了几部。
+    /// 一个系列基本就是同一家在做，逐部手填没有意义；已有片商的绝不动——
+    /// 系列里混进别家（联名、复刻、换牌）时那几部已有的结论得留着。
     /// </summary>
-    public static int PropagateStudiosToSeries(SqliteConnection conn, string videoId)
+    public static int FillSeriesStudios(SqliteConnection conn, string videoId, string? studioId)
     {
+        if (string.IsNullOrWhiteSpace(studioId)) return 0;
+
         string? seriesId;
         using (var cmd = new SqliteCommand("SELECT seriesid FROM videos WHERE id = @id", conn))
         {
@@ -267,45 +217,13 @@ public static class VideoMeta
         }
         if (string.IsNullOrWhiteSpace(seriesId)) return 0;
 
-        var mine = new List<(string Id, string Role)>();
-        using (var cmd = new SqliteCommand("SELECT studio_id, IFNULL(role, '') FROM video_studios WHERE video_id = @id", conn))
-        {
-            cmd.Parameters.AddWithValue("@id", videoId);
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read()) mine.Add((reader.GetString(0), reader.GetString(1)));
-        }
-        if (mine.Count == 0) return 0;
-
-        var siblings = new List<string>();
-        using (var cmd = new SqliteCommand(@"
-            SELECT v.id FROM videos v
-            WHERE v.seriesid = @s AND v.id <> @id
-              AND NOT EXISTS (SELECT 1 FROM video_studios vs WHERE vs.video_id = v.id)", conn))
-        {
-            cmd.Parameters.AddWithValue("@s", seriesId);
-            cmd.Parameters.AddWithValue("@id", videoId);
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read()) siblings.Add(reader.GetString(0));
-        }
-        if (siblings.Count == 0) return 0;
-
-        using var tx = conn.BeginTransaction();
-        using (var ins = new SqliteCommand("INSERT OR IGNORE INTO video_studios (video_id, studio_id, role) VALUES (@v, @s, @r)", conn, tx))
-        {
-            foreach (var video in siblings)
-            {
-                foreach (var (id, role) in mine)
-                {
-                    ins.Parameters.Clear();
-                    ins.Parameters.AddWithValue("@v", video);
-                    ins.Parameters.AddWithValue("@s", id);
-                    ins.Parameters.AddWithValue("@r", role);
-                    ins.ExecuteNonQuery();
-                }
-            }
-        }
-        tx.Commit();
-        return siblings.Count;
+        using var upd = new SqliteCommand(@"
+            UPDATE videos SET studioid = @s
+            WHERE seriesid = @ser AND id <> @id AND (studioid IS NULL OR studioid = '')", conn);
+        upd.Parameters.AddWithValue("@s", studioId);
+        upd.Parameters.AddWithValue("@ser", seriesId);
+        upd.Parameters.AddWithValue("@id", videoId);
+        return upd.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -439,7 +357,6 @@ public static class VideoMeta
     {
         foreach (var sql in new[]
                  {
-                     "DELETE FROM video_studios WHERE video_id = @id",
                      "DELETE FROM video_tags WHERE video_id = @id",
                      "DELETE FROM video_links WHERE video_id = @id",
                      "DELETE FROM video_group_items WHERE video_id = @id",
@@ -452,10 +369,13 @@ public static class VideoMeta
         }
     }
 
-    /// <summary>删片商：先摘掉所有影片上的挂接（别名表是主键前缀，跟着 studio_id 删）</summary>
+    /// <summary>
+    /// 删片商：先把引用它的影片摘干净（studioid 是指向 studios 的外键式引用，外键没开，
+    /// 漏了就会在详情页显示成一家不存在的片商），别名表跟着 studio_id 一起删。
+    /// </summary>
     public static void PurgeStudio(SqliteConnection conn, string studioId, SqliteTransaction? tx = null)
     {
-        using (var cmd = new SqliteCommand("DELETE FROM video_studios WHERE studio_id = @id", conn, tx))
+        using (var cmd = new SqliteCommand("UPDATE videos SET studioid = NULL WHERE studioid = @id", conn, tx))
         {
             cmd.Parameters.AddWithValue("@id", studioId);
             cmd.ExecuteNonQuery();

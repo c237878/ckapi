@@ -339,9 +339,10 @@ public class VideoController : ControllerBase
 
             Dictionary<string, object?> video;
             var sql = @"
-                SELECT v.*, s.name as series_name
+                SELECT v.*, s.name as series_name, st.name as studio_name
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
+                LEFT JOIN studios st ON st.id = v.studioid
                 WHERE v.id = @id";
             using (var cmd = new SqliteCommand(sql, conn))
             {
@@ -353,9 +354,9 @@ public class VideoController : ControllerBase
                 video = VideoCardQuery.Map(reader);
             }
 
-            // 四个扩展块直接并进 video 对象：前端只有一份影片状态，不用分五个 ref 去同步。
+            // 三个扩展块直接并进 video 对象：前端只有一份影片状态，不用分四个 ref 去同步。
             // 上面那个 reader 必须先关掉再发这些查询——Microsoft.Data.Sqlite 不支持多个活动结果集。
-            video["studios"] = VideoMeta.Studios(conn, id);
+            // 片商不在这里：它现在是 videos.studioid，上面那条 SELECT 已经把 id 与名字一起带出来了。
             video["tags"] = VideoMeta.Tags(conn, id);
             video["groups"] = VideoMeta.Groups(conn, id);
             video["links"] = VideoMeta.Links(conn, id);
@@ -475,13 +476,16 @@ public class VideoController : ControllerBase
 
             var sql = @"
                 INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid,
-                                    original_name, release_date)
+                                    original_name, release_date, studioid)
                 VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId,
-                        @originalName, @releaseDate)";
+                        @originalName, @releaseDate, @studioId)";
             
             using var conn = GetConnection();
             conn.Open();
-            
+
+            // 片商是一部片的一个值，与 seriesid 同形；只认词表里已有的 id，认不出就报错别静默丢
+            var (studioId, _) = VideoMeta.ResolveStudio(conn, req.StudioId, null);
+
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
             cmd.Parameters.Add(new SqliteParameter("@code", (object?)req.Code ?? DBNull.Value));
@@ -496,16 +500,12 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@originalName",
                 string.IsNullOrWhiteSpace(req.OriginalName) ? (object)DBNull.Value : req.OriginalName.Trim()));
             cmd.Parameters.Add(new SqliteParameter("@releaseDate", (object?)release ?? DBNull.Value));
+            cmd.Parameters.Add(new SqliteParameter("@studioId", (object?)studioId ?? DBNull.Value));
             
             cmd.ExecuteNonQuery();
 
-            // 片商与演员都是"整组替换"语义：新增时也带得上，编辑对话框才不用分两次保存
-            var filled = 0;
-            if (req.Studios is not null)
-            {
-                VideoMeta.SetStudios(conn, id, req.Studios);
-                filled = VideoMeta.PropagateStudiosToSeries(conn, id);
-            }
+            // 同系列还没填片商的一起补上：一个系列基本就是同一家在做
+            var filled = VideoMeta.FillSeriesStudios(conn, id, studioId);
 
             // 关联演员
             if (req.ActorIds != null && req.ActorIds.Any())
@@ -521,6 +521,11 @@ public class VideoController : ControllerBase
             }
 
             return Ok(new { success = true, data = new { id = id }, message = FilledNote(filled, "添加成功") });
+        }
+        catch (VideoMeta.MetaException ex)
+        {
+            // 片商 id 认不出这类是调用方可以自救的错，报原文别丢进 500
+            return Ok(new { success = false, message = ex.Message });
         }
         catch (Exception ex)
         {
@@ -675,12 +680,14 @@ public class VideoController : ControllerBase
                 cmd3.ExecuteNonQuery();
             }
 
-            // null 表示这次不动片商；给了数组就是整组替换（空数组 = 全摘掉）
+            // 片商是一部片的一个值：null 表示这次不动，空串表示清空。
+            // 填上之后同系列还没填的顺手补上（已有片商的不动）。
             var filled = 0;
-            if (req.Studios is not null)
+            if (req.StudioId is not null)
             {
-                VideoMeta.SetStudios(conn, id, req.Studios);
-                filled = VideoMeta.PropagateStudiosToSeries(conn, id);
+                var (studioId, _) = VideoMeta.ResolveStudio(conn, req.StudioId, null);
+                VideoMeta.SetStudio(conn, id, studioId);
+                filled = VideoMeta.FillSeriesStudios(conn, id, studioId);
             }
 
             // 更新演员关联
@@ -701,6 +708,10 @@ public class VideoController : ControllerBase
             }
 
             return Ok(new { success = true, message = FilledNote(filled, "更新成功"), renameInfo });
+        }
+        catch (VideoMeta.MetaException ex)
+        {
+            return Ok(new { success = false, message = ex.Message });
         }
         catch (Exception ex)
         {
@@ -1272,9 +1283,9 @@ public class AddVideoRequest
     /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
     [JsonPropertyName("releaseDate")]
     public string? ReleaseDate { get; set; }
-    /// <summary>片商：给 id 用已有的，只给 name 自动归一/新建；null 表示这次不动</summary>
-    [JsonPropertyName("studios")]
-    public List<VideoMeta.StudioInput>? Studios { get; set; }
+    /// <summary>片商 id：一部片只有一家，与 seriesId 同形。null 表示这次不动，空串表示清空</summary>
+    [JsonPropertyName("studioId")]
+    public string? StudioId { get; set; }
 }
 
 public class UpdateVideoRequest
@@ -1301,9 +1312,9 @@ public class UpdateVideoRequest
     /// <summary>发行日期，只收 YYYY / YYYY-MM / YYYY-MM-DD</summary>
     [JsonPropertyName("releaseDate")]
     public string? ReleaseDate { get; set; }
-    /// <summary>片商：给 id 用已有的，只给 name 自动归一/新建；null 表示这次不动</summary>
-    [JsonPropertyName("studios")]
-    public List<VideoMeta.StudioInput>? Studios { get; set; }
+    /// <summary>片商 id：一部片只有一家，与 seriesId 同形。null 表示这次不动，空串表示清空</summary>
+    [JsonPropertyName("studioId")]
+    public string? StudioId { get; set; }
 }
 
 public class BatchDeleteRequest

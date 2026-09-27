@@ -57,16 +57,8 @@ public class VideoMetaController : ControllerBase
         });
     }
 
-    /// <summary>整组替换片商。只给 name 时自动归一（正名→别名），归不到就新建这家——手填时才这么宽松</summary>
-    [HttpPut("{id}/studios")]
-    public IActionResult SetStudios(string id, [FromBody] StudiosRequest req)
-    {
-        return Guarded(id, "片商已更新", (conn, _) =>
-        {
-            var (attached, created) = VideoMeta.SetStudios(conn, id, req.Items);
-            return $"{attached} 家片商" + (created > 0 ? $"（新建 {created} 家）" : "");
-        });
-    }
+    // 片商没有单独接口：它是 videos.studioid 一个值，与 seriesid 同形，
+    // 跟着整份 PUT /api/video/{id} 一起写（studioId 传空串就是清空）。
 
     /// <summary>
     /// 整组替换标签。界面上打字允许顺手建新标签（他是词表唯一权威）；
@@ -215,11 +207,6 @@ public class VideoMetaController : ControllerBase
             _logger.LogError(ex, "VideoMeta write failed for {Id}", id);
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
-    }
-
-    public sealed class StudiosRequest
-    {
-        [JsonPropertyName("items")] public List<VideoMeta.StudioInput>? Items { get; set; }
     }
 
     public sealed class TagsRequest

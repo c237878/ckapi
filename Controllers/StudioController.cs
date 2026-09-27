@@ -55,7 +55,7 @@ public class StudioController : ControllerBase
 
             const string sql = @"
                 SELECT s.id, s.name, s.country, s.link, s.ctime,
-                       IFNULL((SELECT COUNT(*) FROM video_studios vs WHERE vs.studio_id = s.id), 0) AS video_count,
+                       (SELECT COUNT(*) FROM videos v WHERE v.studioid = s.id) AS video_count,
                        IFNULL((SELECT GROUP_CONCAT(a.alias, char(31)) FROM studio_aliases a WHERE a.studio_id = s.id), '') AS alias_blob
                 FROM studios s";
             var list = new List<object>();
@@ -142,7 +142,7 @@ public class StudioController : ControllerBase
             using var conn = _db.GetConnection();
             conn.Open();
 
-            var where = "WHERE vs.studio_id = @studioId";
+            var where = "WHERE v.studioid = @studioId";
             var parameters = new List<SqliteParameter> { new("@studioId", id) };
             VideoCardQuery.AppendCommonFilters(ref where, parameters, new VideoCardQuery.SourceFilter
             {
@@ -151,12 +151,11 @@ public class StudioController : ControllerBase
             });
 
             var total = Convert.ToInt32(Scalar(conn,
-                $"SELECT COUNT(*) FROM videos v JOIN video_studios vs ON vs.video_id = v.id {where}", parameters));
+                $"SELECT COUNT(*) FROM videos v {where}", parameters));
 
             var sql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
-                JOIN video_studios vs ON vs.video_id = v.id
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {where}
                 ORDER BY v.ctime DESC, v.id ASC

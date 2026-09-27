@@ -584,8 +584,9 @@ public sealed class ScrapeChannelService
             switch (rule.Target)
             {
                 case "videos.studio_name":
-                    VideoMeta.EnsureStudio(conn, null, value);
-                    VideoMeta.SetStudios(conn, entityId, new List<VideoMeta.StudioInput> { new() { Name = value } });
+                    // 归一优先：抽来的名字先按正名/别名对上已有的片商，对不上才新建
+                    var (sid, _) = VideoMeta.ResolveStudio(conn, null, value);
+                    VideoMeta.SetStudio(conn, entityId, sid);
                     written++;
                     break;
 

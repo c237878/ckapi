@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 8;
+    private const int TargetVersion = 9;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -353,6 +353,36 @@ public class DataService : IDataService
         _logger.LogInformation("已为 videos 添加 original_name / release_date 列");
     }
 
+    /// <summary>
+    /// 片商从多对多收成一部片一个值（v9）。
+    ///
+    /// 原来照 TMDB 做成 video_studios(video_id, studio_id, role)，预设"制作商 A + 发行商 B"会常见；
+    /// 实际填下来 27 部有片商的影片没有一部挂过两家，role 全是空串，
+    /// 于是这张表只剩"给一列值假装成集合"的成本：界面要单选、筛选要 EXISTS、删片商要清挂接。
+    ///
+    /// 回填按 role='maker' 优先取一条（真有多家的老数据时留下制作商，且结果确定、重放不变），
+    /// 然后整表删掉。studioid 与 seriesid 同形，读法也照它来。
+    /// </summary>
+    private void StudioToOneColumn(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "videos", "studioid", "TEXT");
+
+        if (TableExists(conn, "video_studios"))
+        {
+            NonQuery(conn, @"
+                UPDATE videos SET studioid = (
+                    SELECT vs.studio_id FROM video_studios vs
+                    WHERE vs.video_id = videos.id
+                    ORDER BY CASE WHEN IFNULL(vs.role, '') = 'maker' THEN 0 ELSE 1 END, vs.studio_id
+                    LIMIT 1
+                )
+                WHERE studioid IS NULL
+                  AND EXISTS (SELECT 1 FROM video_studios vs WHERE vs.video_id = videos.id)");
+            NonQuery(conn, "DROP TABLE video_studios");
+            _logger.LogInformation("片商已收成 videos.studioid 单值，video_studios 中间表已删除");
+        }
+    }
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -369,6 +399,7 @@ public class DataService : IDataService
             .Append((6, "片源复合标记拆成字幕 + 广告水印两维，加分辨率列（见 SplitSourceAttributes 注释）", SplitSourceAttributes))
             .Append((7, "删掉 videos.watched，看过与否改由两维是否均未标记推导（见 DropWatchedFlag 注释）", DropWatchedFlag))
             .Append((8, "影片加日文原名与发行日期列（见 AddVideoTitles 注释）", AddVideoTitles))
+            .Append((9, "片商收成 videos.studioid 单值，删掉 video_studios（见 StudioToOneColumn 注释）", StudioToOneColumn))
             .ToArray();
     }
 
@@ -480,7 +511,9 @@ public class DataService : IDataService
                 res_h           INTEGER,
                 scan_time       TEXT,
                 original_name   TEXT,
-                release_date    TEXT
+                release_date    TEXT,
+                /* 片商是一部片的一个值，与 seriesid 同形（v9 起；原来是 video_studios 多对多） */
+                studioid        TEXT
             )");
 
         NonQuery(conn, @"
@@ -570,15 +603,8 @@ public class DataService : IDataService
                 PRIMARY KEY (studio_id, alias)
             )");
 
-        // 多对多：一部片常常是"制作商 A + 发行商 B"两家（TMDB 也是 M:N）。
-        // role 留空表示不区分，只有 maker / label 两种取值有意义。
-        NonQuery(conn, @"
-            CREATE TABLE IF NOT EXISTS video_studios (
-                video_id  TEXT NOT NULL,
-                studio_id TEXT NOT NULL,
-                role      TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (video_id, studio_id)
-            )");
+        // 一部片只有一家片商（实测库里 27 部有片商的没有一部挂两家），所以挂在 videos.studioid 上，
+        // 不再另建 video_studios 中间表——多对多表在这里换来的只有"界面得假装单选"。
 
         // ---------------------------------------------------------------- 题材标签
 
@@ -792,9 +818,9 @@ public class DataService : IDataService
             ("idx_actor_images_actor", "CREATE INDEX IF NOT EXISTS idx_actor_images_actor ON actor_images(actor_id, is_primary DESC, file_name)"),
             // 每人最多一张主图：部分唯一索引，NULL/0 行不受约束
             ("idx_actor_images_primary", "CREATE UNIQUE INDEX IF NOT EXISTS idx_actor_images_primary ON actor_images(actor_id) WHERE is_primary = 1"),
-            // 片商：按别名找正主、按片商反查它名下有哪些片
+            // 片商：按别名找正主；按片商筛片走 videos.studioid
             ("idx_studio_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_studio_aliases_alias ON studio_aliases(alias)"),
-            ("idx_video_studios_studio", "CREATE INDEX IF NOT EXISTS idx_video_studios_studio ON video_studios(studio_id)"),
+            ("idx_videos_studioid", "CREATE INDEX IF NOT EXISTS idx_videos_studioid ON videos(studioid)"),
             // 标签：按标签筛片是主路径（WHERE tag_id = ? 再取影片），别名同理
             ("idx_tag_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_tag_aliases_alias ON tag_aliases(alias)"),
             ("idx_video_tags_tag", "CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)"),

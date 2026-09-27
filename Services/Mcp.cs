@@ -229,7 +229,7 @@ public sealed class McpService
                     required: []),
 
                 Tool("video_get",
-                    "看一部片的完整档案：档案字段、片商（含角色）、标签（含谁打的）、演员（含出生日期）、合辑与外链。",
+                    "看一部片的完整档案：档案字段、片商、标签（含谁打的）、演员（含出生日期）、合辑与外链。",
                     Props(
                         ("id", S("影片 id")),
                         ("code", S("番号，如 ABC-123；与 id 二选一"))),
@@ -509,7 +509,7 @@ public sealed class McpService
 
         const string sql = @"
             SELECT s.id, s.name, s.country, s.link,
-                   IFNULL((SELECT COUNT(*) FROM video_studios vs WHERE vs.studio_id = s.id), 0) AS video_count,
+                   (SELECT COUNT(*) FROM videos v WHERE v.studioid = s.id) AS video_count,
                    IFNULL((SELECT GROUP_CONCAT(a.alias, char(31)) FROM studio_aliases a WHERE a.studio_id = s.id), '') AS alias_blob
             FROM studios s";
 
@@ -689,15 +689,15 @@ public sealed class McpService
     // ---------------------------------------------------------------- 批量取关联
 
     /// <summary>
-    /// 给一页影片补标签 / 片商 / 演员：整页三次批量查询，而不是每行三次单查——
-    /// 模型一次要 50 部，N+1 会变成一百五十个来回。
+    /// 给一页影片补标签与演员：整页两次批量查询，而不是每行两次单查——
+    /// 模型一次要 50 部，N+1 会变成一百五十个来回。片商不在这儿，它是影片上的一个值，
+    /// 已经随 Columns 那一条 SELECT 一起带出来了。
     /// </summary>
     private static void Attach(SqliteConnection conn, List<Dictionary<string, object?>> rows, bool withActorDetail)
     {
         foreach (var r in rows)
         {
             r["tags"] = new List<object>();
-            r["studios"] = new List<object>();
             r["actors"] = new List<object>();
             // 分辨率按短边报，与前端的 resolutionText 同一个口径，省得模型自己换算
             var w = Convert.ToInt32(r.GetValueOrDefault("resW") ?? 0);
@@ -714,10 +714,6 @@ public sealed class McpService
         Batch(conn, $@"SELECT vt.video_id, t.name, vt.source FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
                        WHERE vt.video_id IN ({inList})", ids, r => Push(byId, r.GetString(0), "tags",
                            new Dictionary<string, object?> { ["name"] = r.GetString(1), ["source"] = r.IsDBNull(2) ? "manual" : r.GetString(2) }));
-
-        Batch(conn, $@"SELECT vs.video_id, s.name, vs.role FROM video_studios vs JOIN studios s ON s.id = vs.studio_id
-                       WHERE vs.video_id IN ({inList})", ids, r => Push(byId, r.GetString(0), "studios",
-                           new Dictionary<string, object?> { ["name"] = r.GetString(1), ["role"] = r.IsDBNull(2) ? "" : r.GetString(2) }));
 
         // 列表页不需要演员 id 和生日，用两个空列把两套 SELECT 对齐成同一个 reader
         var cols = withActorDetail ? "a.id, a.birthdate" : "'' , ''";
