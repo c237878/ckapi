@@ -15,17 +15,18 @@ public class ActorController : ControllerBase
     private readonly ILogger<ActorController> _logger;
     private readonly IConfiguration _config;
     private readonly Utils.SQLiteHelper _db;
-    private readonly Services.ActorScraper _scraper;
     private readonly Services.ScrapeJob _job;
+    /// <summary>档案源按 key 取：avwiki / laoshi。加第三个源不用再动这个控制器</summary>
+    private readonly Dictionary<string, IActorSource> _sources;
 
     public ActorController(
         ILogger<ActorController> logger, IConfiguration config, Utils.SQLiteHelper db,
-        Services.ActorScraper scraper, Services.ScrapeJob job)
+        IEnumerable<IActorSource> sources, Services.ScrapeJob job)
     {
         _logger = logger;
         _config = config;
         _db = db;
-        _scraper = scraper;
+        _sources = sources.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
         _job = job;
     }
 
@@ -158,8 +159,8 @@ public class ActorController : ControllerBase
                          JOIN video_actors va ON vl.video_id = va.video_id 
                          WHERE va.actor_id = a.id) as like_count,
                         (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa WHERE aa.actor_id = a.id) as aliases,
-                        -- 值不值得去 av-wiki 问一句：不值得时前端直接把两个抓取按钮藏掉
-                        IFNULL({Services.ActorScraper.EligibleSql}, 0) as scrapeable
+                        -- 值不值得去档案源问一句：不值得时前端直接把抓取按钮藏掉
+                        IFNULL({ActorGate.EligibleSql}, 0) as scrapeable
                         FROM actors a WHERE a.id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
@@ -752,20 +753,29 @@ public class ActorController : ControllerBase
         }
     }
 
-    /// <summary>给一位演员抓头像（只补头像，不动已填好的简介与生日）</summary>
+    /// <summary>
+    /// 给一位演员抓头像（只补头像，不动已填好的字段）。
+    /// src 不传时走 av-wiki：老书签和老脚本不能因为加了第二个源就改行为。
+    /// </summary>
     [HttpPost("{id}/avatar/fetch")]
-    public Task<IActionResult> FetchAvatar(string id, CancellationToken ct)
-        => FetchOne(id, Services.Want.Avatar, ct, "抓取演员头像");
+    public Task<IActionResult> FetchAvatar(string id, [FromQuery] string? src, CancellationToken ct)
+        => FetchOne(id, Services.Want.Avatar, src, ct, "抓取演员头像");
 
-    /// <summary>给一位演员抓资料：出生日期与简介，只填当前空着的字段</summary>
+    /// <summary>给一位演员抓资料：av-wiki 是生日与简介，老师图鉴是生日与别名，都只填当前空着的</summary>
     [HttpPost("{id}/profile/fetch")]
-    public Task<IActionResult> FetchProfile(string id, CancellationToken ct)
-        => FetchOne(id, Services.Want.Profile, ct, "抓取演员资料");
+    public Task<IActionResult> FetchProfile(string id, [FromQuery] string? src, CancellationToken ct)
+        => FetchOne(id, Services.Want.Profile, src, ct, "抓取演员资料");
 
-    private async Task<IActionResult> FetchOne(string id, Services.Want want, CancellationToken ct, string logTag)
+    private async Task<IActionResult> FetchOne(
+        string id, Services.Want want, string? srcKey, CancellationToken ct, string logTag)
     {
         try
         {
+            var scraper = _sources.GetValueOrDefault(
+                string.IsNullOrWhiteSpace(srcKey) ? "avwiki" : srcKey.Trim());
+            if (scraper is null)
+                return Ok(new { success = false, message = $"没有这个抓取来源：{srcKey}" });
+
             using var conn = GetConnection();
             conn.Open();
 
@@ -773,8 +783,8 @@ public class ActorController : ControllerBase
             if (string.IsNullOrEmpty(posterDir))
                 return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
 
-            var res = await _scraper.ScrapeAsync(
-                conn, id, posterDir, _scraper.DuplicateRiskIds(conn), want, ct);
+            var res = await scraper.ScrapeAsync(
+                conn, id, posterDir, ActorGate.DuplicateRiskIds(conn), want, ct);
             return Ok(new { success = res.Ok, message = res.Message });
         }
         catch (Exception ex)
@@ -792,7 +802,7 @@ public class ActorController : ControllerBase
     [HttpPost("scrape/fetch")]
     public IActionResult StartScrape([FromBody] ScrapeRequest? request)
     {
-        var (started, message) = _job.Start(Parse(request?.What));
+        var (started, message) = _job.Start(Parse(request?.What), request?.Src);
         return Ok(new { success = started, message, data = _job.Status() });
     }
 
@@ -1113,6 +1123,9 @@ public class ScrapeRequest
 {
     [JsonPropertyName("what")]
     public string? What { get; set; }
+    /// <summary>抓哪个档案源：avwiki（默认）· laoshi</summary>
+    [JsonPropertyName("src")]
+    public string? Src { get; set; }
 }
 
 /// <summary>合并重复演员：from 并进 to，to 是活下来的那个名字</summary>

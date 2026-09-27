@@ -18,20 +18,11 @@ public enum Want
 /// 判定"确定"的口径在 Utils.AvWiki.Certify —— 认错人比抓不到严重得多。
 /// 落库一律遵循"只填空着的地方"：已经写过的简介、手工挑过的主图，都不覆盖。
 /// </summary>
-public sealed class ActorScraper
+public sealed class ActorScraper : IActorSource
 {
-    /// <summary>
-    /// av-wiki 只收日本女优，所以只看国家：非日本的一律不去问。
-    ///
-    /// 不关联"演过 av 分类没有"——有人改过分类、也有人只挂了几部素人片，
-    /// 那类关联会把真的日本女优误伤掉，而误伤的代价是这个人永远没有头像。
-    /// 省时间只是顺带（1598 位里约 97 位非日本被跳过）；
-    /// 主要是不给错配留机会：一个中国网红的名字恰好撞上某个日文 tag，
-    /// 就会把别人的脸和简介安到她身上，而这种错法长期没人会去核对。
-    ///
-    /// '日本' 是 设置 → 数据源 里的规范取值；在那里改掉这个名字，这里要跟着改。
-    /// </summary>
-    public const string EligibleSql = "a.country = '日本'";
+    public string Key => "avwiki";
+    public string Label => "av-wiki";
+    public string Host => "av-wiki.net";
 
     private readonly ILogger<ActorScraper> _logger;
 
@@ -40,46 +31,15 @@ public sealed class ActorScraper
         _logger = logger;
     }
 
-    /// <summary>这位演员值不值得去 av-wiki 问一句；返回 null 表示值得</summary>
-    public static string? SkipReason(SqliteConnection conn, string id)
-    {
-        using var cmd = new SqliteCommand("SELECT country FROM actors WHERE id = @id", conn);
-        cmd.Parameters.Add(new SqliteParameter("@id", id));
-        var country = cmd.ExecuteScalar() as string;
-
-        return country == "日本"
-            ? null
-            : $"国家是「{(string.IsNullOrEmpty(country) ? "未填" : country)}」，av-wiki 只收日本女优";
-    }
-
-    /// <summary>
-    /// 出现在查重候选里的演员。抓取要跳过他们：同一张脸在两个名字下各存一份、
-    /// 简介也是两份，之后合并时还得处理两套磁盘目录，比先合并再抓麻烦得多。
-    /// </summary>
-    public HashSet<string> DuplicateRiskIds(SqliteConnection conn)
-    {
-        var ids = new HashSet<string>(StringComparer.Ordinal);
-        const string sql = @"
-            SELECT t1.actor_id FROM actor_aliases t1
-              JOIN actor_aliases t2 ON t1.alias = t2.alias AND t1.actor_id < t2.actor_id
-            UNION
-            SELECT t2.actor_id FROM actor_aliases t1
-              JOIN actor_aliases t2 ON t1.alias = t2.alias AND t1.actor_id < t2.actor_id
-            UNION
-            SELECT a1.id FROM actors a1 JOIN actor_aliases t ON t.alias = a1.name
-            UNION
-            SELECT t.actor_id FROM actors a1 JOIN actor_aliases t ON t.alias = a1.name";
-        using var cmd = new SqliteCommand(sql, conn);
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read()) ids.Add(reader.GetString(0));
-        return ids;
-    }
-
     /// <summary>
     /// 还缺东西的演员，按影片数多的先来（先补最常用到的那些）。
     /// 掩码决定"缺什么算缺"，所以跑完头像再跑资料时，候选集会自己缩小。
     /// </summary>
-    public List<string> Candidates(SqliteConnection conn, HashSet<string> risk, Want want)
+    public Task<List<string>> CandidatesAsync(
+        SqliteConnection conn, HashSet<string> risk, Want want, CancellationToken ct)
+        => Task.FromResult(Candidates(conn, risk, want));
+
+    private static List<string> Candidates(SqliteConnection conn, HashSet<string> risk, Want want)
     {
         var missing = want switch
         {
@@ -92,7 +52,7 @@ public sealed class ActorScraper
         var list = new List<string>();
         using var cmd = new SqliteCommand(
             $@"SELECT a.id FROM actors a
-                WHERE {missing} AND {EligibleSql}
+                WHERE {missing} AND {ActorGate.EligibleSql}
                 ORDER BY (SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) DESC, a.name", conn);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -160,7 +120,7 @@ public sealed class ActorScraper
 
         // 先按片源挡一道：非日本、名下没有 av 片的，av-wiki 上本来就没有对应档案，
         // 硬去问只会浪费时间，还可能撞上同名的另一个人
-        var skip = SkipReason(conn, id);
+        var skip = ActorGate.SkipReason(conn, id);
         if (skip is not null) return (false, $"{skip}，跳过");
         if (risk.Contains(id)) return (false, "该演员还在查重候选里，先合并再抓");
         if (!needAvatar && !needProfile)
@@ -184,7 +144,7 @@ public sealed class ActorScraper
                     ? await AvWiki.BySlugAsync(value, ct)
                     : await AvWiki.SearchAsync(value, ct);
             }
-            catch (Exception ex) when (IsNetworkFault(ex, ct))
+            catch (Exception ex) when (ActorGate.IsNetworkFault(ex, ct))
             {
                 return (false, $"站点请求失败（{ex.Message}）");
             }
@@ -212,7 +172,7 @@ public sealed class ActorScraper
                     ImageIndex.SyncActor(conn, id, dir);
                     done.Add("头像");
                 }
-                catch (Exception ex) when (IsNetworkFault(ex, ct))
+                catch (Exception ex) when (ActorGate.IsNetworkFault(ex, ct))
                 {
                     return (false, $"头像下载失败（{ex.Message}）");
                 }
@@ -249,12 +209,6 @@ public sealed class ActorScraper
         return (false, "没找到能确认的档案");
     }
 
-    /// <summary>
-    /// 是不是"站点那边出问题了"。HttpClient 超时也抛 TaskCanceledException，
-    /// 所以只能看调用方的 token 有没有被取消：没取消就是故障，取消了是要正常收尾。
-    /// </summary>
-    private static bool IsNetworkFault(Exception ex, CancellationToken ct)
-        => ex is HttpRequestException || (ex is OperationCanceledException && !ct.IsCancellationRequested);
 
     /// <summary>含假名的曾用名排前面：站上的 tag 名基本就是假名/日文汉字写法</summary>
     private static List<string> OrderQueries(List<string> names)

@@ -922,30 +922,52 @@ public class DataService : IDataService
     }
 
     /// <summary>
-    /// 播种一条内置通道：av-wiki 的女优档案（头像 / 生日 / 简介）。
+    /// 播种内置通道：av-wiki 与老师图鉴的女优档案。
     ///
-    /// 它的抽取逻辑在代码里（Utils/AvWiki 的"唯一命中才算数"那套判定，不适合降级成配置项），
+    /// 它们的抽取逻辑都在代码里（"唯一命中才算数"那套判定不适合降级成配置项），
     /// 所以 fetch_kind 记 builtin、rules 留空——但**限速、配额、熔断、开关都从这条行走**，
     /// 于是设置页里能看到它、能关掉它、能调它一天问多少次。
-    /// 只在表为空时种一次，之后他改过的参数不能被启动流程复活。
+    /// 按域名判重而不是按"表是否为空"：新加一个源时老库要能补上这一条，
+    /// 而他改过的参数不能被启动流程复活。
     /// </summary>
     private static void SeedScrapeChannels(SqliteConnection conn)
     {
-        var any = Convert.ToInt32(Scalar(conn, "SELECT COUNT(*) FROM scrape_channels") ?? 0);
-        if (any > 0) return;
+        SeedChannel(conn, "av-wiki", "av-wiki 女优档案",
+            "https://av-wiki.net/wp-json/wp/v2/tags?search={q}", "https://av-wiki.net/",
+            1500, 300, 120,
+            "内置抽取：唯一命中且名字对得上才写；站方上了 Imunify360 反爬，被拒时会自动进入冷却");
+
+        // 站方 /terms 明写不得批量抓取，所以这条的礼貌参数比 av-wiki 保守一个数量级
+        SeedChannel(conn, "laoshi.ink", "老师图鉴 女优档案",
+            "https://laoshi.ink/actresses/", "https://laoshi.ink/",
+            8000, 40, 240,
+            "内置抽取：只补生日、别名（日文名/罗马音）与头像，姓名要唯一命中档案编号才写；" +
+            "站方用户协议禁止批量抓取，每日配额故意给得小，站上缺的字段一律写「待补充」已过滤");
+    }
+
+    private static void SeedChannel(
+        SqliteConnection conn, string host, string name, string url, string referer,
+        int intervalMs, int quota, int cooldownMinutes, string note)
+    {
+        if (Scalar(conn, "SELECT id FROM scrape_channels WHERE fetch_url LIKE @h",
+                P("@h", $"%{host}%")) != null) return;
 
         const string sql = @"
             INSERT INTO scrape_channels
                 (id, name, entity, enabled, query_source, fetch_url, fetch_kind, referer, user_agent,
                  rules, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
             VALUES
-                (@id, 'av-wiki 女优档案', 'actor', 1, 'name',
-                 'https://av-wiki.net/wp-json/wp/v2/tags?search={q}', 'builtin',
-                 'https://av-wiki.net/', NULL, '[]', 1500, 300, 3, 120,
-                 '内置抽取：唯一命中且名字对得上才写；站方上了 Imunify360 反爬，被拒时会自动进入冷却',
-                 @t, @t)";
+                (@id, @name, 'actor', 1, 'name', @url, 'builtin', @referer, NULL, '[]',
+                 @interval, @quota, 3, @cooldown, @note, @t, @t)";
         using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N").ToUpper());
+        cmd.Parameters.AddWithValue("@name", name);
+        cmd.Parameters.AddWithValue("@url", url);
+        cmd.Parameters.AddWithValue("@referer", referer);
+        cmd.Parameters.AddWithValue("@interval", intervalMs);
+        cmd.Parameters.AddWithValue("@quota", quota);
+        cmd.Parameters.AddWithValue("@cooldown", cooldownMinutes);
+        cmd.Parameters.AddWithValue("@note", note);
         cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         cmd.ExecuteNonQuery();
     }

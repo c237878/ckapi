@@ -10,11 +10,13 @@ namespace ckapi.Services;
 /// 挪到服务端之后：进度是逐个演员累加的，随时可停，关掉浏览器也不影响它继续跑。
 ///
 /// 进程内单例、同一时刻只跑一个任务（这活儿是往别人的站点上问话，并行没有意义）。
+/// 源（av-wiki / 老师图鉴）由启动参数选，一次任务只问一个源，
+/// 因为限速、每日配额与熔断都是按源各算各的。
 /// 重启后端会丢掉进度状态，但已抓到的文件与已填的字段都在，重跑会自动跳过填好的的人。
 /// </summary>
 public sealed class ScrapeJob
 {
-    private readonly ActorScraper _scraper;
+    private readonly Dictionary<string, IActorSource> _sources;
     private readonly SQLiteHelper _db;
     private readonly ILogger<ScrapeJob> _logger;
     // 限速、每日配额、连续失败熔断全走抓取通道那张表：
@@ -25,6 +27,7 @@ public sealed class ScrapeJob
     private CancellationTokenSource _cts = new();
 
     private int _running;
+    private volatile IActorSource? _src;
     private volatile int _processed;
     private volatile int _total;
     private volatile int _hit;
@@ -33,9 +36,10 @@ public sealed class ScrapeJob
     private DateTime? _startedAt;
     private volatile string? _note;
 
-    public ScrapeJob(ActorScraper scraper, SQLiteHelper db, ILogger<ScrapeJob> logger, ScrapeChannelService channels)
+    public ScrapeJob(
+        IEnumerable<IActorSource> sources, SQLiteHelper db, ILogger<ScrapeJob> logger, ScrapeChannelService channels)
     {
-        _scraper = scraper;
+        _sources = sources.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
         _db = db;
         _logger = logger;
         _channels = channels;
@@ -43,15 +47,20 @@ public sealed class ScrapeJob
 
     public bool IsRunning => Volatile.Read(ref _running) == 1;
 
-    public (bool Started, string Message) Start(Want want)
+    public (bool Started, string Message) Start(Want want, string? srcKey)
     {
+        var src = Resolve(srcKey);
+        if (src is null)
+            return (false, $"没有这个抓取来源：{(string.IsNullOrEmpty(srcKey) ? "未指定" : srcKey)}");
+
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             return (false, $"抓取任务已经在跑了（{_what}），先停下它");
 
+        _src = src;
         _processed = 0;
         _total = 0;
         _hit = 0;
-        _what = Label(want);
+        _what = $"{src.Label} {Label(want)}";
         _whatKey = Key(want);
         _note = null;
         _startedAt = DateTime.UtcNow;
@@ -59,8 +68,8 @@ public sealed class ScrapeJob
         var cts = new CancellationTokenSource();
         _cts = cts;
 
-        _ = Task.Run(() => RunAsync(want, cts));
-        return (true, $"已开始抓取{_what}");
+        _ = Task.Run(() => RunAsync(src, want, cts));
+        return (true, $"开始从{src.Label}抓取{Label(want)}");
     }
 
     public void Stop()
@@ -78,12 +87,15 @@ public sealed class ScrapeJob
         var remaining = Math.Max(0, total - processed);
         // 预计剩余：用已经跑出来的平均速度估，样本太少（<3）就不给数，免得开局乱跳
         var eta = processed >= 3 && IsRunning ? (int)Math.Round(remaining * (elapsed / (double)processed)) : 0;
+        var src = _src;
 
         return new
         {
             running = IsRunning,
             what = _what,
             whatKey = _whatKey,
+            srcKey = src?.Key ?? "",
+            srcLabel = src?.Label ?? "",
             processed,
             total,
             hit = _hit,
@@ -110,11 +122,17 @@ public sealed class ScrapeJob
         _ => "头像与资料"
     };
 
+    /// <summary>没指定来源时仍走 av-wiki：老书签和老脚本不能因为加了第二个源就改行为</summary>
+    private IActorSource? Resolve(string? srcKey) =>
+        string.IsNullOrWhiteSpace(srcKey)
+            ? _sources.Values.FirstOrDefault(s => s.Key == "avwiki")
+            : _sources.GetValueOrDefault(srcKey);
+
     /// <summary>站点侧失败才算熔断依据；"查无此档"是对话正常结束，不该把通道打死</summary>
     private static bool IsSiteFault(string message) =>
         message.StartsWith("站点") || message.StartsWith("头像下载");
 
-    private async Task RunAsync(Want want, CancellationTokenSource cts)
+    private async Task RunAsync(IActorSource src, Want want, CancellationTokenSource cts)
     {
         var consecutive = 0;
         try
@@ -129,15 +147,15 @@ public sealed class ScrapeJob
                 return;
             }
 
-            var channel = _channels.FirstFor("actor");
+            var channel = _channels.FirstFor("actor", src.Host);
             if (channel is null)
             {
-                _note = "没有配置抓取通道（设置 → 抓取通道）";
+                _note = $"没有 {src.Label} 这条抓取通道（设置 → 抓取通道）";
                 return;
             }
 
-            var risk = _scraper.DuplicateRiskIds(conn);
-            var candidates = _scraper.Candidates(conn, risk, want);
+            var risk = ActorGate.DuplicateRiskIds(conn);
+            var candidates = await src.CandidatesAsync(conn, risk, want, cts.Token);
             _total = candidates.Count;
 
             foreach (var id in candidates)
@@ -157,7 +175,7 @@ public sealed class ScrapeJob
                 (bool Ok, string Message) res;
                 try
                 {
-                    res = await _scraper.ScrapeAsync(conn, id, posterDir, risk, want, cts.Token);
+                    res = await src.ScrapeAsync(conn, id, posterDir, risk, want, cts.Token);
                 }
                 catch (OperationCanceledException)
                 {

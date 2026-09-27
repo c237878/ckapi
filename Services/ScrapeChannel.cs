@@ -122,12 +122,22 @@ public sealed class ScrapeChannelService
     }
 
     /// <summary>取某个实体的第一条通道（演员侧现在只有一条：内置的 av-wiki）</summary>
-    public Channel? FirstFor(string entity)
+    /// <summary>
+    /// 找某个实体类型的通道。给了 host 就按地址里的域名认——
+    /// 一个源一条通道，配额与熔断才各算各的；认不到不要退到别的通道上去，
+    /// 那等于拿 av-wiki 的额度去问老师图鉴，两边的账都会失真。
+    /// </summary>
+    public Channel? FirstFor(string entity, string? host = null)
     {
         using var conn = _db.GetConnection();
         conn.Open();
-        using var cmd = new SqliteCommand("SELECT * FROM scrape_channels WHERE entity = @e ORDER BY enabled DESC, name LIMIT 1", conn);
+        using var cmd = new SqliteCommand(
+            host is null
+                ? "SELECT * FROM scrape_channels WHERE entity = @e ORDER BY enabled DESC, name LIMIT 1"
+                : @"SELECT * FROM scrape_channels WHERE entity = @e AND fetch_url LIKE '%' || @h || '%'
+                     ORDER BY enabled DESC, name LIMIT 1", conn);
         cmd.Parameters.AddWithValue("@e", entity);
+        if (host is not null) cmd.Parameters.AddWithValue("@h", host);
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? Read(reader) : null;
     }
@@ -409,20 +419,8 @@ public sealed class ScrapeChannelService
     private static string Slug(string s) =>
         new string(s.Trim().ToLowerInvariant().Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_').ToArray());
 
-    /// <summary>挑战页/拒答页的指纹。命中就当"被拦"，不当"没有这条数据"</summary>
-    public static string? DetectChallenge(string body)
-    {
-        if (string.IsNullOrEmpty(body)) return "空响应";
-        if (body.Contains("Imunify360", StringComparison.OrdinalIgnoreCase) ||
-        body.Contains("bot-protection", StringComparison.OrdinalIgnoreCase))
-        return "被反爬拦下（Imunify360 bot-protection）—— 站方要求把自动化 IP 加白名单";
-        if (body.Length < 4096 &&
-            (body.Contains("One moment, please", StringComparison.OrdinalIgnoreCase) ||
-             body.Contains("cf-browser-verification", StringComparison.OrdinalIgnoreCase) ||
-             body.Contains("Just a moment", StringComparison.OrdinalIgnoreCase)))
-            return "被反爬拦下（浏览器挑战页）";
-        return null;
-    }
+    /// <summary>挑战页/拒答页的指纹。判定逻辑与内置档案源共用一份，见 <see cref="WebProbe"/></summary>
+    public static string? DetectChallenge(string body) => WebProbe.Challenge(body);
 
     private static Dictionary<string, string> Extract(Channel c, string body)
     {

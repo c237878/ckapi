@@ -37,6 +37,10 @@ builder.Services.AddSingleton<ckapi.Utils.SQLiteHelper>(sp =>
 builder.Services.AddScoped<IDataService, DataService>();
 // av-wiki 抓取：Scraper 无状态、Job 持有进程内进度，都只需一个实例
 builder.Services.AddSingleton<ckapi.Services.ActorScraper>();
+// 老师图鉴（laoshi.ink）：只补生日/别名/头像，与 av-wiki 共用同一套门槛与礼貌策略
+builder.Services.AddSingleton<ckapi.Services.LaoshiScraper>();
+builder.Services.AddSingleton<ckapi.Services.IActorSource>(sp => sp.GetRequiredService<ckapi.Services.ActorScraper>());
+builder.Services.AddSingleton<ckapi.Services.IActorSource>(sp => sp.GetRequiredService<ckapi.Services.LaoshiScraper>());
 builder.Services.AddSingleton<ckapi.Services.ScrapeJob>();
 // 片源扫描（分辨率 + 字幕证据）：同上
 builder.Services.AddSingleton<ckapi.Services.SourceScanner>();
