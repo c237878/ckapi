@@ -54,6 +54,8 @@ public static class VideoCardQuery
             // 片商是一部片的一个值，与 seriesId/seriesName 同形
             ["studioId"] = Str(reader, "studioid"),
             ["studioName"] = Str(reader, "studio_name"),
+            // 官网只有详情页要把片商做成超链接时才用得到，卡片不带这一列
+            ["studioLink"] = Str(reader, "studio_link"),
         };
 
         if (HasColumn(reader, "scan_time")) result["scanTime"] = Str(reader, "scan_time");

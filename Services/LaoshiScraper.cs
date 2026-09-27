@@ -122,11 +122,7 @@ public sealed class LaoshiScraper : IActorSource
         var skip = ActorGate.SkipReason(conn, id);
         if (skip is not null) return (false, $"{skip}，跳过");
         if (risk.Contains(id)) return (false, "该演员还在查重候选里，先合并再抓");
-        if (!needAvatar && !needProfile)
-        {
-            if (want.HasFlag(Want.Avatar) && images > 0) return (false, $"已有 {images} 张照片，不动手");
-            return (false, "该填的都填好了");
-        }
+        if (!needAvatar && !needProfile) return (false, ActorGate.NothingToDo(want, images));
 
         // 姓名和每一条曾用名都去索引里对一遍；命中两个不同档案就放弃，宁可不写
         try

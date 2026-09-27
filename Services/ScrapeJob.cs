@@ -32,7 +32,6 @@ public sealed class ScrapeJob
     private volatile int _total;
     private volatile int _hit;
     private volatile string? _what;
-    private volatile string? _whatKey;
     private DateTime? _startedAt;
     private volatile string? _note;
 
@@ -61,7 +60,6 @@ public sealed class ScrapeJob
         _total = 0;
         _hit = 0;
         _what = $"{src.Label} {Label(want)}";
-        _whatKey = Key(want);
         _note = null;
         _startedAt = DateTime.UtcNow;
 
@@ -93,7 +91,6 @@ public sealed class ScrapeJob
         {
             running = IsRunning,
             what = _what,
-            whatKey = _whatKey,
             srcKey = src?.Key ?? "",
             srcLabel = src?.Label ?? "",
             processed,
@@ -106,14 +103,6 @@ public sealed class ScrapeJob
             note = _note
         };
     }
-
-    /// <summary>界面拿 whatKey 判断"在跑的是哪种"，别去比对中文标签</summary>
-    private static string Key(Want want) => want switch
-    {
-        Want.Avatar => "avatar",
-        Want.Profile => "profile",
-        _ => "all"
-    };
 
     private static string Label(Want want) => want switch
     {

@@ -114,6 +114,23 @@ public class ScrapeChannelController : ControllerBase
         }
     }
 
+    /// <summary>一键开关：站点翻脸时先关掉，比进编辑对话框翻一圈快</summary>
+    [HttpPost("{id}/toggle")]
+    public IActionResult Toggle(string id)
+    {
+        try
+        {
+            var on = _channels.Toggle(id);
+            if (on is null) return NotFound(new { success = false, message = "通道不存在" });
+            return Ok(new { success = true, message = on.Value ? "已启用，会继续向这个站点发请求" : "已停用，抓取遇到它会直接跳过" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Toggle channel failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
     /// <summary>
     /// 试抓：按给定查询词（或某条真实记录）走一遍"取 + 抽"，只回结果不写库。
     /// 走的是真请求，所以同样受开关/冷却/配额约束——界面里想试抓被拦的通道，先点「清除冷却」。

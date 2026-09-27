@@ -338,7 +338,7 @@ public class VideoController : ControllerBase
 
             Dictionary<string, object?> video;
             var sql = @"
-                SELECT v.*, s.name as series_name, st.name as studio_name
+                SELECT v.*, s.name as series_name, st.name as studio_name, st.link as studio_link
                 FROM videos v
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 LEFT JOIN studios st ON st.id = v.studioid

@@ -123,11 +123,7 @@ public sealed class ActorScraper : IActorSource
         var skip = ActorGate.SkipReason(conn, id);
         if (skip is not null) return (false, $"{skip}，跳过");
         if (risk.Contains(id)) return (false, "该演员还在查重候选里，先合并再抓");
-        if (!needAvatar && !needProfile)
-        {
-            if (want.HasFlag(Want.Avatar) && images > 0) return (false, $"已有 {images} 张照片，不动手");
-            return (false, "该填的都填好了");
-        }
+        if (!needAvatar && !needProfile) return (false, ActorGate.NothingToDo(want, images));
 
         // 查询顺序：档案链接（我们自己的数据已经指向它）→ 含假名的曾用名（最接近站点的写法）
         // → 其余曾用名 → 本名。每人最多问 5 次，问不到就算了

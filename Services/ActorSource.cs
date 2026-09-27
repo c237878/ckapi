@@ -85,7 +85,19 @@ public static class ActorGate
     }
 
     /// <summary>
-    /// 是不是"站点那边出问题了"。HttpClient 超时也抛 TaskCanceledException，
+    /// 没动手时的说法。合成一个按钮之后 Want.All 也走这里，
+    /// 只报头像那半截会让人以为资料也没得补。
+    /// </summary>
+    public static string NothingToDo(Want want, int images)
+    {
+        var parts = new List<string>();
+        if (want.HasFlag(Want.Avatar)) parts.Add(images > 0 ? $"头像已有 {images} 张" : "头像这次不动");
+        if (want.HasFlag(Want.Profile)) parts.Add("资料该填的都填好了");
+        return string.Join('，', parts);
+    }
+
+    /// <summary>
+    /// 是不是"站点那边出问题了"。HttpClient 超时也抛 TaskCanceledException,
     /// 所以只能看调用方的 token 有没有被取消：没取消就是故障，取消了是要正常收尾。
     /// </summary>
     public static bool IsNetworkFault(Exception ex, CancellationToken ct)

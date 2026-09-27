@@ -285,6 +285,31 @@ public sealed class ScrapeChannelService
         LastAsk.TryRemove(id, out _);
     }
 
+    /// <summary>
+    /// 一键开关这条通道，返回翻转后的状态。
+    /// 单独一个接口而不是让前端回整份配置：编辑对话框里改一半没保存时，
+    /// 开关不该顺手把 rules 也写回去。
+    /// </summary>
+    public bool? Toggle(string id)
+    {
+        using var conn = _db.GetConnection();
+        conn.Open();
+        using var cmd = new SqliteCommand(
+            "UPDATE scrape_channels SET enabled = 1 - enabled, utime = @t WHERE id = @id", conn);
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        if (cmd.ExecuteNonQuery() == 0) return null;
+
+        bool on;
+        using (var q = new SqliteCommand("SELECT enabled FROM scrape_channels WHERE id = @id", conn))
+        {
+            q.Parameters.AddWithValue("@id", id);
+            on = Convert.ToInt32(q.ExecuteScalar()) == 1;
+        }
+        if (!on) LastAsk.TryRemove(id, out _);
+        return on;
+    }
+
     // ---------------------------------------------------------------- 礼貌闸门
 
     public readonly record struct Gate(bool Allowed, string Why);

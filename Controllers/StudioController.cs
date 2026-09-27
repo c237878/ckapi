@@ -26,7 +26,7 @@ public class StudioController : ControllerBase
     /// <summary>片商列表：带名下影片数，管理页与详情页的挑选器共用</summary>
     [HttpGet]
     public IActionResult GetStudios([FromQuery] int page = 1, [FromQuery] int pageSize = 20,
-        [FromQuery] string? keyword = null, [FromQuery] string? sortBy = null)
+        [FromQuery] string? keyword = null)
     {
         try
         {
@@ -42,11 +42,9 @@ public class StudioController : ControllerBase
                 parameters.Add(new SqliteParameter("@kw", $"%{keyword.Trim()}%"));
             }
 
-            var orderBy = sortBy?.ToLower() switch
-            {
-                "name" => "s.name ASC",
-                _ => "video_count DESC, s.name ASC"
-            };
+            // 词表是"找一家片商"的地方，按影片数排会把新加的、还没挂片的挤到最后一页去；
+            // 所以固定按正名升序，与 SQLite 里其它中文名列表同一套（按码位序，没有拼音排序）
+            const string orderBy = "s.name ASC";
 
             using var conn = _db.GetConnection();
             conn.Open();

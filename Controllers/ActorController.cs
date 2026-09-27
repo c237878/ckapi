@@ -40,7 +40,7 @@ public class ActorController : ControllerBase
     /// </summary>
     [HttpGet]
     public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] string? country = null,
-        [FromQuery] string? sortBy = null)
+        [FromQuery] string? sortBy = null, [FromQuery] bool? hasPortrait = null, [FromQuery] bool? hasBirthdate = null)
     {
         try
         {
@@ -75,6 +75,15 @@ public class ActorController : ControllerBase
                 whereClause += " AND a.country = @country";
                 parameters.Add(new SqliteParameter("@country", country));
             }
+
+            // 「有没有脸」按有没有图片记录判：实测有图的人 1083、有主图的人也是 1083，
+            // 两种口径现在等价，用 EXISTS 少一层子查询语义
+            if (hasPortrait == true) whereClause += " AND EXISTS (SELECT 1 FROM actor_images ai WHERE ai.actor_id = a.id)";
+            else if (hasPortrait == false) whereClause += " AND NOT EXISTS (SELECT 1 FROM actor_images ai WHERE ai.actor_id = a.id)";
+
+            // 生日的空值有两种长相：NULL 和空串（抓取只写 COALESCE，空串是历史手工数据）
+            if (hasBirthdate == true) whereClause += " AND a.birthdate IS NOT NULL AND TRIM(a.birthdate) <> ''";
+            else if (hasBirthdate == false) whereClause += " AND (a.birthdate IS NULL OR TRIM(a.birthdate) = '')";
 
             using var conn = GetConnection();
             conn.Open();
@@ -754,17 +763,14 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
-    /// 给一位演员抓头像（只补头像，不动已填好的字段）。
+    /// 给一位演员补档：头像 + 资料一次问完。
+    /// 原先「抓头像」「抓资料」是两个按钮两次请求，而两个按钮查的是同一份档案 ——
+    /// 分开点等于往同一个站点问两遍，所以合成一个入口（Want.All）。
     /// src 不传时走 av-wiki：老书签和老脚本不能因为加了第二个源就改行为。
     /// </summary>
-    [HttpPost("{id}/avatar/fetch")]
-    public Task<IActionResult> FetchAvatar(string id, [FromQuery] string? src, CancellationToken ct)
-        => FetchOne(id, Services.Want.Avatar, src, ct, "抓取演员头像");
-
-    /// <summary>给一位演员抓资料：av-wiki 是生日与简介，老师图鉴是生日与别名，都只填当前空着的</summary>
-    [HttpPost("{id}/profile/fetch")]
-    public Task<IActionResult> FetchProfile(string id, [FromQuery] string? src, CancellationToken ct)
-        => FetchOne(id, Services.Want.Profile, src, ct, "抓取演员资料");
+    [HttpPost("{id}/meta/fetch")]
+    public Task<IActionResult> FetchMeta(string id, [FromQuery] string? src, CancellationToken ct)
+        => FetchOne(id, Services.Want.All, src, ct, "补全演员资料");
 
     private async Task<IActionResult> FetchOne(
         string id, Services.Want want, string? srcKey, CancellationToken ct, string logTag)
