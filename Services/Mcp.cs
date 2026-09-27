@@ -25,11 +25,16 @@ public sealed class McpService
     public const string RuleSetting = "aiTagRule";
 
     public const string DefaultRule =
-        "按影片的中文片名总结题材标签，只提片名里明确写出的特征，例如「巨乳」「妈妈」「人妻」「OL」「剧情」。\n" +
-        "1. 先用 tag_list 拿到现有词表，能对上正名或别名的都用正名，不要造新词；\n" +
-        "2. 词表里确实没有的词照常提交，tag_propose 会把它们放进待审队列，由人批准或驳回；\n" +
-        "3. 一部片 2～6 个词，宁缺毋滥；演员名、片商名、番号都不算题材标签；\n" +
-        "4. 拿不准就不提。错词要人工清理，漏词下次还能补。";
+        "从中文片名提炼题材标签。允许推导，不要求片名里出现原词：「爆乳」可以归到已有的「巨乳」，" +
+        "「儿子的同学」这类关系可以推成「友人母」。\n" +
+        "1. 先读 tag_list，按**意思**而不是字面去对：片名表达的特征词表里已经有了，就用那个词的正名，" +
+        "不要再提一个近义新词（巨乳/爆乳/大胸各管一摊，按标签浏览就废了）；\n" +
+        "2. 词表里确实没有对应概念的，照常提交，tag_propose 会放进待审队列由人批准或驳回；" +
+        "响应里带 similar 字段时，说明词表里有近义项，优先考虑改用它；\n" +
+        "3. 标签数量不限，片名里有几个特征就提几个，只有一个就提一个；片名只是番号或泛称、推不出具体特征时，" +
+        "这部片就不提，跳过即可；\n" +
+        "4. 演员名、片商名、番号、系列名都不算题材标签；\n" +
+        "5. 拿不准就不提。错词要人工清理，漏词下次还能补。";
 
     private const string ServerName = "ckapi-media";
     private const string ServerVersion = "1.0";
@@ -229,7 +234,8 @@ public sealed class McpService
                     required: []),
 
                 Tool("tag_list",
-                    "题材标签词表，按挂载影片数倒序。打标前先读这份清单，命中正名或别名就用正名。",
+                    "题材标签词表，按挂载影片数倒序。打标前先读这份清单，按意思去对——" +
+                    "片名说的特征只要有对应概念就用它的正名，不要求字面相同。",
                     Props(
                         ("keyword", S("在标签正名与别名里模糊匹配")),
                         ("limit", N($"每页条数，默认 {DefaultLimit}，最多 {MaxLimit}")),
@@ -237,8 +243,10 @@ public sealed class McpService
                     required: []),
 
                 Tool("tag_propose",
-                    "给一部片提交标签。词表里已有的（正名或别名都算）直接挂上；没收录的词进待审队列等人工批准——" +
-                    "这个接口建不出新标签，所以放心提。note 要写清依据，审核的人要看。" +
+                    "给一部片提交标签，数量不限（推不出特征就一个都不提）。词表里已有的（正名或别名都算）直接挂上；" +
+                    "没收录的词进待审队列等人工批准——这个接口建不出新标签，所以放心提。" +
+                    "响应里每条带 similar：词表里与这个词最像的几个正名，非空时先考虑改用它，别放个近义词进队列。" +
+                    "note 要写清依据，审核的人要看。" +
                     $"\n当前口径：{rule}",
                     Props(
                         ("videoId", S("影片 id（video_list / video_get 里的那个 id）")),
@@ -558,15 +566,71 @@ public sealed class McpService
             title = check.ExecuteScalar() as string ?? throw new ToolException($"影片不存在：{videoId}");
         }
 
+        var vocab = LoadVocab(conn);
+
         return new Dictionary<string, object?>
         {
             ["videoId"] = videoId,
             ["videoName"] = title,
-            ["results"] = words.Select(w => ProposeOne(conn, videoId, w, note)).ToList()
+            ["results"] = words.Select(w => ProposeOne(conn, videoId, w, note, vocab)).ToList()
         };
     }
 
-    private Dictionary<string, object?> ProposeOne(SqliteConnection conn, string videoId, string word, string note)
+    /// <summary>
+    /// 词表索引：一条 = (报出来的正名, 用来比对的字符集)。别名也进索引，但报的仍是它所属标签的正名——
+    /// 提示模型归一，而不是又添一个词。词表就几百条，全量拉进内存比每个候选词问一次库便宜。
+    /// </summary>
+    private static List<(string Name, HashSet<char> Chars)> LoadVocab(SqliteConnection conn)
+    {
+        var list = new List<(string, HashSet<char>)>();
+
+        using (var cmd = new SqliteCommand("SELECT name FROM tags", conn))
+        {
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader.GetString(0);
+                list.Add((name, name.ToHashSet()));
+            }
+        }
+
+        using (var cmd = new SqliteCommand(
+            @"SELECT t.name, a.alias FROM tag_aliases a JOIN tags t ON t.id = a.tag_id", conn))
+        {
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var alias = reader.GetString(1);
+                list.Add((reader.GetString(0), alias.ToHashSet()));
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 词表里与候选词最像的几个：按共享字占比（重叠系数）排，阈值 0.5。
+    /// 只当提示，不自动挂——"爆乳算不算巨乳"是语义判断，接口不替人拍板。
+    /// </summary>
+    private static List<string> Similar(string word, List<(string Name, HashSet<char> Chars)> vocab)
+    {
+        var chars = word.ToHashSet();
+        if (chars.Count == 0) return [];
+
+        return vocab
+            .Where(v => v.Chars.Count > 0)
+            .Select(v => (v.Name, Score: (double)chars.Count(v.Chars.Contains) / Math.Min(chars.Count, v.Chars.Count)))
+            .Where(x => x.Score >= 0.5)
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.Name.Length)
+            .Select(x => x.Name)
+            .Distinct(StringComparer.Ordinal)
+            .Take(3)
+            .ToList();
+    }
+
+    private Dictionary<string, object?> ProposeOne(
+        SqliteConnection conn, string videoId, string word, string note, List<(string Name, HashSet<char> Chars)> vocab)
     {
         var known = VideoMeta.FindTag(conn, word);
         if (known is not null)
@@ -580,13 +644,17 @@ public sealed class McpService
             return Verdict(word, changed == 0 ? "already" : "attached", known, "词表里已经有，直接挂上了");
         }
 
+        // 认不出不等于该新建：把词表里的近义项回给模型，让它自己改用它，
+        // 而不是把「爆乳」再塞进队列等人工合并
+        var near = Similar(word, vocab);
+
         using (var dup = new SqliteCommand(
             @"SELECT id FROM tag_suggestions WHERE video_id = @v AND name = @n AND status = 'pending' LIMIT 1", conn))
         {
             dup.Parameters.AddWithValue("@v", videoId);
             dup.Parameters.AddWithValue("@n", word);
             if (dup.ExecuteScalar() is not null)
-                return Verdict(word, "queued", null, "这条候选已经在待审队列里");
+                return Verdict(word, "queued", null, "这条候选已经在待审队列里", near);
         }
 
         using (var ins = new SqliteCommand(
@@ -598,16 +666,22 @@ public sealed class McpService
             ins.Parameters.AddWithValue("@note", note);
             ins.Parameters.AddWithValue("@t", VideoMeta.Now());
             var id = Convert.ToInt32(ins.ExecuteScalar());
-            return Verdict(word, "queued", null, $"新词，已进待审队列 #{id}，等人批准或并入");
+            return Verdict(word, "queued", null,
+                near.Count > 0
+                    ? $"新词，已进待审队列 #{id}。词表里有近义项，若说的是一回事请改用正名重新提交"
+                    : $"新词，已进待审队列 #{id}，等人批准或并入",
+                near);
         }
     }
 
-    private static Dictionary<string, object?> Verdict(string word, string status, string? tagId, string message) => new()
+    private static Dictionary<string, object?> Verdict(
+        string word, string status, string? tagId, string message, List<string>? similar = null) => new()
     {
         ["name"] = word,
         ["status"] = status,
         ["tagId"] = tagId,
-        ["message"] = message
+        ["message"] = message,
+        ["similar"] = similar ?? []
     };
 
     // ---------------------------------------------------------------- 批量取关联
