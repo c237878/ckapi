@@ -28,6 +28,10 @@ public class VideoController : ControllerBase
         return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
+    /// <summary>顺带补了几部同系列的，数字要出现在提示里——批量写入不该悄悄发生</summary>
+    private static string FilledNote(int filled, string baseline) =>
+        filled > 0 ? $"{baseline}（同系列另外 {filled} 部也补上了片商）" : baseline;
+
     /// <summary>
     /// 获取视频列表
     /// </summary>
@@ -496,7 +500,12 @@ public class VideoController : ControllerBase
             cmd.ExecuteNonQuery();
 
             // 片商与演员都是"整组替换"语义：新增时也带得上，编辑对话框才不用分两次保存
-            if (req.Studios is not null) VideoMeta.SetStudios(conn, id, req.Studios);
+            var filled = 0;
+            if (req.Studios is not null)
+            {
+                VideoMeta.SetStudios(conn, id, req.Studios);
+                filled = VideoMeta.PropagateStudiosToSeries(conn, id);
+            }
 
             // 关联演员
             if (req.ActorIds != null && req.ActorIds.Any())
@@ -511,7 +520,7 @@ public class VideoController : ControllerBase
                 }
             }
 
-            return Ok(new { success = true, data = new { id = id }, message = "添加成功" });
+            return Ok(new { success = true, data = new { id = id }, message = FilledNote(filled, "添加成功") });
         }
         catch (Exception ex)
         {
@@ -667,7 +676,12 @@ public class VideoController : ControllerBase
             }
 
             // null 表示这次不动片商；给了数组就是整组替换（空数组 = 全摘掉）
-            if (req.Studios is not null) VideoMeta.SetStudios(conn, id, req.Studios);
+            var filled = 0;
+            if (req.Studios is not null)
+            {
+                VideoMeta.SetStudios(conn, id, req.Studios);
+                filled = VideoMeta.PropagateStudiosToSeries(conn, id);
+            }
 
             // 更新演员关联
             if (req.ActorIds != null)
@@ -686,7 +700,7 @@ public class VideoController : ControllerBase
                 }
             }
 
-            return Ok(new { success = true, message = "更新成功", renameInfo });
+            return Ok(new { success = true, message = FilledNote(filled, "更新成功"), renameInfo });
         }
         catch (Exception ex)
         {

@@ -252,6 +252,63 @@ public static class VideoMeta
     }
 
     /// <summary>
+    /// 把这部片的片商补到**同系列还没片商**的影片上，返回补了几部。
+    ///
+    /// 一个系列基本就是同一家在做，逐部手填没有意义；但只填一条挂接都没有的，
+    /// 已有片商的绝不覆盖——系列里混进别家（联名、复刻、换牌）时那几部已有的结论得留着。
+    /// </summary>
+    public static int PropagateStudiosToSeries(SqliteConnection conn, string videoId)
+    {
+        string? seriesId;
+        using (var cmd = new SqliteCommand("SELECT seriesid FROM videos WHERE id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("@id", videoId);
+            seriesId = cmd.ExecuteScalar() as string;
+        }
+        if (string.IsNullOrWhiteSpace(seriesId)) return 0;
+
+        var mine = new List<(string Id, string Role)>();
+        using (var cmd = new SqliteCommand("SELECT studio_id, IFNULL(role, '') FROM video_studios WHERE video_id = @id", conn))
+        {
+            cmd.Parameters.AddWithValue("@id", videoId);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) mine.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        if (mine.Count == 0) return 0;
+
+        var siblings = new List<string>();
+        using (var cmd = new SqliteCommand(@"
+            SELECT v.id FROM videos v
+            WHERE v.seriesid = @s AND v.id <> @id
+              AND NOT EXISTS (SELECT 1 FROM video_studios vs WHERE vs.video_id = v.id)", conn))
+        {
+            cmd.Parameters.AddWithValue("@s", seriesId);
+            cmd.Parameters.AddWithValue("@id", videoId);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) siblings.Add(reader.GetString(0));
+        }
+        if (siblings.Count == 0) return 0;
+
+        using var tx = conn.BeginTransaction();
+        using (var ins = new SqliteCommand("INSERT OR IGNORE INTO video_studios (video_id, studio_id, role) VALUES (@v, @s, @r)", conn, tx))
+        {
+            foreach (var video in siblings)
+            {
+                foreach (var (id, role) in mine)
+                {
+                    ins.Parameters.Clear();
+                    ins.Parameters.AddWithValue("@v", video);
+                    ins.Parameters.AddWithValue("@s", id);
+                    ins.Parameters.AddWithValue("@r", role);
+                    ins.ExecuteNonQuery();
+                }
+            }
+        }
+        tx.Commit();
+        return siblings.Count;
+    }
+
+    /// <summary>
     /// 整组替换标签。createMissing=false 时归不到的名字会被跳过并回给调用方
     /// ——AI 路径就是这个形状：能挂的挂上，新词一个都不进词表。
     /// </summary>
