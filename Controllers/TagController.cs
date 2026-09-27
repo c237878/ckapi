@@ -252,121 +252,114 @@ public class TagController : ControllerBase
     }
 
     /// <summary>
-    /// 批准候选：给了 tagId 就挂到那个已有标签上，否则用候选词新建一个标签；
-    /// 两种都顺手给那部片打上（source 记 ai，让"AI 打过还没复核"筛得出来）。
+    /// 按候选词一次处理完：同一个词常常是几部片各提一条，逐条批准要点好几次，
+    /// 而人的判断其实是"这个词要不要进词表"，跟它来自哪部片无关。
+    ///
+    /// action = approve（转正；没给 tagId 就用候选词新建）· merge（并入已有标签，候选词记成它的别名）
+    /// · reject（全部驳回）。批准与并入会把**每一部**提过这个词的片都打上——
+    /// 只挂第一部会留下"词表里有了、别的片还挂在待审"的半截状态。
     /// </summary>
-    [HttpPost("suggestions/{id}/approve")]
-    public IActionResult Approve(int id, [FromBody] ApproveRequest? req)
+    [HttpPost("suggestions/by-name")]
+    public IActionResult ResolveByName([FromBody] ResolveRequest req)
     {
-        try
-        {
-            using var conn = _db.GetConnection();
-            conn.Open();
-
-            string videoId, name;
-            using (var cmd = new SqliteCommand(@"
-                SELECT video_id, name FROM tag_suggestions WHERE id = @id AND status = 'pending'", conn))
-            {
-                cmd.Parameters.AddWithValue("@id", id);
-                using var reader = cmd.ExecuteReader();
-                if (!reader.Read()) return Ok(new { success = false, message = "这条候选不在待审队列里了" });
-                videoId = reader.GetString(0);
-                name = reader.GetString(1);
-            }
-
-            var tagId = string.IsNullOrWhiteSpace(req?.TagId) ? VideoMeta.EnsureTag(conn, null, name) : req!.TagId;
-            using (var check = new SqliteCommand("SELECT name FROM tags WHERE id = @id", conn))
-            {
-                check.Parameters.AddWithValue("@id", tagId);
-                if (check.ExecuteScalar() is null) return Ok(new { success = false, message = "目标标签不存在" });
-            }
-
-            using (var tx = conn.BeginTransaction())
-            {
-                using var ins = new SqliteCommand(
-                    @"INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, ctime) VALUES (@v, @t, 'ai', @time)", conn, tx);
-                ins.Parameters.AddWithValue("@v", videoId);
-                ins.Parameters.AddWithValue("@t", tagId);
-                ins.Parameters.AddWithValue("@time", VideoMeta.Now());
-                ins.ExecuteNonQuery();
-
-                using var upd = new SqliteCommand("UPDATE tag_suggestions SET status = 'approved', tag_id = @t WHERE id = @id", conn, tx);
-                upd.Parameters.AddWithValue("@t", tagId);
-                upd.Parameters.AddWithValue("@id", id);
-                upd.ExecuteNonQuery();
-                tx.Commit();
-            }
-            return Ok(new { success = true, message = "已批准并打上标签", data = new { tagId } });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Approve failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    /// <summary>
-    /// 并入已有标签：候选词变成那个标签的别名（下次 AI 再提就直接归一到正名），
-    /// 同时给那部片打上正名。这是防词表分叉最常用的一个动作。
-    /// </summary>
-    [HttpPost("suggestions/{id}/merge")]
-    public IActionResult MergeSuggestion(int id, [FromBody] ApproveRequest req)
-    {
-        if (string.IsNullOrWhiteSpace(req?.TagId)) return Ok(new { success = false, message = "要说并入哪个标签" });
+        var name = (req.Name ?? "").Trim();
+        var action = (req.Action ?? "").Trim().ToLowerInvariant();
+        if (name.Length == 0 || action is not ("approve" or "merge" or "reject"))
+            return Ok(new { success = false, message = "name 与 action（approve / merge / reject）都要给" });
+        if (action == "merge" && string.IsNullOrWhiteSpace(req.TagId))
+            return Ok(new { success = false, message = "并入要指定并到哪个标签" });
 
         try
         {
             using var conn = _db.GetConnection();
             conn.Open();
 
-            string videoId, name;
-            using (var cmd = new SqliteCommand(@"
-                SELECT video_id, name FROM tag_suggestions WHERE id = @id AND status = 'pending'", conn))
+            var videoIds = new List<string>();
+            using (var cmd = new SqliteCommand(
+                "SELECT video_id FROM tag_suggestions WHERE name = @n AND status = 'pending'", conn))
             {
-                cmd.Parameters.AddWithValue("@id", id);
+                cmd.Parameters.AddWithValue("@n", name);
                 using var reader = cmd.ExecuteReader();
-                if (!reader.Read()) return Ok(new { success = false, message = "这条候选不在待审队列里了" });
-                videoId = reader.GetString(0);
-                name = reader.GetString(1);
+                while (reader.Read()) videoIds.Add(reader.GetString(0));
             }
+            if (videoIds.Count == 0)
+                return Ok(new { success = false, message = $"「{name}」已经不在待审队列里了" });
 
-            string? tagName;
-            using (var check = new SqliteCommand("SELECT name FROM tags WHERE id = @id", conn))
+            if (action == "reject")
             {
-                check.Parameters.AddWithValue("@id", req.TagId);
-                tagName = check.ExecuteScalar() as string;
+                using var rej = new SqliteCommand(
+                    "UPDATE tag_suggestions SET status = 'rejected' WHERE name = @n AND status = 'pending'", conn);
+                rej.Parameters.AddWithValue("@n", name);
+                var n = rej.ExecuteNonQuery();
+                return Ok(new { success = true, message = $"已驳回「{name}」（{n} 条）", data = new { affected = n } });
             }
-            if (tagName is null) return Ok(new { success = false, message = "目标标签不存在" });
 
+            string tagId;
+            string tagName;
+            if (string.IsNullOrWhiteSpace(req.TagId))
+            {
+                tagId = VideoMeta.EnsureTag(conn, null, name);
+                tagName = name;
+            }
+            else
+            {
+                using var find = new SqliteCommand("SELECT name FROM tags WHERE id = @id", conn);
+                find.Parameters.AddWithValue("@id", req.TagId);
+                var found = find.ExecuteScalar() as string;
+                if (found is null) return Ok(new { success = false, message = "目标标签不存在" });
+                tagName = found;
+                tagId = req.TagId!;
+            }
+
+            var merged = action == "merge";
             using (var tx = conn.BeginTransaction())
             {
-                // 候选词进别名表，但别把正名自己塞进自己的别名（演员那边同一规矩）
-                if (!string.Equals(tagName, name, StringComparison.OrdinalIgnoreCase))
+                // 并入时候选词进别名表，下次 AI 再提这个词就直接归一到正名；
+                // 但别把正名自己塞进自己的别名（演员那边同一规矩）
+                if (merged && !string.Equals(tagName, name, StringComparison.OrdinalIgnoreCase))
                 {
                     using var alias = new SqliteCommand(
                         "INSERT OR IGNORE INTO tag_aliases (tag_id, alias) VALUES (@t, @a)", conn, tx);
-                    alias.Parameters.AddWithValue("@t", req.TagId);
+                    alias.Parameters.AddWithValue("@t", tagId);
                     alias.Parameters.AddWithValue("@a", name);
                     alias.ExecuteNonQuery();
                 }
-                using var ins = new SqliteCommand(
-                    @"INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, ctime) VALUES (@v, @t, 'ai', @time)", conn, tx);
-                ins.Parameters.AddWithValue("@v", videoId);
-                ins.Parameters.AddWithValue("@t", req.TagId);
-                ins.Parameters.AddWithValue("@time", VideoMeta.Now());
-                ins.ExecuteNonQuery();
 
-                using var upd = new SqliteCommand("UPDATE tag_suggestions SET status = 'merged', tag_id = @t WHERE id = @id", conn, tx);
-                upd.Parameters.AddWithValue("@t", req.TagId);
-                upd.Parameters.AddWithValue("@id", id);
-                upd.ExecuteNonQuery();
+                using (var ins = new SqliteCommand(
+                    @"INSERT OR IGNORE INTO video_tags (video_id, tag_id, source, ctime) VALUES (@v, @t, 'ai', @time)", conn, tx))
+                {
+                    // source 记 ai：这样"AI 打过还没人工复核"仍然筛得出来
+                    foreach (var videoId in videoIds)
+                    {
+                        ins.Parameters.Clear();
+                        ins.Parameters.AddWithValue("@v", videoId);
+                        ins.Parameters.AddWithValue("@t", tagId);
+                        ins.Parameters.AddWithValue("@time", VideoMeta.Now());
+                        ins.ExecuteNonQuery();
+                    }
+                }
+
+                using var upd = new SqliteCommand(
+                    "UPDATE tag_suggestions SET status = @s, tag_id = @t WHERE name = @n AND status = 'pending'", conn, tx);
+                upd.Parameters.AddWithValue("@s", merged ? "merged" : "approved");
+                upd.Parameters.AddWithValue("@t", tagId);
+                upd.Parameters.AddWithValue("@n", name);
+                var done = upd.ExecuteNonQuery();
                 tx.Commit();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = merged
+                        ? $"已并入「{tagName}」，{done} 部片都打上了；「{name}」记为它的别名"
+                        : $"已批准「{tagName}」，{done} 部片都打上了",
+                    data = new { tagId, affected = done }
+                });
             }
-            return Ok(new { success = true, message = $"已并入「{tagName}」并记为它的别名" });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "MergeSuggestion failed");
+            _logger.LogError(ex, "ResolveByName failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
@@ -542,9 +535,15 @@ public class TagController : ControllerBase
         [JsonPropertyName("note")] public string? Note { get; set; }
     }
 
-    public sealed class ApproveRequest
+    public sealed class ResolveRequest
     {
-        /// <summary>留空表示用候选词新建标签；给了就是挂到已有标签上</summary>
+        /// <summary>要处理的候选词（同名的一起处理）</summary>
+        [JsonPropertyName("name")] public string? Name { get; set; }
+
+        /// <summary>approve / merge / reject</summary>
+        [JsonPropertyName("action")] public string? Action { get; set; }
+
+        /// <summary>留空表示用候选词新建标签；给了就是挂到（或并入）这个已有标签</summary>
         [JsonPropertyName("tagId")] public string? TagId { get; set; }
     }
 
