@@ -120,6 +120,72 @@ public class FriendLinkController : ControllerBase
     }
 
     /// <summary>
+    /// 上移 / 下移一位。页脚那一排的顺序以前只能靠手填排序数字调，
+    /// 而数字是 1..29 还带并列，改一位常常要把后面几位挨个重填。
+    ///
+    /// 这里不做"交换两条的 sortorder"：并列时（两条都是 5）交换等于没交换。
+    /// 而是按当前显示顺序整体重排成 1..N，只写真的变了的那几行。
+    /// </summary>
+    [HttpPost("{id}/move")]
+    public IActionResult Move(string id, [FromQuery] string? dir = null)
+    {
+        var up = string.Equals(dir, "up", StringComparison.OrdinalIgnoreCase);
+        if (!up && !string.Equals(dir, "down", StringComparison.OrdinalIgnoreCase))
+            return Ok(new { success = false, message = "只能上移或下移" });
+
+        try
+        {
+            var order = new List<(string Id, int SortOrder)>();
+            using var conn = _db.GetConnection();
+            conn.Open();
+            using (var q = new SqliteCommand("SELECT id, sortorder FROM friend_links ORDER BY sortorder, id", conn))
+            using (var reader = q.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    order.Add((reader.GetString(0), reader.IsDBNull(1) ? 0 : Convert.ToInt32(reader[1])));
+                }
+            }
+
+            var at = order.FindIndex(x => x.Id == id);
+            if (at < 0) return Ok(new { success = false, message = "友情链接不存在" });
+
+            var to = up ? at - 1 : at + 1;
+            if (to < 0 || to >= order.Count)
+                return Ok(new { success = false, message = up ? "已经在最上面了" : "已经在最下面了" });
+
+            var moved = order[at];
+            order.RemoveAt(at);
+            order.Insert(to, moved);
+
+            // 整体重排成 1..N，只写真的变了的那几行：并列时（两条都是 5）单纯交换两条等于没交换
+            using var tx = conn.BeginTransaction();
+            var changed = 0;
+            for (var i = 0; i < order.Count; i++)
+            {
+                var want = i + 1;
+                if (order[i].SortOrder == want) continue;
+
+                using var upd = new SqliteCommand(
+                    "UPDATE friend_links SET sortorder = @s, utime = @t WHERE id = @id", conn, tx);
+                upd.Parameters.AddWithValue("@s", want);
+                upd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                upd.Parameters.AddWithValue("@id", order[i].Id);
+                changed += upd.ExecuteNonQuery();
+            }
+            tx.Commit();
+
+            _logger.LogInformation("友情链接{Dir}：{Id}，重排 {Changed} 条", up ? "上移" : "下移", id, changed);
+            return Ok(new { success = true, message = "已换到新的位置" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "移动友情链接失败: {Id}", id);
+            return Ok(new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
     /// 删除友情链接
     /// </summary>
     [HttpDelete("{id}")]
