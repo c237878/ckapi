@@ -1,4 +1,5 @@
 using ckapi.Utils;
+using Microsoft.Data.Sqlite;
 
 namespace ckapi.Services;
 
@@ -46,11 +47,51 @@ public sealed class ScrapeJob
 
     public bool IsRunning => Volatile.Read(ref _running) == 1;
 
+    /// <summary>
+    /// 界面上能选的档案源：通道被停用的直接不列出来（都关了还让人选，选完只能吃一句拒绝）。
+    /// 冷却与配额用满不在这条规则里 —— 那是一会儿就自己好的状态，藏起来反而让人找不到源，
+    /// 让它出现在列表里、点下去时说明"为什么现在不能问"更有用。
+    /// </summary>
+    public List<(string Key, string Label)> OpenSources() => _sources.Values
+        .Where(src => _channels.FirstFor("actor", src.Host) is { Enabled: true })
+        // av-wiki 排前面：它是默认值，也是历史上唯一的那个源
+        .OrderBy(src => src is ActorScraper ? 0 : 1)
+        .Select(src => (src.Key, src.Label))
+        .ToList();
+
+    /// <summary>
+    /// 单位抓取也要过闸门：只看开关会漏掉"手快连点"和"配额已经用完"两种情况，
+    /// 而批量任务之所以不会把站点敲封，靠的就是每条之前问一次通道。
+    /// 抓完把结果回报给通道，所以手工点的次数也计进今日配额。
+    /// </summary>
+    public async Task<(bool Ok, string Message)> FetchOneAsync(
+        IActorSource src, SqliteConnection conn, string id, string posterDir, Want want, CancellationToken ct)
+    {
+        var channel = _channels.FirstFor("actor", src.Host);
+        if (channel is null) return (false, $"没有 {src.Label} 这条抓取通道（设置 → 抓取通道）");
+
+        var gate = _channels.Check(channel);
+        if (!gate.Allowed) return (false, gate.Why);
+
+        await _channels.WaitTurnAsync(channel, ct);
+        var res = await src.ScrapeAsync(conn, id, posterDir, ActorGate.DuplicateRiskIds(conn), want, ct);
+        // "查无此档"是对话正常结束，不该把通道打死；只有站点侧失败才累计熔断
+        var fault = !res.Ok && IsSiteFault(res.Message);
+        _channels.Report(channel.Id, !fault, fault ? res.Message : null);
+        return res;
+    }
+
     public (bool Started, string Message) Start(Want want, string? srcKey)
     {
         var src = Resolve(srcKey);
         if (src is null)
             return (false, $"没有这个抓取来源：{(string.IsNullOrEmpty(srcKey) ? "未指定" : srcKey)}");
+
+        // 启动前先问一句开关：界面已经把停用的源从下拉框里滤掉了，走到这里多半是
+        // 别的标签页刚关掉它 —— 与其起一个第一圈就会自己停下来的任务，不如直接说清楚
+        var opening = _channels.FirstFor("actor", src.Host);
+        if (opening is null) return (false, $"没有 {src.Label} 这条抓取通道（设置 → 抓取通道）");
+        if (!opening.Enabled) return (false, $"{src.Label} 这条通道被关着，先去设置里启用");
 
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             return (false, $"抓取任务已经在跑了（{_what}），先停下它");
@@ -202,6 +243,12 @@ public sealed class ScrapeJob
                     consecutive = 0;
                 }
             }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // 等间隔的时候被叫停：这是人按了「停止抓取」，不是出了事，
+            // 之前它落到下面那个 catch 里，收尾提示会说成"任务异常中断"
+            _logger.LogInformation("抓取任务按请求停止（{What}）", _what);
         }
         catch (Exception ex)
         {

@@ -40,7 +40,7 @@ public class ActorController : ControllerBase
     /// </summary>
     [HttpGet]
     public IActionResult GetActors([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? keyword = null, [FromQuery] string? country = null,
-        [FromQuery] string? sortBy = null, [FromQuery] bool? hasPortrait = null, [FromQuery] bool? hasBirthdate = null)
+        [FromQuery] string? sortBy = null, [FromQuery] bool? hasPortrait = null, [FromQuery] string? birthYear = null)
     {
         try
         {
@@ -81,9 +81,14 @@ public class ActorController : ControllerBase
             if (hasPortrait == true) whereClause += " AND EXISTS (SELECT 1 FROM actor_images ai WHERE ai.actor_id = a.id)";
             else if (hasPortrait == false) whereClause += " AND NOT EXISTS (SELECT 1 FROM actor_images ai WHERE ai.actor_id = a.id)";
 
-            // 生日的空值有两种长相：NULL 和空串（抓取只写 COALESCE，空串是历史手工数据）
-            if (hasBirthdate == true) whereClause += " AND a.birthdate IS NOT NULL AND TRIM(a.birthdate) <> ''";
-            else if (hasBirthdate == false) whereClause += " AND (a.birthdate IS NULL OR TRIM(a.birthdate) = '')";
+            // 生日按"哪一年出生"筛：库里存的可能是 1990、1990-05 或 1990-05-16，
+            // 所以统一取前四位比。'none' 是没有生日的人（空值有 NULL 和空串两种长相）
+            if (birthYear == "none") whereClause += " AND (a.birthdate IS NULL OR TRIM(a.birthdate) = '')";
+            else if (IsBirthYear(birthYear))
+            {
+                whereClause += " AND SUBSTR(a.birthdate, 1, 4) = @by";
+                parameters.Add(new SqliteParameter("@by", birthYear));
+            }
 
             using var conn = GetConnection();
             conn.Open();
@@ -592,6 +597,51 @@ public class ActorController : ControllerBase
     }
 
     /// <summary>
+    /// 库里出现过的出生年份，升序。生日筛选的下拉框用它 ——
+    /// 列真实存在的年份比给一个 1900-2100 的空区间有用。
+    /// </summary>
+    [HttpGet("birth-years")]
+    public IActionResult GetBirthYears()
+    {
+        try
+        {
+            using var conn = GetConnection();
+            conn.Open();
+            var years = new List<string>();
+            // 别名不能直接进 WHERE，所以先在子查询里把年份抠出来再筛再排
+            using var cmd = new SqliteCommand(@"
+                SELECT y FROM (
+                    SELECT DISTINCT SUBSTR(birthdate, 1, 4) AS y FROM actors
+                     WHERE birthdate IS NOT NULL AND TRIM(birthdate) <> ''
+                )
+                WHERE LENGTH(y) = 4 AND y BETWEEN '1900' AND '2100'
+                ORDER BY y", conn);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) years.Add(reader.GetString(0));
+            return Ok(new { success = true, data = years });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取出生年份清单失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>生日可能是 1990 / 1990-05 / 1990-05-16 三种长度，前四位都得是真年份才当筛选值用</summary>
+    private static bool IsBirthYear(string? raw) =>
+        raw is { Length: 4 } && int.TryParse(raw, out var y) && y is >= 1900 and <= 2100;
+
+    /// <summary>
+    /// 界面上可选的抓取来源：通道停用的不出现。
+    /// </summary>
+    [HttpGet("scrape/sources")]
+    public IActionResult ScrapeSources() => Ok(new
+    {
+        success = true,
+        data = _job.OpenSources().Select(x => new { key = x.Key, label = x.Label })
+    });
+
+    /// <summary>
     /// 获取演员的影片列表
     /// </summary>
     [HttpGet("{id}/videos")]
@@ -789,8 +839,7 @@ public class ActorController : ControllerBase
             if (string.IsNullOrEmpty(posterDir))
                 return Ok(new { success = false, message = "未配置艳图目录（系统设置 → 艳图目录）" });
 
-            var res = await scraper.ScrapeAsync(
-                conn, id, posterDir, ActorGate.DuplicateRiskIds(conn), want, ct);
+            var res = await _job.FetchOneAsync(scraper, conn, id, posterDir, want, ct);
             return Ok(new { success = res.Ok, message = res.Message });
         }
         catch (Exception ex)
