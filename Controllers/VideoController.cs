@@ -28,18 +28,6 @@ public class VideoController : ControllerBase
         return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
     }
 
-    /// <summary>
-    /// 同系列自动补片商的开关（设置 → 片商）。缺省算"开"：这行设置是后加的，
-    /// 老库里没这一行时得保持原来的行为，所以只有明确写了关才算关。
-    /// </summary>
-    private static bool SeriesStudioSyncOn(SqliteConnection conn)
-    {
-        using var cmd = new SqliteCommand(
-            "SELECT content FROM system_settings WHERE name = 'seriesStudioSync'", conn);
-        var v = (cmd.ExecuteScalar() as string ?? "").Trim().ToLowerInvariant();
-        return v is not ("0" or "false" or "off");
-    }
-
     /// <summary>顺带补了几部同系列的，数字要出现在提示里——批量写入不该悄悄发生</summary>
     private static string FilledNote(int filled, string baseline) =>
         filled > 0 ? $"{baseline}（同系列另外 {filled} 部日本 av 也补上了片商）" : baseline;
@@ -520,8 +508,9 @@ public class VideoController : ControllerBase
             
             cmd.ExecuteNonQuery();
 
-            // 同系列还没填片商的一起补上：一个系列基本就是同一家在做。开关关掉时只改自己
-            var filled = SeriesStudioSyncOn(conn) ? VideoMeta.FillSeriesStudios(conn, id, studioId) : 0;
+            // 同系列还没填片商的一起补上：一个系列基本就是同一家在做。
+            // 勾不勾是这一趟的事，界面上那颗复选框决定；没传（老脚本、别的调用方）按补算
+            var filled = (req.SyncSeriesStudio ?? true) ? VideoMeta.FillSeriesStudios(conn, id, studioId) : 0;
 
             // 关联演员
             if (req.ActorIds != null && req.ActorIds.Any())
@@ -703,7 +692,7 @@ public class VideoController : ControllerBase
             {
                 var (studioId, _) = VideoMeta.ResolveStudio(conn, req.StudioId, null);
                 VideoMeta.SetStudio(conn, id, studioId);
-                filled = SeriesStudioSyncOn(conn) ? VideoMeta.FillSeriesStudios(conn, id, studioId) : 0;
+                filled = (req.SyncSeriesStudio ?? true) ? VideoMeta.FillSeriesStudios(conn, id, studioId) : 0;
             }
 
             // 更新演员关联
@@ -1302,6 +1291,9 @@ public class AddVideoRequest
     /// <summary>片商 id：一部片只有一家，与 seriesId 同形。null 表示这次不动，空串表示清空</summary>
     [JsonPropertyName("studioId")]
     public string? StudioId { get; set; }
+    /// <summary>设片商时要不要顺手补到同系列还没填片商的影片。不传按 true 算</summary>
+    [JsonPropertyName("syncSeriesStudio")]
+    public bool? SyncSeriesStudio { get; set; }
 }
 
 public class UpdateVideoRequest
@@ -1331,6 +1323,9 @@ public class UpdateVideoRequest
     /// <summary>片商 id：一部片只有一家，与 seriesId 同形。null 表示这次不动，空串表示清空</summary>
     [JsonPropertyName("studioId")]
     public string? StudioId { get; set; }
+    /// <summary>设片商时要不要顺手补到同系列还没填片商的影片。不传按 true 算</summary>
+    [JsonPropertyName("syncSeriesStudio")]
+    public bool? SyncSeriesStudio { get; set; }
 }
 
 public class BatchDeleteRequest
