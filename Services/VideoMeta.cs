@@ -109,6 +109,10 @@ public static class VideoMeta
     /// 把这家片商补到同系列**还没填片商**的影片上，返回补了几部。
     /// 一个系列基本就是同一家在做，逐部手填没有意义；已有片商的绝不动——
     /// 系列里混进别家（联名、复刻、换牌）时那几部已有的结论得留着。
+    ///
+    /// 只补日本 av：片商实体是给日本 av 建的那份词表（抓取归一、别名都按那套走），
+    /// 同一个系列里挂着的欧美片、解说/混剪类影片不是同一家出的，顺手补上等于凭空写错。
+    /// '日本' / 'av' 是 设置 → 地区与分类 里的规范取值，在那里改名要同步改这里。
     /// </summary>
     public static int FillSeriesStudios(SqliteConnection conn, string videoId, string? studioId)
     {
@@ -124,7 +128,9 @@ public static class VideoMeta
 
         using var upd = new SqliteCommand(@"
             UPDATE videos SET studioid = @s
-            WHERE seriesid = @ser AND id <> @id AND (studioid IS NULL OR studioid = '')", conn);
+            WHERE seriesid = @ser AND id <> @id
+              AND country = '日本' AND category = 'av'
+              AND (studioid IS NULL OR studioid = '')", conn);
         upd.Parameters.AddWithValue("@s", studioId);
         upd.Parameters.AddWithValue("@ser", seriesId);
         upd.Parameters.AddWithValue("@id", videoId);

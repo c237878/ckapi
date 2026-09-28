@@ -30,7 +30,7 @@ public class VideoController : ControllerBase
 
     /// <summary>顺带补了几部同系列的，数字要出现在提示里——批量写入不该悄悄发生</summary>
     private static string FilledNote(int filled, string baseline) =>
-        filled > 0 ? $"{baseline}（同系列另外 {filled} 部也补上了片商）" : baseline;
+        filled > 0 ? $"{baseline}（同系列另外 {filled} 部日本 av 也补上了片商）" : baseline;
 
     /// <summary>
     /// 获取视频列表
