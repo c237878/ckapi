@@ -467,9 +467,16 @@ public class VideoController : ControllerBase
         try
         {
             var id = Guid.NewGuid().ToString("N").ToUpper();
-            var release = string.IsNullOrWhiteSpace(req.ReleaseDate) ? null : VideoMeta.NormalizeReleaseDate(req.ReleaseDate);
-            if (req.ReleaseDate is not null && release is null)
-                return Ok(new { success = false, message = "发行日期只收 2024 / 2024-03 / 2024-03-15 三种写法" });
+            // 留空是合法输入（大部分片子根本不知道发行日），只有填了又不成格式才拦下来；
+            // 前端空值传的是 ""，所以判空不能判 is null
+            var rawRelease = (req.ReleaseDate ?? "").Trim();
+            string? release = null;
+            if (rawRelease.Length > 0)
+            {
+                release = VideoMeta.NormalizeReleaseDate(rawRelease);
+                if (release is null)
+                    return Ok(new { success = false, message = "发行日期只收 2024 / 2024-03 / 2024-03-15 三种写法，留空表示不知道" });
+            }
 
             var sql = @"
                 INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid,
@@ -669,7 +676,7 @@ public class VideoController : ControllerBase
             {
                 var raw = req.ReleaseDate.Trim();
                 if (raw.Length > 0 && VideoMeta.NormalizeReleaseDate(raw) is null)
-                    return Ok(new { success = false, message = "发行日期格式不对，只收 2024 / 2024-03 / 2024-03-15 三种写法" });
+                    return Ok(new { success = false, message = "发行日期只收 2024 / 2024-03 / 2024-03-15 三种写法，留空表示不知道" });
 
                 using var cmd3 = new SqliteCommand("UPDATE videos SET release_date = @v WHERE id = @id", conn);
                 cmd3.Parameters.Add(new SqliteParameter("@v", raw.Length == 0 ? (object)DBNull.Value : raw));
