@@ -26,7 +26,7 @@ public class StudioController : ControllerBase
     /// <summary>片商列表：带名下影片数，管理页与详情页的挑选器共用</summary>
     [HttpGet]
     public IActionResult GetStudios([FromQuery] int page = 1, [FromQuery] int pageSize = 20,
-        [FromQuery] string? keyword = null)
+        [FromQuery] string? keyword = null, [FromQuery] string? country = null)
     {
         try
         {
@@ -37,9 +37,17 @@ public class StudioController : ControllerBase
             var parameters = new List<SqliteParameter>();
             if (!string.IsNullOrWhiteSpace(keyword))
             {
-                // 别名也算命中：输入"麦当娜"应该能找到正名"マドンナ"那家
-                where += " AND (s.name LIKE @kw OR EXISTS (SELECT 1 FROM studio_aliases a WHERE a.studio_id = s.id AND a.alias LIKE @kw))";
+                // 别名与官网都算命中：输入"麦当娜"应该能找到正名"マドンナ"那家，
+                // 输入"madonna-av"要能顺着官网域名把那家捞出来（片商多了以后只认名字就不够了）
+                where += @" AND (s.name LIKE @kw OR s.link LIKE @kw
+                            OR EXISTS (SELECT 1 FROM studio_aliases a WHERE a.studio_id = s.id AND a.alias LIKE @kw))";
                 parameters.Add(new SqliteParameter("@kw", $"%{keyword.Trim()}%"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(country))
+            {
+                where += " AND s.country = @country";
+                parameters.Add(new SqliteParameter("@country", country.Trim()));
             }
 
             // 词表是"找一家片商"的地方，按影片数排会把新加的、还没挂片的挤到最后一页去；
@@ -83,6 +91,32 @@ public class StudioController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetStudios failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 词表里实际用过的国家，升序。管理页的「按国家筛选」用它 ——
+    /// 只列有片商的那几个，比把「地区与分类」整张清单搬下来少一堆空结果。
+    /// </summary>
+    [HttpGet("countries")]
+    public IActionResult GetCountries()
+    {
+        try
+        {
+            using var conn = _db.GetConnection();
+            conn.Open();
+            var list = new List<string>();
+            using var cmd = new SqliteCommand(
+                @"SELECT DISTINCT country FROM studios
+                   WHERE country IS NOT NULL AND TRIM(country) <> '' ORDER BY country", conn);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) list.Add(reader.GetString(0));
+            return Ok(new { success = true, data = list });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetStudioCountries failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
