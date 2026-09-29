@@ -77,11 +77,15 @@ public class LikeController : ControllerBase
                 total = Convert.ToInt32(countCmd.ExecuteScalar());
 
                 var sql = $@"
-                    SELECT vl.id, vl.video_id, vl.liked_at, vl.target_type,
+                    SELECT vl.id, vl.video_id, vl.liked_at, vl.target_type, vl.file_id,
                            v.name as video_name, v.code as video_code, v.cover_path as video_cover,
+                           lf.code as version_code,
+                           (SELECT vt.name FROM version_types vt WHERE vt.id = lf.type_id) as version_type,
+                           NULLIF(TRIM(lf.label), '') as version_label,
                            c.name as comic_name, c.cover_path as comic_cover
                     FROM video_likes vl
                     LEFT JOIN videos v ON vl.video_id = v.id AND vl.target_type = 'video'
+                    LEFT JOIN video_files lf ON lf.id = vl.file_id
                     LEFT JOIN comics c ON vl.video_id = c.id AND vl.target_type = 'comic'
                     {whereClause}
                     ORDER BY vl.liked_at DESC
@@ -112,7 +116,11 @@ public class LikeController : ControllerBase
                             targetType = reader["target_type"],
                             name = name,
                             code = isComic ? null : (reader["video_code"] == DBNull.Value ? null : reader["video_code"].ToString()),
-                            coverPath = cover
+                            coverPath = cover,
+                            // 点赞落在哪一版（v11）：这一列让它看得出来，原版行没有类型名，用影片番号本身表示
+                            fileId = reader["file_id"] == DBNull.Value ? null : reader["file_id"].ToString(),
+                            versionCode = reader["version_code"] == DBNull.Value ? null : reader["version_code"].ToString(),
+                            versionName = reader["version_name"] == DBNull.Value ? null : reader["version_name"].ToString()
                         });
                     }
                 }

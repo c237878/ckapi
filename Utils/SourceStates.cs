@@ -21,15 +21,17 @@ public static class SourceStates
     public static bool IsWatermark(string? value) => value is not null && Array.IndexOf(Watermark, value) >= 0;
 
     /// <summary>
-    /// "没看过"的 SQL 口径：**两维都没给结论**（都还是 unknown）。
+    /// "没看过"的 SQL 口径：**默认版本那一行的两维都没给结论**（都还是 unknown）。
     /// 今日推荐与首页排序用它挑片，不再单开一列存"看过"——
     /// 扫描只写分辨率、不写字幕，所以"有结论"这件事只可能来自人工标记，反推是可靠的。
     /// 反过来也提醒一句：哪天让扫描或别的自动途径去填这两个状态，这个口径就当场失效了
     /// （全站都会变成"有结论"，今日推荐没有片可推）。
-    /// 表别名固定为 v，与 VideoCardQuery 一致。
+    /// 表别名固定为 v（影片）与 df（默认版本行，见 VideoCardQuery.FileJoin，查询必须挂上它）。
+    /// IFNULL 是兜底：万一某部片没了默认行，按"没给过结论"算，宁可让它多出现在推荐里，
+    /// 也别让一个 NULL 把它从全站榜单上悄悄抹掉。
     /// </summary>
     public const string Unrated =
-        "(v.subtitle_state = 'unknown' AND v.watermark_state = 'unknown')";
+        "(IFNULL(df.subtitle_state, 'unknown') = 'unknown' AND IFNULL(df.watermark_state, 'unknown') = 'unknown')";
 
     /// <summary>
     /// 分辨率档位 → SQL 条件。全是写死的常量，没有一处拼用户输入。
@@ -39,15 +41,16 @@ public static class SourceStates
     /// 而手机视频通行的叫法就是按短边叫 720p / 1440p。
     /// 两个值都在库里存着，详情页原样显示"720×1280"，这里只管归档。
     /// 未扫描的单开一档，好让人看出还有哪些没量过。
+    /// 分辨率是每一份文件自己的事（v11 起在 video_files），筛的是默认那一版。
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> Resolutions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["unscanned"] = "v.res_h IS NULL",
-            ["sd"] = "MIN(v.res_w, v.res_h) < 480",
-            ["480"] = "MIN(v.res_w, v.res_h) >= 480 AND MIN(v.res_w, v.res_h) < 720",
-            ["720"] = "MIN(v.res_w, v.res_h) >= 720 AND MIN(v.res_w, v.res_h) < 1080",
-            ["1080"] = "MIN(v.res_w, v.res_h) >= 1080 AND MIN(v.res_w, v.res_h) < 2048",
-            ["2160"] = "MIN(v.res_w, v.res_h) >= 2048"
+            ["unscanned"] = "df.res_h IS NULL",
+            ["sd"] = "MIN(df.res_w, df.res_h) < 480",
+            ["480"] = "MIN(df.res_w, df.res_h) >= 480 AND MIN(df.res_w, df.res_h) < 720",
+            ["720"] = "MIN(df.res_w, df.res_h) >= 720 AND MIN(df.res_w, df.res_h) < 1080",
+            ["1080"] = "MIN(df.res_w, df.res_h) >= 1080 AND MIN(df.res_w, df.res_h) < 2048",
+            ["2160"] = "MIN(df.res_w, df.res_h) >= 2048"
         };
 }

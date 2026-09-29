@@ -26,19 +26,20 @@ public class VideoStreamController : ControllerBase
     }
 
     /// <summary>
-    /// 视频流代理（支持 Range 请求，可拖动进度条）
+    /// 视频流代理（支持 Range 请求，可拖动进度条）。
+    /// 参数是**版本行 id**（v11）：前端下拉选中的是哪一版，就播哪一版的文件。
     /// </summary>
-    [HttpGet("stream/{id}")]
-    public IActionResult StreamVideo(string id)
+    [HttpGet("stream/{fileId}")]
+    public IActionResult StreamVideo(string fileId)
     {
         try
         {
-            var sql = "SELECT file_path FROM videos WHERE id = @id";
+            var sql = "SELECT file_path FROM video_files WHERE id = @id";
             using var conn = GetConnection();
             conn.Open();
 
             using var cmd = new SqliteCommand(sql, conn);
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            cmd.Parameters.Add(new SqliteParameter("@id", fileId));
 
             var filePath = cmd.ExecuteScalar()?.ToString();
             if (string.IsNullOrEmpty(filePath) || !System.IO.File.Exists(filePath))

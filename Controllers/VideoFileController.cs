@@ -1,306 +1,44 @@
+using ckapi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 视频文件操作：重置文件大小、删除物理文件、更新文件信息、片源质量
-/// 路由前缀保持 api/video，与前端既有调用一致
+/// 全库文件名对齐工具：把盘上的文件改成库里记的那个名字。
+///
+/// v11 起"文件"是 video_files 一行一行，所以这里的遍历对象是版本行：
+/// 每一版对齐到自己的**行级番号**（原版行等于影片番号，解说行带着自己的尾巴），
+/// 封面在影片层，跟着影片番号走，一部一张。
+///
+/// 单个版本的重置/删除/上传写回在 api/video/version/*，不在这里——那些都是"某一版"的事。
 /// </summary>
 [ApiController]
 [Route("api/video")]
 public class VideoFileController : ControllerBase
 {
-    private readonly IConfiguration _config;
     private readonly ILogger<VideoFileController> _logger;
+    private readonly Utils.SQLiteHelper _db;
 
-    public VideoFileController(IConfiguration config, ILogger<VideoFileController> logger)
+    public VideoFileController(ILogger<VideoFileController> logger, Utils.SQLiteHelper db)
     {
-        _config = config;
         _logger = logger;
-    }
-
-    private SqliteConnection GetConnection()
-    {
-        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
+        _db = db;
     }
 
     /// <summary>
-    /// 重置视频文件大小
-    /// </summary>
-    [HttpPost("{id}/reset-file-size")]
-    public IActionResult ResetFileSize(string id)
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 获取视频完整信息
-            string? videoCode = null;
-            string? currentFilePath = null;
-            string? currentCoverPath = null;
-            long currentFileSize = 0;
-
-            const string selectVideoSql = "SELECT code, file_path, cover_path, file_size FROM videos WHERE id = @id";
-            using var getCmd = new SqliteCommand(selectVideoSql, conn);
-            getCmd.Parameters.AddWithValue("@id", id);
-
-            using (var reader = getCmd.ExecuteReader())
-            {
-                if (!reader.Read())
-                    return NotFound(new { success = false, message = "视频不存在" });
-
-                videoCode = reader["code"]?.ToString();
-                currentFilePath = reader["file_path"] == DBNull.Value ? null : reader["file_path"]?.ToString();
-                currentCoverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"]?.ToString();
-                currentFileSize = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]);
-            }
-
-            var newFilePath = currentFilePath;
-            long? newFileSize = null;
-            var newCoverPath = currentCoverPath;
-            var messages = new List<string>();
-
-            // ===== 1. 处理视频文件路径与大小 =====
-            if (!string.IsNullOrEmpty(currentFilePath) && System.IO.File.Exists(currentFilePath))
-            {
-                var fi = new FileInfo(currentFilePath);
-                newFileSize = fi.Length;
-                messages.Add($"文件大小: {FormatFileSize(newFileSize.Value)}");
-            }
-            else if (!string.IsNullOrEmpty(videoCode))
-            {
-                var videoDirs = QueryScanDirectoriesByCategory(conn, "视频");
-                bool found = false;
-
-                foreach (var dirPath in videoDirs)
-                {
-                    if (!Directory.Exists(dirPath)) continue;
-                    var searchPath = Path.Combine(dirPath, $"{videoCode}.mp4");
-
-                    if (System.IO.File.Exists(searchPath))
-                    {
-                        var fi = new FileInfo(searchPath);
-                        newFilePath = searchPath;
-                        newFileSize = fi.Length;
-                        messages.Add($"在目录 [{dirPath}] 中找到匹配文件");
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                {
-                    messages.Add(videoDirs.Any() ? "在所有配置的视频目录中未找到匹配文件" : "未配置视频目录");
-                }
-            }
-            else
-            {
-                messages.Add("无番号，无法搜索");
-            }
-
-            // ===== 2. 处理封面路径（仅封面为空时搜索）=====
-            if (string.IsNullOrEmpty(newCoverPath) && !string.IsNullOrEmpty(videoCode))
-            {
-                var coverDirs = QueryScanDirectoriesByCategory(conn, "封面");
-                bool coverFound = false;
-
-                foreach (var dir in coverDirs)
-                {
-                    if (!Directory.Exists(dir)) continue;
-                    var searchPath = Path.Combine(dir, $"{videoCode}.jpg");
-
-                    if (System.IO.File.Exists(searchPath))
-                    {
-                        newCoverPath = searchPath;
-                        messages.Add("封面已找回");
-                        coverFound = true;
-                        break;
-                    }
-                }
-
-                if (!coverFound)
-                {
-                    messages.Add("未找到封面");
-                }
-            }
-
-            // ===== 3. 合并为一次 UPDATE，消除重复SQL分支 =====
-            long finalFileSize = newFileSize ?? 0;
-            bool sizeChanged = finalFileSize != currentFileSize;
-            var now = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-
-            const string updateSql = @"
-                UPDATE videos
-                SET file_path = @fp,
-                    file_size = @fs,
-                    cover_path = @cp,
-                    subtitle_state = 'unknown',
-                    watermark_state = 'unknown',
-                    res_w = NULL,
-                    res_h = NULL,
-                    scan_time = NULL,
-                    ctime = CASE WHEN @updateCtime = 1 THEN @ctime ELSE ctime END
-                WHERE id = @id";
-
-            using var updCmd = new SqliteCommand(updateSql, conn);
-            updCmd.Parameters.AddWithValue("@fp", newFilePath ?? "");
-            updCmd.Parameters.AddWithValue("@fs", finalFileSize);
-            updCmd.Parameters.AddWithValue("@cp", string.IsNullOrEmpty(newCoverPath) ? DBNull.Value : newCoverPath);
-            updCmd.Parameters.AddWithValue("@updateCtime", sizeChanged ? 1 : 0);
-            updCmd.Parameters.AddWithValue("@ctime", now);
-            updCmd.Parameters.AddWithValue("@id", id);
-            updCmd.ExecuteNonQuery();
-
-            return Ok(new {
-                success = true,
-                data = new { filePath = newFilePath, fileSize = newFileSize, coverPath = newCoverPath },
-                message = string.Join("；", messages)
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ResetFileSize failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    // 提取通用查询方法，消除重复代码
-    private List<string> QueryScanDirectoriesByCategory(SqliteConnection conn, string category)
-    {
-        var dirs = new List<string>();
-        const string sql = "SELECT path FROM scan_directories WHERE category = @cat ORDER BY path ASC";
-
-        using var cmd = new SqliteCommand(sql, conn);
-        cmd.Parameters.AddWithValue("@cat", category);
-
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            var path = reader.GetString(0);
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                dirs.Add(path);
-            }
-        }
-        return dirs;
-    }
-
-    /// <summary>
-    /// 删除视频文件（置空路径和大小，不动封面）
-    /// </summary>
-    [HttpDelete("{id}/file")]
-    public IActionResult DeleteVideoFile(string id)
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-
-            // 获取当前文件路径
-            string? currentFilePath = null;
-            using (var getCmd = new SqliteCommand("SELECT file_path FROM videos WHERE id = @id", conn))
-            {
-                getCmd.Parameters.Add(new SqliteParameter("@id", id));
-                var result = getCmd.ExecuteScalar();
-                if (result != null && result != DBNull.Value)
-                    currentFilePath = result.ToString();
-            }
-
-            // 删除物理文件
-            string message = "";
-            if (!string.IsNullOrEmpty(currentFilePath) && currentFilePath.StartsWith("/"))
-            {
-                if (System.IO.File.Exists(currentFilePath))
-                {
-                    try
-                    {
-                        System.IO.File.Delete(currentFilePath);
-                        message = "文件已删除";
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "删除文件失败: {path}", currentFilePath);
-                        message = "文件删除失败（可能被其他程序占用）";
-                    }
-                }
-                else
-                {
-                    message = "文件不存在，无需删除";
-                }
-            }
-            else
-            {
-                message = "无有效文件路径";
-            }
-
-            // 置空 file_path 和 file_size
-            using var updCmd = new SqliteCommand(
-                "UPDATE videos SET file_path = NULL, file_size = 0 WHERE id = @id", conn);
-            updCmd.Parameters.Add(new SqliteParameter("@id", id));
-            updCmd.ExecuteNonQuery();
-
-            return Ok(new { success = true, message });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DeleteVideoFile failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    /// <summary>
-    /// 更新视频的文件路径和大小（上传成功后调用）
-    /// </summary>
-    [HttpPut("{id}/file-info")]
-    public IActionResult UpdateFileInfo(string id, [FromBody] UpdateFileInfoRequest req)
-    {
-        try
-        {
-            using var conn = GetConnection();
-            conn.Open();
-
-            long? newFileSize = null;
-            if (!string.IsNullOrEmpty(req.FilePath) && System.IO.File.Exists(req.FilePath))
-            {
-                var fi = new System.IO.FileInfo(req.FilePath);
-                newFileSize = fi.Length;
-            }
-
-            using var cmd = new SqliteCommand(@"
-                UPDATE videos SET
-                    file_path = @fp,
-                    cover_path = COALESCE(@cp, cover_path),
-                    file_size = COALESCE(@fs, file_size)
-                WHERE id = @id", conn);
-            cmd.Parameters.Add(new SqliteParameter("@id", id));
-            cmd.Parameters.AddWithValue("@fp", (object?)req.FilePath ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@cp", (object?)req.CoverPath ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("@fs", (object?)newFileSize ?? DBNull.Value);
-            var rows = cmd.ExecuteNonQuery();
-
-            if (rows == 0)
-                return NotFound(new { success = false, message = "视频不存在" });
-
-            return Ok(new { success = true, data = new { filePath = req.FilePath, fileSize = newFileSize, coverPath = req.CoverPath }, message = "文件信息已更新" });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "UpdateFileInfo failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    /// <summary>
-    /// 检查并重命名文件名与番号一致
+    /// 检查并重命名文件名，使之与库里记的番号一致。
+    /// 只动"文件确实在盘上、且文件名与番号不符"的行；目标名已被占用的一律跳过并说明原因。
+    ///
+    /// **默认是预检（dryRun=true）**：这个动作会改盘上真实文件名，一次可能涉及很多个，
+    /// 所以先看清单。界面点「执行改名」时才带 ?dryRun=false。
     /// </summary>
     [HttpPost("rename-to-code")]
-    public IActionResult RenameFilesToCode()
+    public IActionResult RenameFilesToCode([FromQuery] bool dryRun = true)
     {
         try
         {
-            using var conn = GetConnection();
+            using var conn = _db.GetConnection();
             conn.Open();
 
             var results = new List<object>();
@@ -308,126 +46,91 @@ public class VideoFileController : ControllerBase
             var skipped = 0;
             var failed = 0;
 
-            using var cmd = new SqliteCommand(@"
-                SELECT id, code, file_path, cover_path
-                FROM videos
-                WHERE code IS NOT NULL AND code != ''
-                AND ((file_path != '' AND file_path NOT LIKE 'manual://%' AND file_path NOT LIKE '%'||code||'%')
-                OR (cover_path != '' AND cover_path NOT LIKE 'manual://%' AND cover_path NOT LIKE '%'||code||'%'))", conn);
-            using var reader = cmd.ExecuteReader();
-
-            while (reader.Read())
+            // 1) 版本行：按行级番号对齐
+            var fileIds = new List<string>();
+            using (var cmd = new SqliteCommand(@"
+                SELECT f.id FROM video_files f
+                WHERE f.code <> '' AND IFNULL(f.file_path, '') <> ''
+                  AND f.file_path NOT LIKE '%' || f.code || '%'", conn))
+            using (var reader = cmd.ExecuteReader())
             {
-                var videoId = reader["id"].ToString()!;
-                var code = reader["code"].ToString()!;
-                var filePath = reader["file_path"]?.ToString() ?? "";
-                var coverPath = reader["cover_path"]?.ToString() ?? "";
-
-                var fileRenamed = false;
-                var coverRenamed = false;
-                var newFilePath = filePath;
-                var newCoverPath = coverPath;
-                var errors = new List<string>();
-
-                // 检查视频文件名
-                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                while (reader.Read()) fileIds.Add(reader.GetString(0));
+            }
+            foreach (var fileId in fileIds)
+            {
+                var (ok, newPath, error) = VideoFiles.AlignFileName(conn, fileId, dryRun);
+                var row = VideoFiles.Find(conn, fileId);
+                if (ok)
                 {
-                    var dir = Path.GetDirectoryName(filePath)!;
-                    var ext = Path.GetExtension(filePath);
-                    var currentName = Path.GetFileNameWithoutExtension(filePath);
-                    if (currentName != code)
-                    {
-                        newFilePath = Path.Combine(dir, code + ext);
-                        try
-                        {
-                            // 避免覆盖：如果目标文件已存在且不是同一个文件，跳过
-                            if (System.IO.File.Exists(newFilePath) && newFilePath != filePath)
-                            {
-                                errors.Add($"视频文件目标已存在: {code + ext}");
-                            }
-                            else
-                            {
-                                System.IO.File.Move(filePath, newFilePath);
-                                fileRenamed = true;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add($"重命名视频失败: {ex.Message}");
-                        }
-                        newFilePath = filePath;
-                    }
-                }
-
-                // 检查封面文件名
-                if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
-                {
-                    var dir = Path.GetDirectoryName(coverPath)!;
-                    var ext = Path.GetExtension(coverPath);
-                    var currentName = Path.GetFileNameWithoutExtension(coverPath);
-                    if (currentName != code)
-                    {
-                        newCoverPath = Path.Combine(dir, code + ext);
-                        try
-                        {
-                            if (System.IO.File.Exists(newCoverPath) && newCoverPath != coverPath)
-                            {
-                                errors.Add($"封面文件目标已存在: {code + ext}");
-                            }
-                            else
-                            {
-                                System.IO.File.Move(coverPath, newCoverPath);
-                                coverRenamed = true;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add($"重命名封面失败: {ex.Message}");
-                        }
-                        newCoverPath = coverPath;
-                    }
-                }
-
-                // 如果有文件被重命名，更新数据库中的路径
-                if (fileRenamed || coverRenamed)
-                {
-                    using var updCmd = new SqliteCommand("UPDATE videos SET file_path = @fp, cover_path = @cp WHERE id = @id", conn);
-                    updCmd.Parameters.Add(new SqliteParameter("@fp", fileRenamed ? newFilePath : filePath));
-                    updCmd.Parameters.Add(new SqliteParameter("@cp", coverRenamed ? newCoverPath : coverPath));
-                    updCmd.Parameters.Add(new SqliteParameter("@id", videoId));
-                    updCmd.ExecuteNonQuery();
                     renamed++;
-                    results.Add(new { videoId, code, fileRenamed, coverRenamed, oldFile = filePath, newFile = newFilePath, oldCover = coverPath, newCover = newCoverPath, errors });
+                    results.Add(new { kind = "file", fileId, code = row?["code"], renamed = true, newFile = newPath });
                 }
-                else if (errors.Count > 0)
+                else if (error is not null)
                 {
                     failed++;
-                    results.Add(new { videoId, code, fileRenamed = false, coverRenamed = false, errors });
+                    results.Add(new { kind = "file", fileId, code = row?["code"], renamed = false, error });
                 }
-                else
-                {
-                    skipped++;
-                }
+                else skipped++;
             }
 
-            return Ok(new
+            // 2) 封面：影片番号就是封面文件名
+            var covers = new List<(string VideoId, string Code, string CoverPath)>();
+            using (var cmd = new SqliteCommand(@"
+                SELECT id, code, cover_path FROM videos
+                WHERE code IS NOT NULL AND code <> ''
+                  AND IFNULL(cover_path, '') <> '' AND cover_path NOT LIKE '%' || code || '%'", conn))
+            using (var reader = cmd.ExecuteReader())
             {
-                success = true,
-                data = new { renamed, skipped, failed, details = results }
-            });
+                while (reader.Read())
+                    covers.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+            }
+            foreach (var (videoId, code, coverPath) in covers)
+            {
+                if (!System.IO.File.Exists(coverPath)) { skipped++; continue; }
+                var dir = Path.GetDirectoryName(coverPath)!;
+                var ext = Path.GetExtension(coverPath);
+                if (Path.GetFileNameWithoutExtension(coverPath) == code) { skipped++; continue; }
+
+                var target = Path.Combine(dir, code + ext);
+                if (target != coverPath && System.IO.File.Exists(target))
+                {
+                    failed++;
+                    results.Add(new { kind = "cover", videoId, code, renamed = false, error = $"目标名已被占用：{code}{ext}" });
+                    continue;
+                }
+                if (dryRun)
+                {
+                    renamed++;
+                    results.Add(new { kind = "cover", videoId, code, renamed = false, wouldRename = true, newCover = target });
+                    continue;
+                }
+                try
+                {
+                    System.IO.File.Move(coverPath, target);
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    results.Add(new { kind = "cover", videoId, code, renamed = false, error = "重命名封面失败: " + ex.Message });
+                    continue;
+                }
+                using var upd = new SqliteCommand("UPDATE videos SET cover_path = @cp WHERE id = @id", conn);
+                upd.Parameters.Add(new SqliteParameter("@cp", target));
+                upd.Parameters.Add(new SqliteParameter("@id", videoId));
+                upd.ExecuteNonQuery();
+                renamed++;
+                results.Add(new { kind = "cover", videoId, code, renamed = true, newCover = target });
+            }
+
+            _logger.LogInformation("文件名对齐{Mode}：{Renamed} 处，跳过 {Skipped}，失败 {Failed}",
+                dryRun ? "预检" : "执行", renamed, skipped, failed);
+            return Ok(new { success = true, dryRun, message = dryRun ? "这是预检，还没动任何文件" : "已按清单改名",
+                data = new { renamed, skipped, failed, details = results } });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "RenameFilesToCode failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
-    }
-
-    private string FormatFileSize(long bytes)
-    {
-        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-        int order = 0; double size = bytes;
-        while (size >= 1024 && order < sizes.Length - 1) { order++; size /= 1024; }
-        return Math.Round(size, 2) + " " + sizes[order];
     }
 }

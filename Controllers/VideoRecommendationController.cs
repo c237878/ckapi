@@ -74,8 +74,9 @@ public class VideoRecommendationController : ControllerBase
                 var seriesSql = $@"
                     SELECT {VideoCardQuery.ColumnsWithSeries}
                     FROM videos v
+                    {VideoCardQuery.FileJoin}
                     LEFT JOIN video_series s ON v.seriesid = s.id
-                    WHERE v.seriesid = @seriesId AND v.id != @currentId AND v.file_size > 0
+                    WHERE v.seriesid = @seriesId AND v.id != @currentId AND df.file_size > 0
                     ORDER BY RANDOM()
                     LIMIT 20";
 
@@ -106,8 +107,9 @@ public class VideoRecommendationController : ControllerBase
                     SELECT DISTINCT {VideoCardQuery.ColumnsWithSeries}
                     FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
+                    {VideoCardQuery.FileJoin}
                     LEFT JOIN video_series s ON v.seriesid = s.id
-                    WHERE va.actor_id IN ({actorIdPlaceholders}) AND v.file_size > 0
+                    WHERE va.actor_id IN ({actorIdPlaceholders}) AND df.file_size > 0
                     ORDER BY RANDOM()
                     LIMIT 50";
 
@@ -131,8 +133,9 @@ public class VideoRecommendationController : ControllerBase
                 var randomSql = $@"
                     SELECT {VideoCardQuery.ColumnsWithSeries}
                     FROM videos v
+                    {VideoCardQuery.FileJoin}
                     LEFT JOIN video_series s ON v.seriesid = s.id
-                    WHERE v.file_size > 0
+                    WHERE df.file_size > 0
                     ORDER BY RANDOM()
                     LIMIT 50";
 

@@ -6,8 +6,11 @@ using System.Text.Json.Serialization;
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 片源两维（字幕 / 广告水印）的标记，与分辨率扫描。
+/// 全站片源扫描任务的开关与进度。
 /// 路由前缀仍是 api/video，与前端既有调用一致。
+///
+/// 单条操作（某一版的两维标记、重扫这一版）在 v11 挪到了 api/video/version/* ——
+/// 分辨率与两维都是"这一份文件"的属性，作用对象是版本行而不是影片。
 /// </summary>
 [ApiController]
 [Route("api/video")]
@@ -15,102 +18,14 @@ public class VideoSourceController : ControllerBase
 {
     private readonly ILogger<VideoSourceController> _logger;
     private readonly Utils.SQLiteHelper _db;
-    private readonly SourceScanner _scanner;
     private readonly SourceScanJob _job;
 
     public VideoSourceController(
-        ILogger<VideoSourceController> logger, Utils.SQLiteHelper db,
-        SourceScanner scanner, SourceScanJob job)
+        ILogger<VideoSourceController> logger, Utils.SQLiteHelper db, SourceScanJob job)
     {
         _logger = logger;
         _db = db;
-        _scanner = scanner;
         _job = job;
-    }
-
-    /// <summary>
-    /// 标记片源。两维各自独立，传哪一维改哪一维；把某一维改回 unknown 就是清掉这个结论。
-    /// 旧的 media-flags 接口在"已设置"时会拒绝再改，这里不设这个限制——
-    /// 两维分开之后重标是常态，拦人只会让人去改数据库。
-    /// </summary>
-    [HttpPut("{id}/source")]
-    public IActionResult UpdateSource(string id, [FromBody] UpdateSourceRequest req)
-    {
-        try
-        {
-            if (req.Subtitle is not null && !Utils.SourceStates.IsSubtitle(req.Subtitle))
-                return Ok(new { success = false, message = $"subtitle 取值不对：{req.Subtitle}" });
-            if (req.Watermark is not null && !Utils.SourceStates.IsWatermark(req.Watermark))
-                return Ok(new { success = false, message = $"watermark 取值不对：{req.Watermark}" });
-            if (req.Subtitle is null && req.Watermark is null)
-                return Ok(new { success = false, message = "没有要改的维度" });
-
-            using var conn = _db.GetConnection();
-            conn.Open();
-
-            const string update = @"
-                UPDATE videos
-                SET subtitle_state  = COALESCE(@subtitle, subtitle_state),
-                    watermark_state = COALESCE(@watermark, watermark_state)
-                WHERE id = @id";
-
-            using (var cmd = new SqliteCommand(update, conn))
-            {
-                cmd.Parameters.AddWithValue("@subtitle", (object?)req.Subtitle ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("@watermark", (object?)req.Watermark ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("@id", id);
-                if (cmd.ExecuteNonQuery() == 0)
-                    return NotFound(new { success = false, message = "视频不存在" });
-            }
-
-            using var read = new SqliteCommand(
-                "SELECT subtitle_state, watermark_state FROM videos WHERE id = @id", conn);
-            read.Parameters.AddWithValue("@id", id);
-            using var reader = read.ExecuteReader();
-            if (!reader.Read()) return NotFound(new { success = false, message = "视频不存在" });
-
-            return Ok(new
-            {
-                success = true,
-                message = "片源标记已更新",
-                data = new
-                {
-                    subtitleState = reader.GetString(0),
-                    watermarkState = reader.GetString(1)
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "UpdateSource failed");
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
-    }
-
-    /// <summary>扫描单条：只读容器头拿分辨率。字幕与广告水印两维不参与，由人在界面上给结论</summary>
-    [HttpPost("{id}/scan")]
-    public IActionResult ScanOne(string id)
-    {
-        try
-        {
-            using var conn = _db.GetConnection();
-            conn.Open();
-
-            var ins = _scanner.ScanOne(conn, id);
-            if (!ins.Ok) return Ok(new { success = false, message = ins.Error ?? "扫描失败" });
-
-            return Ok(new
-            {
-                success = true,
-                message = $"{ins.Width}×{ins.Height}",
-                data = new { resW = ins.Width, resH = ins.Height, codec = ins.Codec }
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ScanOne failed for {Id}", id);
-            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
-        }
     }
 
     /// <summary>
@@ -139,16 +54,5 @@ public class VideoSourceController : ControllerBase
 
         _job.Stop();
         return Ok(new { success = true, message = "已请求停止", data = _job.Status() });
-    }
-
-    public sealed class UpdateSourceRequest
-    {
-        /// <summary>字幕情况；null 表示这一维不动</summary>
-        [JsonPropertyName("subtitle")]
-        public string? Subtitle { get; set; }
-
-        /// <summary>广告水印；null 表示这一维不动</summary>
-        [JsonPropertyName("watermark")]
-        public string? Watermark { get; set; }
     }
 }

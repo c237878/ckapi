@@ -75,7 +75,9 @@ public class SeriesController : ControllerBase
                 SELECT s.*, 
                        (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id) as video_count,
                        (SELECT COUNT(*) FROM video_likes vl JOIN videos v ON vl.video_id = v.id WHERE v.seriesid = s.id) as like_count,
-                       (SELECT COUNT(*) FROM videos v WHERE v.seriesid = s.id AND (v.file_size IS NULL OR v.file_size = 0)) as unloaded_count
+                       /* 未加载 = 默认版本那一行没有文件（v11：文件层在 video_files，一部片可能有多个版本） */
+                       (SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin}
+                          WHERE v.seriesid = s.id AND IFNULL(df.file_size, 0) = 0) as unloaded_count
                 FROM video_series s
                 {whereClause}
                 ORDER BY " + orderBy + @"
@@ -174,7 +176,7 @@ public class SeriesController : ControllerBase
                 Subtitle = subtitle, Watermark = watermark, Resolution = resolution, HasFile = hasFile
             });
 
-            var countSql = $"SELECT COUNT(*) FROM videos v {where}";
+            var countSql = $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
                 foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
@@ -183,6 +185,7 @@ public class SeriesController : ControllerBase
                 var sql = $@"
                     SELECT {VideoCardQuery.Columns}
                     FROM videos v 
+                    {VideoCardQuery.FileJoin}
                     {where}
                     ORDER BY v.sort_order ASC, v.code ASC, v.id ASC
                     LIMIT @pageSize OFFSET @offset";

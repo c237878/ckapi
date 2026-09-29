@@ -293,8 +293,14 @@ public sealed class McpService
             ["videos"] = Scalar(conn, "SELECT COUNT(*) FROM videos"),
             ["videosJapanAv"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE country = '日本' AND category = 'av'"),
             ["withoutStudio"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE studioid IS NULL OR studioid = ''"),
-            ["unscanned"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE res_h IS NULL OR res_h = 0"),
-            ["unratedSource"] = Scalar(conn, $"SELECT COUNT(*) FROM videos v WHERE {Utils.SourceStates.Unrated}"),
+            // 口径与 v10 之前一致：默认那一版没量过分辨率就算未扫描（没文件的也算，它本来就没扫过）
+            ["unscanned"] = Scalar(conn, $@"SELECT COUNT(*) FROM videos v
+                          {VideoCardQuery.FileJoin} WHERE df.res_h IS NULL OR df.res_h = 0"),
+            ["unratedSource"] = Scalar(conn, $@"SELECT COUNT(*) FROM videos v
+                          {VideoCardQuery.FileJoin} WHERE {Utils.SourceStates.Unrated}"),
+            ["versionFiles"] = Scalar(conn, "SELECT COUNT(*) FROM video_files"),
+            ["multiVersionVideos"] = Scalar(conn,
+                "SELECT COUNT(*) FROM (SELECT video_id FROM video_files GROUP BY video_id HAVING COUNT(*) > 1)"),
             ["withoutReleaseDate"] = Scalar(conn, "SELECT COUNT(*) FROM videos WHERE release_date IS NULL OR release_date = ''"),
             ["withoutActors"] = Scalar(conn, "SELECT COUNT(*) FROM videos v WHERE NOT EXISTS (SELECT 1 FROM video_actors va WHERE va.video_id = v.id)"),
             ["studios"] = Scalar(conn, "SELECT COUNT(*) FROM studios"),
@@ -333,7 +339,7 @@ public sealed class McpService
             where += " AND (v.studioid IS NULL OR v.studioid = '')";
 
         if (Flag(args, "unscanned") == true)
-            where += " AND (v.res_h IS NULL OR v.res_h = 0)";
+            where += " AND (df.res_h IS NULL OR df.res_h = 0)";
 
         // "两维都没标"就是"还没看过"的口径，与今日推荐用的是同一个谓词
         if (Flag(args, "unrated") == true)
@@ -354,11 +360,12 @@ public sealed class McpService
             StudioId = studioId
         });
 
-        var total = Scalar(conn, $"SELECT COUNT(*) FROM videos v {where}", ps);
+        var total = Scalar(conn, $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {where}", ps);
 
         var sql = $@"
             SELECT {VideoCardQuery.ColumnsWithSeries}, v.original_name, v.release_date
             FROM videos v
+            {VideoCardQuery.FileJoin}
             LEFT JOIN video_series s ON v.seriesid = s.id
             {where}
             ORDER BY v.ctime DESC, v.id ASC
@@ -394,8 +401,8 @@ public sealed class McpService
 
         var video = new Dictionary<string, object?>();
         using (var cmd = new SqliteCommand(
-            $@"SELECT {VideoCardQuery.ColumnsWithSeries}, v.original_name, v.release_date, v.scan_time
-               FROM videos v LEFT JOIN video_series s ON v.seriesid = s.id WHERE v.id = @id", conn))
+            $@"SELECT {VideoCardQuery.ColumnsWithSeries}, v.original_name, v.release_date, df.scan_time
+               FROM videos v {VideoCardQuery.FileJoin} LEFT JOIN video_series s ON v.seriesid = s.id WHERE v.id = @id", conn))
         {
             cmd.Parameters.AddWithValue("@id", id);
             using var reader = cmd.ExecuteReader();
@@ -405,6 +412,8 @@ public sealed class McpService
 
         Attach(conn, [video], withActorDetail: true);
         video["links"] = VideoMeta.Links(conn, id);
+        // 一份份文件各自是什么状态（分辨率/字幕/水印/扫描时间），默认那一版排在最前
+        video["versions"] = VideoFiles.OfMovie(conn, id);
 
         return video;
     }

@@ -183,11 +183,12 @@ public class StudioController : ControllerBase
             });
 
             var total = Convert.ToInt32(Scalar(conn,
-                $"SELECT COUNT(*) FROM videos v {where}", parameters));
+                $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {where}", parameters));
 
             var sql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
+                {VideoCardQuery.FileJoin}
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {where}
                 ORDER BY v.ctime DESC, v.id ASC

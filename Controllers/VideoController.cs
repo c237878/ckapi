@@ -108,7 +108,8 @@ public class VideoController : ControllerBase
             conn.Open();
 
             // 总数（原先这里另开了一条连接，与列表查询各一次握手）
-            var countSql = $"SELECT COUNT(*) FROM videos v {whereClause}";
+            // 挂默认版本行：文件层筛选（字幕/水印/分辨率/有无文件）看的是它，不挂就没有 df 这个别名
+            var countSql = $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {whereClause}";
             int total;
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
@@ -120,6 +121,7 @@ public class VideoController : ControllerBase
             var sql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
+                {VideoCardQuery.FileJoin}
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
                 ORDER BY " + orderBy + @"
@@ -242,7 +244,11 @@ public class VideoController : ControllerBase
                 }
             }
 
-            return Ok(new { success = true, categories, countries, series, homePageCategories, homePageCategoryCount });
+            // 版本类型词表：详情页的版本下拉与「加一版」对话框共用这一份，
+            // 与地区/分类同一个入口拿，免得前端再发一次请求
+            var versionTypes = VideoFiles.Types(conn);
+
+            return Ok(new { success = true, categories, countries, series, versionTypes, homePageCategories, homePageCategoryCount });
         }
         catch (Exception ex)
         {
@@ -297,8 +303,9 @@ public class VideoController : ControllerBase
             const string sectionSql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
+                {VideoCardQuery.FileJoin}
                 LEFT JOIN video_series s ON v.seriesid = s.id
-                WHERE v.category = @category AND v.file_size > 0
+                WHERE v.category = @category AND df.file_size > 0
                 ORDER BY CASE WHEN {Utils.SourceStates.Unrated} THEN 0 ELSE 1 END, v.ctime DESC, v.id ASC
                 LIMIT @limit";
 
@@ -337,9 +344,16 @@ public class VideoController : ControllerBase
             conn.Open();
 
             Dictionary<string, object?> video;
+            // 文件层那几列在默认版本行上（v11），卡片映射统一按 df.* 取，这里显式列出别名，
+            // 不用 df.*：它的 id / ctime 会与影片层的同名列撞车
             var sql = @"
-                SELECT v.*, s.name as series_name, st.name as studio_name, st.link as studio_link
+                SELECT v.*, df.id AS file_id, df.file_path, df.file_size, df.res_w, df.res_h,
+                       df.subtitle_state, df.watermark_state, df.scan_time, df.code AS file_code,
+                       df.label AS file_label, df.type_id AS file_type_id,
+                       (SELECT vt.name FROM version_types vt WHERE vt.id = df.type_id) AS file_type_name,
+                       s.name as series_name, st.name as studio_name, st.link as studio_link
                 FROM videos v
+                LEFT JOIN video_files df ON df.video_id = v.id AND df.is_default = 1
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 LEFT JOIN studios st ON st.id = v.studioid
                 WHERE v.id = @id";
@@ -352,6 +366,14 @@ public class VideoController : ControllerBase
 
                 video = VideoCardQuery.Map(reader);
             }
+
+            // 版本清单：详情页的下拉框、按版本显示实际分辨率、切换默认版本都要它
+            var versions = VideoFiles.OfMovie(conn, id);
+            video["versions"] = versions;
+            video["versionCount"] = versions.Count;
+            // 影片层不再有"这一版叫什么"的概念，但详情页标题旁要显示当前版本，所以把默认版的名字带出去
+            var current = versions.FirstOrDefault(v => v["isDefault"] is true);
+            video["defaultLabel"] = current?["displayName"];
 
             // 外链直接并进 video 对象：前端只有一份影片状态，不用分几个 ref 去同步。
             // 上面那个 reader 必须先关掉再发这些查询——Microsoft.Data.Sqlite 不支持多个活动结果集。
@@ -411,10 +433,12 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 点赞影片
+    /// 点赞：记的是"这一部片的哪一版"（v11 定，点赞针对视频层）。
+    /// 详情页带当前选中的版本；列表卡片没这个概念，不传就落在默认版本那一行上。
+    /// file_id 与 video_id 都存：前者用于榜单按版本分条，后者用于"这部片一共被赞几次"。
     /// </summary>
     [HttpPost("{id}/like")]
-    public IActionResult LikeVideo(string id)
+    public IActionResult LikeVideo(string id, [FromQuery] string? fileId = null)
     {
         try
         {
@@ -429,19 +453,27 @@ public class VideoController : ControllerBase
                     return NotFound(new { success = false, message = "视频不存在" });
             }
 
-            // 建表统一由 DataService 负责；此处原先还留着一份缺 target_type 的旧 CREATE，
-            // 一旦真的按它建表，下面的 INSERT 就会因无该列而失败。
+            var targetFileId = string.IsNullOrWhiteSpace(fileId) ? VideoFiles.DefaultId(conn, id) : fileId;
+            if (!string.IsNullOrWhiteSpace(targetFileId))
+            {
+                using var ownerCmd = new SqliteCommand("SELECT video_id FROM video_files WHERE id = @f", conn);
+                ownerCmd.Parameters.Add(new SqliteParameter("@f", targetFileId));
+                if (ownerCmd.ExecuteScalar()?.ToString() != id)
+                    return Ok(new { success = false, message = "这一版不属于这部片" });
+            }
 
             // 插入点赞记录
             var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            using (var insertCmd = new SqliteCommand("INSERT INTO video_likes (video_id, liked_at, target_type) VALUES (@videoId, @likedAt, 'video')", conn))
+            using (var insertCmd = new SqliteCommand(
+                       "INSERT INTO video_likes (video_id, liked_at, target_type, file_id) VALUES (@videoId, @likedAt, 'video', @fileId)", conn))
             {
                 insertCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 insertCmd.Parameters.Add(new SqliteParameter("@likedAt", likedAt));
+                insertCmd.Parameters.Add(new SqliteParameter("@fileId", (object?)targetFileId ?? DBNull.Value));
                 insertCmd.ExecuteNonQuery();
             }
 
-            // 统计点赞数
+            // 统计点赞数：影片层给总和（卡片与详情页显示的就是它），再带上这一版自己的数
             int likeCount = 0;
             using (var countCmd = new SqliteCommand("SELECT COUNT(*) FROM video_likes WHERE video_id = @videoId AND target_type='video'", conn))
             {
@@ -449,7 +481,16 @@ public class VideoController : ControllerBase
                 likeCount = Convert.ToInt32(countCmd.ExecuteScalar());
             }
 
-            return Ok(new { success = true, likeCount });
+            int fileLikeCount = 0;
+            if (!string.IsNullOrWhiteSpace(targetFileId))
+            {
+                using var fileCountCmd = new SqliteCommand(
+                    "SELECT COUNT(*) FROM video_likes WHERE file_id = @f AND target_type='video'", conn);
+                fileCountCmd.Parameters.Add(new SqliteParameter("@f", targetFileId));
+                fileLikeCount = Convert.ToInt32(fileCountCmd.ExecuteScalar());
+            }
+
+            return Ok(new { success = true, likeCount, fileId = targetFileId, versionLikeCount = fileLikeCount });
         }
         catch (Exception ex)
         {
@@ -478,10 +519,11 @@ public class VideoController : ControllerBase
                     return Ok(new { success = false, message = "发行日期只收 2024 / 2024-03 / 2024-03-15 三种写法，留空表示不知道" });
             }
 
+            // 影片层不再存文件（v11）：filePath / fileSize 落到下面那条原版行上
             var sql = @"
-                INSERT INTO videos (id, code, name, category, country, file_path, file_size, cover_path, ctime, seriesid,
+                INSERT INTO videos (id, code, name, category, country, cover_path, ctime, seriesid,
                                     original_name, release_date, studioid)
-                VALUES (@id, @code, @name, @category, @country, @filePath, @fileSize, @coverPath, @addedAt, @seriesId,
+                VALUES (@id, @code, @name, @category, @country, @coverPath, @addedAt, @seriesId,
                         @originalName, @releaseDate, @studioId)";
             
             using var conn = GetConnection();
@@ -496,8 +538,6 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@filePath", req.FilePath ?? (object)DBNull.Value));
-            cmd.Parameters.Add(new SqliteParameter("@fileSize", req.FileSize ?? 0));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", req.CoverPath ?? (object)DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
@@ -507,6 +547,9 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@studioId", (object?)studioId ?? DBNull.Value));
             
             cmd.ExecuteNonQuery();
+
+            // 每部片恰好一条默认版本行是全站筛选与统计的前提，建片时就一起建出来（原版，番号即行级标识）
+            VideoFiles.AddOriginal(conn, id, req.Code?.Trim(), req.FilePath, req.FileSize ?? 0);
 
             // 同系列还没填片商的一起补上：一个系列基本就是同一家在做。
             // 勾不勾是这一趟的事，界面上那颗复选框决定；没传（老脚本、别的调用方）按补算
@@ -550,38 +593,28 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
 
-            // 查询旧记录（获取旧番号和文件路径）
+            // 查询旧记录：番号与封面在影片层；文件路径在默认版本行上（v11），要用得另取
             string? oldCode = null;
-            string? oldFilePath = null;
             string? oldCoverPath = null;
-            using (var queryCmd = new SqliteCommand("SELECT code, file_path, cover_path FROM videos WHERE id = @id", conn))
+            using (var queryCmd = new SqliteCommand("SELECT code, cover_path FROM videos WHERE id = @id", conn))
             {
                 queryCmd.Parameters.Add(new SqliteParameter("@id", id));
                 using var qReader = queryCmd.ExecuteReader();
                 if (!qReader.Read())
                     return NotFound(new { success = false, message = "视频不存在" });
                 oldCode = qReader["code"]?.ToString();
-                oldFilePath = qReader["file_path"]?.ToString();
                 oldCoverPath = qReader["cover_path"]?.ToString();
             }
 
-            // 番号变化时同步重命名文件
-            var newFilePath = req.FilePath;
             var newCoverPath = req.CoverPath;
-            var renameInfo = new { videoRenamed = false, coverRenamed = false, oldFile = "", newFile = "", oldCover = "", newCover = "" };
-            
+            var renameInfo = new { coverRenamed = false, oldCover = "", newCover = "",
+                versionRenamed = 0, versionSkipped = 0, versionDetails = new List<Dictionary<string, object?>>() };
+
             if (!string.IsNullOrEmpty(req.Code) && req.Code != oldCode)
             {
-                // 检查旧文件是否被其他影片使用
-                bool videoUsedByOthers = false;
+                // 封面是一部片的一份，跟着新番号改名。先确认这张封面没被别的影片共用，
+                // 不然改一部片会把另一部片的封面文件搬走（沿用原来的那道闸门）
                 bool coverUsedByOthers = false;
-                if (!string.IsNullOrEmpty(oldFilePath))
-                {
-                    using var checkVideoCmd = new SqliteCommand("SELECT COUNT(*) FROM videos WHERE file_path = @fp AND id != @id", conn);
-                    checkVideoCmd.Parameters.Add(new SqliteParameter("@fp", oldFilePath));
-                    checkVideoCmd.Parameters.Add(new SqliteParameter("@id", id));
-                    videoUsedByOthers = Convert.ToInt32(checkVideoCmd.ExecuteScalar()) > 0;
-                }
                 if (!string.IsNullOrEmpty(oldCoverPath))
                 {
                     using var checkCoverCmd = new SqliteCommand("SELECT COUNT(*) FROM videos WHERE cover_path = @cp AND id != @id", conn);
@@ -590,33 +623,6 @@ public class VideoController : ControllerBase
                     coverUsedByOthers = Convert.ToInt32(checkCoverCmd.ExecuteScalar()) > 0;
                 }
 
-                // 只有文件没有被其他影片使用时才重命名
-                // 重命名视频文件
-                if (!videoUsedByOthers && !string.IsNullOrEmpty(newFilePath) && System.IO.File.Exists(newFilePath))
-                {
-                    var dir = Path.GetDirectoryName(newFilePath)!;
-                    var ext = Path.GetExtension(newFilePath);
-                    var currentName = Path.GetFileNameWithoutExtension(newFilePath);
-                    if (currentName != req.Code)
-                    {
-                        var targetPath = Path.Combine(dir, req.Code + ext);
-                        if (!System.IO.File.Exists(targetPath) || targetPath == newFilePath)
-                        {
-                            try
-                            {
-                                System.IO.File.Move(newFilePath, targetPath);
-                                newFilePath = targetPath;
-                                renameInfo = new { videoRenamed = true, coverRenamed = renameInfo.coverRenamed, oldFile = oldFilePath ?? "", newFile = targetPath, oldCover = renameInfo.oldCover, newCover = renameInfo.newCover };
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(ex, "编辑时重命名视频文件失败: {FilePath}", newFilePath);
-                            }
-                        }
-                    }
-                }
-
-                // 重命名封面文件
                 if (!coverUsedByOthers && !string.IsNullOrEmpty(newCoverPath) && System.IO.File.Exists(newCoverPath))
                 {
                     var dir = Path.GetDirectoryName(newCoverPath)!;
@@ -631,7 +637,8 @@ public class VideoController : ControllerBase
                             {
                                 System.IO.File.Move(newCoverPath, targetPath);
                                 newCoverPath = targetPath;
-                                renameInfo = new { videoRenamed = renameInfo.videoRenamed, coverRenamed = true, oldFile = renameInfo.oldFile, newFile = renameInfo.newFile, oldCover = oldCoverPath ?? "", newCover = targetPath };
+                                renameInfo = new { renameInfo.coverRenamed, oldCover = oldCoverPath ?? "", newCover = targetPath,
+                                    renameInfo.versionRenamed, renameInfo.versionSkipped, renameInfo.versionDetails };
                             }
                             catch (Exception ex)
                             {
@@ -642,13 +649,28 @@ public class VideoController : ControllerBase
                 }
             }
 
+            // 文件路径是"默认那一版"的属性：传了才动，没传保持原样（与原名/发行日期同一口径，
+            // 编辑框以外还有别的调用方整份 PUT 这条记录，缺字段不该把已登记的文件抹掉）
+            var defaultFileId = VideoFiles.DefaultId(conn, id);
+            if (req.FilePath is not null && defaultFileId is not null)
+            {
+                var path = req.FilePath.Trim();
+                long size = 0;
+                if (path.Length > 0 && System.IO.File.Exists(path)) size = new FileInfo(path).Length;
+                using var fileCmd = new SqliteCommand(
+                    "UPDATE video_files SET file_path = @p, file_size = @s WHERE id = @id", conn);
+                fileCmd.Parameters.Add(new SqliteParameter("@p", path));
+                fileCmd.Parameters.Add(new SqliteParameter("@s", size));
+                fileCmd.Parameters.Add(new SqliteParameter("@id", defaultFileId));
+                fileCmd.ExecuteNonQuery();
+            }
+
             var sql = @"
                 UPDATE videos SET
                     code = @code,
                     name = @name,
                     category = @category,
                     country = @country,
-                    file_path = @filePath,
                     cover_path = @coverPath,
                     seriesid = @seriesId
                 WHERE id = @id";
@@ -659,10 +681,21 @@ public class VideoController : ControllerBase
             cmd.Parameters.Add(new SqliteParameter("@name", req.Name));
             cmd.Parameters.Add(new SqliteParameter("@category", req.Category));
             cmd.Parameters.Add(new SqliteParameter("@country", req.Country ?? ""));
-            cmd.Parameters.Add(new SqliteParameter("@filePath", newFilePath));
             cmd.Parameters.Add(new SqliteParameter("@coverPath", string.IsNullOrEmpty(newCoverPath) ? (object)DBNull.Value : newCoverPath));
             cmd.Parameters.Add(new SqliteParameter("@seriesId", (object?)req.SeriesId ?? DBNull.Value));
             cmd.ExecuteNonQuery();
+
+            // 番号变了，这一部片的所有版本行跟着改盘上的文件名（只换前缀、只跟随合规命名，
+            // 逐行改成功才更新该行路径）——见 VideoFiles.CascadeRename 的注释
+            var newCode = string.IsNullOrWhiteSpace(req.Code) ? oldCode ?? "" : req.Code.Trim();
+            var cascade = VideoFiles.CascadeRename(conn, id, oldCode ?? "", newCode);
+            if (cascade.Renamed > 0 || cascade.Skipped > 0)
+            {
+                _logger.LogInformation("影片 {Code} 改番号：{Renamed} 个版本文件跟随改名，{Skipped} 个未跟随",
+                    newCode, cascade.Renamed, cascade.Skipped);
+            }
+            renameInfo = new { renameInfo.coverRenamed, renameInfo.oldCover, renameInfo.newCover,
+                versionRenamed = cascade.Renamed, versionSkipped = cascade.Skipped, versionDetails = cascade.Details };
 
             // 原名与发行日期：传了才动，没传保持原样——编辑框以外还有别的调用方整份 PUT 这条记录。
             // 发行日期先过格式校验，不合法就明确报出来，不静默丢掉（静默丢会让人以为已经存上了）。
@@ -733,20 +766,25 @@ public class VideoController : ControllerBase
     {
         try
         {
-            // 先查询记录，获取文件路径
-            string? filePath = null;
+            // 先查询记录，获取文件路径：封面在影片层只有一份，视频文件按版本一行（v11），
+            // 删片时这一部片的所有版本文件都要跟着走，否则盘上留下没人认领的孤儿文件
             string? coverPath = null;
+            var filePaths = new List<string>();
             using (var conn = GetConnection())
             {
                 conn.Open();
-                using var queryCmd = new SqliteCommand("SELECT file_path, cover_path FROM videos WHERE id = @id", conn);
-                queryCmd.Parameters.Add(new SqliteParameter("@id", id));
-                using var reader = queryCmd.ExecuteReader();
-                if (reader.Read())
+                using (var queryCmd = new SqliteCommand("SELECT cover_path FROM videos WHERE id = @id", conn))
                 {
-                    filePath = reader["file_path"]?.ToString();
-                    coverPath = reader["cover_path"]?.ToString();
+                    queryCmd.Parameters.Add(new SqliteParameter("@id", id));
+                    using var reader = queryCmd.ExecuteReader();
+                    if (reader.Read()) coverPath = reader["cover_path"]?.ToString();
                 }
+
+                using var filesCmd = new SqliteCommand(
+                    "SELECT file_path FROM video_files WHERE video_id = @id AND IFNULL(file_path, '') <> ''", conn);
+                filesCmd.Parameters.Add(new SqliteParameter("@id", id));
+                using var fileReader = filesCmd.ExecuteReader();
+                while (fileReader.Read()) filePaths.Add(fileReader.GetString(0));
             }
 
             using var conn2 = GetConnection();
@@ -757,12 +795,7 @@ public class VideoController : ControllerBase
             delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
             delRelCmd.ExecuteNonQuery();
 
-            // 删除点赞记录
-            using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2);
-            delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
-            delLikesCmd.ExecuteNonQuery();
-
-            // 片商/标签/档案链接/合辑挂接/候选词：外键没开，漏一张就留下点不动的幽灵关系
+            // 外链、版本行、点赞记录都归 PurgeVideo 清：外键没开，漏一张就留下点不动的幽灵关系
             VideoMeta.PurgeVideo(conn2, id);
 
             // 删除视频
@@ -777,8 +810,9 @@ public class VideoController : ControllerBase
             var deletedFiles = new List<string>();
             if (deleteFiles)
             {
-                if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                foreach (var filePath in filePaths)
                 {
+                    if (!System.IO.File.Exists(filePath)) continue;
                     try
                     {
                         System.IO.File.Delete(filePath);
@@ -805,7 +839,9 @@ public class VideoController : ControllerBase
 
             return Ok(new { 
                 success = true, 
-                message = deleteFiles ? "删除成功" : "记录已删除，文件已保留",
+                message = deleteFiles
+                    ? deletedFiles.Count == 0 ? "记录已删除（没有文件可删）" : $"已删除 {deletedFiles.Count} 个文件"
+                    : "记录已删除，文件已保留",
                 deletedFiles = deletedFiles,
                 filesPreserved = !deleteFiles
             });
@@ -828,8 +864,8 @@ public class VideoController : ControllerBase
             if (req.Ids == null || req.Ids.Count == 0)
                 return BadRequest(new { success = false, message = "ids 不能为空" });
 
-            // 先查询所有要删除的记录的文件路径
-            var filesToDelete = new List<(string id, string? filePath, string? coverPath)>();
+            // 先查询所有要删除的记录的文件路径：封面一部一张，视频文件按版本一行（v11）
+            var filesToDelete = new List<string>();
             using (var conn = GetConnection())
             {
                 conn.Open();
@@ -838,18 +874,29 @@ public class VideoController : ControllerBase
                     .Select((id, i) => new SqliteParameter($"@delId{i}", id))
                     .ToArray();
                 var idPlaceholders = string.Join(",", idParams.Select(p => p.ParameterName));
-                using var queryCmd = new SqliteCommand($"SELECT id, file_path, cover_path FROM videos WHERE id IN ({idPlaceholders})", conn);
-                queryCmd.Parameters.AddRange(idParams);
-                using var reader = queryCmd.ExecuteReader();
-                while (reader.Read())
+
+                using (var queryCmd = new SqliteCommand(
+                           $"SELECT cover_path FROM videos WHERE id IN ({idPlaceholders})", conn))
                 {
-                    filesToDelete.Add((
-                        reader["id"].ToString()!,
-                        reader["file_path"]?.ToString(),
-                        reader["cover_path"]?.ToString()
-                    ));
+                    queryCmd.Parameters.AddRange(idParams);
+                    using var reader = queryCmd.ExecuteReader();
+                    while (reader.Read() && reader[0] != DBNull.Value)
+                    {
+                        var p = reader.GetString(0);
+                        if (p.Length > 0) filesToDelete.Add(p);
+                    }
+                }
+
+                using (var fileCmd = new SqliteCommand(
+                           $"SELECT file_path FROM video_files WHERE video_id IN ({idPlaceholders}) AND IFNULL(file_path, '') <> ''", conn))
+                {
+                    fileCmd.Parameters.AddRange(idParams);
+                    using var reader = fileCmd.ExecuteReader();
+                    while (reader.Read()) filesToDelete.Add(reader.GetString(0));
                 }
             }
+
+            filesToDelete = filesToDelete.Distinct(StringComparer.Ordinal).ToList();
 
             using var conn2 = GetConnection();
             conn2.Open();
@@ -867,11 +914,7 @@ public class VideoController : ControllerBase
                     delRelCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                     delRelCmd.ExecuteNonQuery();
 
-                    // 删除点赞记录
-                    using var delLikesCmd = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @videoId", conn2, transaction);
-                    delLikesCmd.Parameters.Add(new SqliteParameter("@videoId", id));
-                    delLikesCmd.ExecuteNonQuery();
-
+                    // 外链、版本行、点赞记录都归 PurgeVideo 清，漏一张就是点不动的幽灵关系
                     VideoMeta.PurgeVideo(conn2, id, transaction);
 
                     // 删除视频
@@ -892,35 +935,21 @@ public class VideoController : ControllerBase
 
             transaction.Commit();
 
-            // 根据参数决定是否删除文件
+            // 根据参数决定是否删除文件（封面与各版本文件已在前面按影片一次取全）
             var deletedFiles = new List<string>();
             if (deleteFiles)
             {
-                foreach (var (id, filePath, coverPath) in filesToDelete)
+                foreach (var path in filesToDelete)
                 {
-                    if (!string.IsNullOrEmpty(filePath) && System.IO.File.Exists(filePath))
+                    if (!System.IO.File.Exists(path)) continue;
+                    try
                     {
-                        try
-                        {
-                            System.IO.File.Delete(filePath);
-                            deletedFiles.Add(filePath);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "删除视频文件失败: {FilePath}", filePath);
-                        }
+                        System.IO.File.Delete(path);
+                        deletedFiles.Add(path);
                     }
-                    if (!string.IsNullOrEmpty(coverPath) && System.IO.File.Exists(coverPath))
+                    catch (Exception ex)
                     {
-                        try
-                        {
-                            System.IO.File.Delete(coverPath);
-                            deletedFiles.Add(coverPath);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "删除封面文件失败: {CoverPath}", coverPath);
-                        }
+                        _logger.LogWarning(ex, "删除文件失败: {Path}", path);
                     }
                 }
             }
@@ -928,6 +957,9 @@ public class VideoController : ControllerBase
             return Ok(new
             {
                 success = true,
+                message = deleteFiles
+                    ? $"已删除 {deleted} 条记录、{deletedFiles.Count} 个文件"
+                    : $"已删除 {deleted} 条记录，文件已保留",
                 data = new
                 {
                     deleted = deleted,
@@ -1023,7 +1055,8 @@ public class VideoController : ControllerBase
         // 两个查询的 WHERE 互斥，补位时不必再排除已选 id
         using (var cmd = new SqliteCommand($@"
             SELECT v.id FROM videos v
-            WHERE v.file_size > 0 AND {unrated}
+            {VideoCardQuery.FileJoin}
+            WHERE df.file_size > 0 AND {unrated}
             ORDER BY RANDOM()
             LIMIT @count", conn))
         {
@@ -1037,7 +1070,8 @@ public class VideoController : ControllerBase
         {
             using (var cmd = new SqliteCommand($@"
                 SELECT v.id FROM videos v
-                WHERE v.file_size > 0 AND NOT {unrated}
+                {VideoCardQuery.FileJoin}
+                WHERE df.file_size > 0 AND NOT {unrated}
                 ORDER BY RANDOM()
                 LIMIT @missing", conn))
             {
@@ -1063,6 +1097,7 @@ public class VideoController : ControllerBase
         var sql = $@"
             SELECT {VideoCardQuery.ColumnsWithSeries}
             FROM videos v
+            {VideoCardQuery.FileJoin}
             LEFT JOIN video_series s ON v.seriesid = s.id
             WHERE v.id IN ({string.Join(", ", names)})";
 
@@ -1088,7 +1123,12 @@ public class VideoController : ControllerBase
     }
 
     /// <summary>
-    /// 首页 - 最近点赞（同一视频多次点赞只取最新那次）
+    /// 首页 - 最近点赞：**一条点赞记录一张卡，不按影片去重**（2026-09-29 定）。
+    ///
+    /// 去重会让"中间穿插了别的影片"时的顺序失真——你实际赞的顺序就是榜单的顺序。
+    /// 每张卡带出这一次赞的是哪一版（likedFileId / likedVersion），前端在卡片上打标；
+    /// 赞的正好是默认版本时不显示标识，免得满屏都是"原版"。
+    /// 卡片上的文件字段仍走默认版本（口径只有一处：VideoCardQuery.Columns）。
     /// </summary>
     [HttpGet("recently-liked")]
     public IActionResult GetRecentlyLiked([FromQuery] int count = 12)
@@ -1099,13 +1139,15 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
             var sql = $@"
-                SELECT {VideoCardQuery.ColumnsWithSeries}
+                SELECT {VideoCardQuery.ColumnsWithSeries},
+                       vl.liked_at AS like_time, lf.id AS liked_file_id, {VersionNameSql} AS liked_version
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
+                {VideoCardQuery.FileJoin}
+                LEFT JOIN video_files lf ON lf.id = vl.file_id
                 LEFT JOIN video_series s ON v.seriesid = s.id
-                WHERE v.file_size > 0
-                GROUP BY v.id
-                ORDER BY MAX(vl.liked_at) DESC
+                WHERE vl.target_type = 'video' AND df.file_size > 0
+                ORDER BY vl.liked_at DESC, vl.id DESC
                 LIMIT @limit";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@limit", count);
@@ -1123,8 +1165,18 @@ public class VideoController : ControllerBase
         }
     }
 
+    /// <summary>版本名的 SQL 口径：**类型名 → 版本名称 → 原版**，与 VideoFiles.DisplayName 同一套优先级
+    /// （类型名是"湿姐"这种短名，label 往往是整条解说片的长标题，不适合当标识）。
+    /// 别名固定 lf，给最近点赞与高赞榜两条查询共用。</summary>
+    private const string VersionNameSql =
+        "COALESCE((SELECT vt.name FROM version_types vt WHERE vt.id = lf.type_id), NULLIF(TRIM(lf.label), ''), '原版')";
+
     /// <summary>
-    /// 首页 - 高赞影片（点赞数相同取点赞时间最新的）
+    /// 首页 - 高赞影片：**按版本各算一条，不去重**（2026-09-29 定）。
+    ///
+    /// 一部片三个版本各被赞 2 次，榜上就是三条，各自显示自己那 2 次，靠版本标识区分给谁点的赞；
+    /// 卡片上的 likeCount 仍是这部片的总数（求和），两个数各说各的事，别混成一个。
+    /// 排序用那一版自己的赞数，赞数相同取最近一次点赞时间。
     /// </summary>
     [HttpGet("top-liked")]
     public IActionResult GetTopLiked([FromQuery] int count = 12)
@@ -1135,13 +1187,17 @@ public class VideoController : ControllerBase
             using var conn = GetConnection();
             conn.Open();
             var sql = $@"
-                SELECT {VideoCardQuery.ColumnsWithSeries}
+                SELECT {VideoCardQuery.ColumnsWithSeries},
+                       COUNT(vl.id) AS version_like_count, MAX(vl.liked_at) AS like_time,
+                       lf.id AS liked_file_id, {VersionNameSql} AS liked_version
                 FROM video_likes vl
                 JOIN videos v ON vl.video_id = v.id
+                {VideoCardQuery.FileJoin}
+                LEFT JOIN video_files lf ON lf.id = vl.file_id
                 LEFT JOIN video_series s ON v.seriesid = s.id
-                WHERE v.file_size > 0
-                GROUP BY v.id
-                ORDER BY like_count DESC, MAX(vl.liked_at) DESC
+                WHERE vl.target_type = 'video' AND df.file_size > 0
+                GROUP BY vl.video_id, lf.id
+                ORDER BY version_like_count DESC, like_time DESC, v.id ASC
                 LIMIT @limit";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.AddWithValue("@limit", count);

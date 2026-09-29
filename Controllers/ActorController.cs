@@ -110,7 +110,8 @@ public class ActorController : ControllerBase
                          WHERE va2.actor_id = a.id) as like_count,
                         (SELECT COUNT(*) FROM video_actors va3 
                          JOIN videos v2 ON va3.video_id = v2.id 
-                         WHERE va3.actor_id = a.id AND (v2.file_size IS NULL OR v2.file_size = 0)) as unloaded_count,
+                         {VideoCardQuery.FileJoinFor("v2")}
+                         WHERE va3.actor_id = a.id AND IFNULL(df.file_size, 0) = 0) as unloaded_count,
                         (SELECT GROUP_CONCAT(alias, char(31)) FROM actor_aliases aa2 WHERE aa2.actor_id = a.id) as aliases,
                         -- 列表也要带 links：编辑框是从列表行打开的，缺了它一保存就把外链抹掉
                         (SELECT GROUP_CONCAT(kind || char(31) || url, char(30)) FROM actor_links al WHERE al.actor_id = a.id) as links,
@@ -666,7 +667,7 @@ public class ActorController : ControllerBase
                 Subtitle = subtitle, Watermark = watermark, Resolution = resolution, HasFile = hasFile
             });
 
-            var countSql = $@"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id {where}";
+            var countSql = $@"SELECT COUNT(*) FROM videos v INNER JOIN video_actors va ON v.id = va.video_id {VideoCardQuery.FileJoin} {where}";
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
                 foreach (var p in parameters) countCmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
@@ -676,6 +677,7 @@ public class ActorController : ControllerBase
                     SELECT {VideoCardQuery.ColumnsWithSeries}
                     FROM videos v
                     INNER JOIN video_actors va ON v.id = va.video_id
+                    {VideoCardQuery.FileJoin}
                     LEFT JOIN video_series s ON v.seriesid = s.id
                     {where}
                     ORDER BY v.code ASC, v.id ASC

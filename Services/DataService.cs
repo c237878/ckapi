@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 10;
+    private const int TargetVersion = 11;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -407,6 +407,219 @@ public class DataService : IDataService
         _logger.LogInformation("已撤除题材标签与关联合辑的六张表");
     }
 
+    /// <summary>
+    /// 文件层从 videos 拆到 video_files，解说片从"另起一部片"改成"这部片的一个版本"（v11）。
+    ///
+    /// 起因：库里那 9 个解说版（ATID-428C 这一类）当初是按"新增影片"录的，于是同一部片在库里
+    /// 有两行、列表里有两张卡，筛选与统计各算一遍。真实关系是"一部片 + 若干份文件"，
+    /// 所以每部片建一条原版行（is_default=1），9 条解说行折回父片当版本行。
+    ///
+    /// 只搬能自动对上位的：解说行按"库内最长前缀"找父片，命中 0 个或并列多个一律中止，不猜。
+    /// 中止前 Initialize 已经强制留了 pre-migration 快照，被删的行另外转存成 SQL 单独留一份。
+    ///
+    /// 全程不改任何一个磁盘文件名，搬的只是库里的指向；封面本来就在影片层，一份不动。
+    /// </summary>
+    private void SplitVideoFiles(SqliteConnection conn)
+    {
+        if (!ColumnExists(conn, "videos", "file_path"))
+        {
+            _logger.LogInformation("videos 已没有文件层列，跳过拆分");
+            return;
+        }
+
+        if (!TableExists(conn, "video_files") || !TableExists(conn, "version_types"))
+        {
+            // Initialize 里 CreateBaseTables 先跑，正常到不了这里；真到了说明结构声明被删了
+            throw new InvalidOperationException("video_files / version_types 未建表，无法拆分文件层");
+        }
+
+        // 1) 挑出"其实是另一部片的版本"的行：判据是他当初把解说频道挂成了片商，
+        //    所以凡是片商叫「AV解说 ××」的行都是版本行候选。
+        var candidates = new List<(string Id, string Code, string StudioId, string StudioName)>();
+        using (var read = new SqliteCommand(@"
+            SELECT v.id, IFNULL(v.code, ''), v.studioid, s.name
+            FROM videos v JOIN studios s ON s.id = v.studioid
+            WHERE s.name LIKE 'AV解说 %' AND IFNULL(v.code, '') <> ''
+            ORDER BY v.code", conn))
+        using (var reader = read.ExecuteReader())
+        {
+            while (reader.Read())
+                candidates.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        }
+
+        var candidateIds = candidates.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        var folded = new List<(string Id, string Code, string ParentId, string StudioId, string StudioName, string Suffix)>();
+        var unmatched = new List<string>();
+
+        foreach (var c in candidates)
+        {
+            // 最长前缀命中：父片番号必须是它的真前缀，且越长越像（ATID-428C 的父片是 ATID-428，不是 ATID）。
+            // 前缀比较用 substr 相等而不是 LIKE：番号里出现 _ 或 % 时 LIKE 会把它们当通配符误配。
+            // 父片自己不能也是解说行，但判据必须写成 "IS NULL OR NOT IN"——库里多数片没填片商，
+            // 而 NULL NOT IN (…) 在 SQL 里是 unknown 而非 true，光写 NOT IN 会把没填片商的父片全滤掉
+            // （2026-09-29 在库副本上实测：9 条只对上 1 条，迁移被下面的闸门当场中止）。
+            // 父片自己不能也是解说行；判据要写成 "IS NULL OR NOT IN"——库里大部分片没填片商，
+            // 而 NULL NOT IN (...) 在 SQL 里是 unknown 不是 true，直接 NOT IN 会把没填片商的父片全滤掉
+            var parents = new List<(string Id, string Code)>();
+            using (var find = new SqliteCommand(@"
+                SELECT p.id, p.code FROM videos p
+                WHERE p.code IS NOT NULL AND p.code <> '' AND p.code <> @code
+                  AND substr(@code, 1, length(p.code)) = p.code
+                  AND (p.studioid IS NULL OR p.studioid NOT IN (SELECT id FROM studios WHERE name LIKE 'AV解说 %'))
+                ORDER BY LENGTH(p.code) DESC, p.id LIMIT 2", conn))
+            {
+                find.Parameters.Add(new SqliteParameter("@code", c.Code));
+                using var pr = find.ExecuteReader();
+                while (pr.Read()) parents.Add((pr.GetString(0), pr.GetString(1)));
+            }
+
+            var longest = parents.FirstOrDefault();
+            var tied = parents.Count == 2 && parents[0].Code.Length == parents[1].Code.Length;
+            if (parents.Count == 0 || tied || longest.Code.Length >= c.Code.Length)
+            {
+                unmatched.Add(c.Code);
+                continue;
+            }
+
+            folded.Add((c.Id, c.Code, longest.Id, c.StudioId, c.StudioName, c.Code.Substring(longest.Code.Length)));
+        }
+
+        if (unmatched.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"解说版对不上父片，迁移中止（不猜）：{string.Join("、", unmatched)}。" +
+                "先看这几条的番号，或直接在界面上把它们当独立影片留着。");
+        }
+
+        // 2) 那几家解说频道从片商搬进版本类型：它们说的是"这一版是谁做的"，不是制片商。
+        //    名字取掉「AV解说 」前缀的短名（界面上他一直就叫"湿姐""步非烟"），后缀按实测码尾填。
+        var typeByStudio = new Dictionary<string, string>(StringComparer.Ordinal);
+        var sort = 0;
+        foreach (var group in folded.GroupBy(f => f.StudioId).OrderBy(g => g.First().StudioName, StringComparer.Ordinal))
+        {
+            var shortName = group.First().StudioName.StartsWith("AV解说 ") ? group.First().StudioName["AV解说 ".Length..].Trim() : group.First().StudioName;
+            var suffix = group.Select(g => g.Suffix).OrderByDescending(s => s.Length).First();
+
+            var existing = Scalar(conn, "SELECT id FROM version_types WHERE name = @n", P("@n", shortName))?.ToString();
+            var typeId = existing ?? Guid.NewGuid().ToString("N").ToUpper();
+            if (existing is null)
+            {
+                NonQuery(conn, "INSERT INTO version_types (id, name, suffix, sort) VALUES (@id, @n, @s, @sort)",
+                    P("@id", typeId), P("@n", shortName), P("@s", suffix), P("@sort", ++sort));
+            }
+            typeByStudio[group.Key] = typeId;
+        }
+        _logger.LogInformation("版本类型已建 {Count} 条（由解说频道搬入）：{Names}", typeByStudio.Count,
+            string.Join("、", folded.GroupBy(f => f.StudioName).Select(g => $"{g.Key["AV解说 ".Length..]}={g.First().Suffix}")));
+
+        // 3) 解说行折成父片的版本行（is_default=0，文件名标识与那份文件的属性整体搬过去）
+        foreach (var f in folded)
+        {
+            NonQuery(conn, @"
+                INSERT INTO video_files (id, video_id, code, type_id, label, file_path, file_size,
+                                         res_w, res_h, subtitle_state, watermark_state, scan_time, is_default, ctime)
+                SELECT upper(hex(randomblob(16))), @parent, j.code, @type, IFNULL(j.name, ''),
+                       IFNULL(j.file_path, ''), IFNULL(j.file_size, 0), j.res_w, j.res_h,
+                       IFNULL(j.subtitle_state, 'unknown'), IFNULL(j.watermark_state, 'unknown'), j.scan_time, 0, j.ctime
+                FROM videos j WHERE j.id = @id",
+                P("@parent", f.ParentId), P("@type", typeByStudio[f.StudioId]), P("@id", f.Id));
+        }
+
+        // 4) 每部活下来的片各建一条原版行：番号就是它的文件名标识，is_default=1
+        var foldIds = InList(folded.Select(x => x.Id));
+        var exclude = folded.Count == 0 ? "" : $"WHERE v.id NOT IN ({foldIds}) AND";
+        var made = NonQuery(conn, $@"
+            INSERT INTO video_files (id, video_id, code, type_id, label, file_path, file_size,
+                                     res_w, res_h, subtitle_state, watermark_state, scan_time, is_default, ctime)
+            SELECT upper(hex(randomblob(16))), v.id, IFNULL(v.code, ''), '', '',
+                   IFNULL(v.file_path, ''), IFNULL(v.file_size, 0), v.res_w, v.res_h,
+                   IFNULL(v.subtitle_state, 'unknown'), IFNULL(v.watermark_state, 'unknown'), v.scan_time, 1, v.ctime
+            FROM videos v
+            {exclude}
+              NOT EXISTS (SELECT 1 FROM video_files f WHERE f.video_id = v.id AND f.is_default = 1)");
+        _logger.LogInformation("已为 {Made} 部片建出默认版本行", made);
+
+        // 5) 删掉被折走的解说影片行。它挂的演员与系列父片都有（实测差集为 0），点赞 0 条，
+        //    所以搬过去不会丢关系；但仍旧先转存一份，回滚时不必整库还原。
+        if (folded.Count > 0)
+        {
+            DumpRowsBeforeDelete(conn, "videos", $"id IN ({foldIds})");
+            foreach (var table in new[] { "video_actors", "video_links", "video_likes", "video_files" })
+                DumpRowsBeforeDelete(conn, table, $"video_id IN ({foldIds})");
+
+            foreach (var table in new[] { "video_actors", "video_links", "video_likes", "video_files" })
+                NonQuery(conn, $"DELETE FROM {table} WHERE video_id IN ({foldIds})");
+            NonQuery(conn, $"DELETE FROM videos WHERE id IN ({foldIds})");
+        }
+        _logger.LogInformation("已把 {Count} 条解说影片行折成版本行并删除原行：{Codes}",
+            folded.Count, string.Join("、", folded.Select(f => f.Code)));
+
+        // 6) 点赞记到版本上：旧记录指的是"当时那部片的默认版本"，回填成默认行的 id
+        AddColumnIfMissing(conn, "video_likes", "file_id", "TEXT");
+        NonQuery(conn, @"
+            UPDATE video_likes SET file_id = (
+                SELECT f.id FROM video_files f WHERE f.video_id = video_likes.video_id AND f.is_default = 1
+            ) WHERE file_id IS NULL AND target_type = 'video'");
+
+        // 7) 解说频道不再是片商：连同它们的别名一起撤掉（此时已没有影片挂着它们）
+        var studioIds = folded.Select(f => f.StudioId).Distinct().ToList();
+        if (studioIds.Count > 0)
+        {
+            var ids = InList(studioIds);
+            var inUse = Convert.ToInt32(Scalar(conn, $"SELECT COUNT(*) FROM videos WHERE studioid IN ({ids})") ?? 0);
+            if (inUse > 0)
+            {
+                _logger.LogWarning("那几家解说频道还被 {Count} 部片当片商用着，片商与别名先留着", inUse);
+            }
+            else
+            {
+                DumpRowsBeforeDelete(conn, "studio_aliases", $"studio_id IN ({ids})");
+                DumpRowsBeforeDelete(conn, "studios", $"id IN ({ids})");
+                NonQuery(conn, $"DELETE FROM studio_aliases WHERE studio_id IN ({ids})");
+                NonQuery(conn, $"DELETE FROM studios WHERE id IN ({ids})");
+                _logger.LogInformation("已把 {Count} 家解说频道从片商撤掉（它们现在是版本类型）", studioIds.Count);
+            }
+        }
+
+        // 8) 「av解说」不再是分类：解说版不是一部片，也就没有分类可言
+        var categories = Scalar(conn, "SELECT content FROM system_settings WHERE name = 'categories'")?.ToString() ?? "";
+        var kept = categories
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(c => c != "av解说")
+            .ToList();
+        if (kept.Count != categories.Split(',', StringSplitOptions.RemoveEmptyEntries).Length)
+        {
+            NonQuery(conn, "UPDATE system_settings SET content = @c, utime = @u WHERE name = 'categories'",
+                P("@c", string.Join(",", kept)), P("@u", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")));
+            _logger.LogInformation("已从分类清单撤掉 av解说，剩余 {Count} 项", kept.Count);
+        }
+
+        // 9) 影片层那七列就此退休
+        foreach (var column in new[]
+                 { "file_path", "file_size", "res_w", "res_h", "subtitle_state", "watermark_state", "scan_time" })
+        {
+            if (ColumnExists(conn, "videos", column)) NonQuery(conn, $"ALTER TABLE videos DROP COLUMN {column}");
+        }
+
+        // 10) 收口自检：每部片必须恰好一条默认版本，少一条就说明上面哪步没接住
+        var orphan = Convert.ToInt32(Scalar(conn, @"
+            SELECT COUNT(*) FROM videos v
+            WHERE (SELECT COUNT(*) FROM video_files f WHERE f.video_id = v.id AND f.is_default = 1) <> 1") ?? 0);
+        if (orphan > 0)
+            throw new InvalidOperationException($"{orphan} 部片没有恰好一条默认版本行，迁移中止");
+
+        _logger.LogInformation(
+            "文件层拆分完成：{Files} 个版本行 / {Movies} 部片，其中多版本片 {Multi} 部；videos 的七个文件列已删除",
+            Scalar(conn, "SELECT COUNT(*) FROM video_files"),
+            Scalar(conn, "SELECT COUNT(*) FROM videos"),
+            Convert.ToInt32(Scalar(conn, @"
+                SELECT COUNT(*) FROM (SELECT video_id FROM video_files GROUP BY video_id HAVING COUNT(*) > 1)") ?? 0));
+    }
+
+    /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
+    private static string InList(IEnumerable<string> ids)
+        => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
+
     private readonly ILogger<DataService> _logger;
     private readonly Utils.SQLiteHelper _db;
 
@@ -425,6 +638,7 @@ public class DataService : IDataService
             .Append((8, "影片加日文原名与发行日期列（见 AddVideoTitles 注释）", AddVideoTitles))
             .Append((9, "片商收成 videos.studioid 单值，删掉 video_studios（见 StudioToOneColumn 注释）", StudioToOneColumn))
             .Append((10, "撤掉题材标签与关联合辑六张表（见 DropTagAndGroups 注释）", DropTagAndGroups))
+            .Append((11, "文件层拆到 video_files，解说片折回父片当版本（见 SplitVideoFiles 注释）", SplitVideoFiles))
             .ToArray();
     }
 
@@ -517,28 +731,64 @@ public class DataService : IDataService
 
     private static void CreateBaseTables(SqliteConnection conn)
     {
+        // 影片层只留"这部片是什么"：片名、番号、分类、封面、归属。
+        // 文件层七列（路径/大小/宽高/字幕/水印/扫描时间）v11 起搬到 video_files，这里不再存副本
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS videos (
                 id              TEXT    PRIMARY KEY,
                 name            TEXT    NOT NULL,
                 category        TEXT    NOT NULL,
-                file_path       TEXT,
-                file_size       INTEGER,
                 cover_path      TEXT,
                 code            TEXT,
                 country         TEXT DEFAULT '',
                 seriesid        TEXT,
                 ctime           TEXT,
                 sort_order      INTEGER DEFAULT 0,
-                subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
-                watermark_state TEXT    NOT NULL DEFAULT 'unknown',
-                res_w           INTEGER,
-                res_h           INTEGER,
-                scan_time       TEXT,
                 original_name   TEXT,
                 release_date    TEXT,
                 /* 片商是一部片的一个值，与 seriesid 同形（v9 起；原来是 video_studios 多对多） */
                 studioid        TEXT
+            )");
+
+        // 文件层（v11）：一部片 → 一到多份文件，1:N 严格（这些版本只属于这部片，不会同时对应多部片，2026-09-28 定）。
+        // 只属于"这一份文件"的事实全在这里，影片层不再存副本 —— 筛选与统计走 is_default 那一行。
+        // 每部片恰有一条 is_default=1 由代码保证（迁移动作与新建影片都会建原版行），
+        // 部分唯一索引只能保证"至多一条"，见 CreateIndexes 的 idx_video_files_default。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS video_files (
+                id              TEXT    PRIMARY KEY,
+                video_id        TEXT    NOT NULL,
+                /* 本行的文件名标识：番号 + 尾巴，原版那一行等于影片番号。
+                   它是「文件名该长什么样」的权威值，改名工具按它对齐，不每次从影片番号重算 */
+                code            TEXT    NOT NULL DEFAULT '',
+                /* 版本类型；'' 固定表示原版那一行 */
+                type_id         TEXT    NOT NULL DEFAULT '',
+                /* 版本名称，空则界面显示类型名 */
+                label           TEXT    NOT NULL DEFAULT '',
+                /* 空串 = 版本条目已建、文件还没上传。不用任何前缀暗号表示空 */
+                file_path       TEXT    NOT NULL DEFAULT '',
+                file_size       INTEGER NOT NULL DEFAULT 0,
+                res_w           INTEGER,
+                res_h           INTEGER,
+                subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
+                watermark_state TEXT    NOT NULL DEFAULT 'unknown',
+                scan_time       TEXT,
+                /* 当前作为影片口径的那一版：列表筛选、统计、卡片字段都走它。
+                   用户可以设任意一版为默认，所以它与文件名无关 */
+                is_default      INTEGER NOT NULL DEFAULT 0,
+                ctime           TEXT
+            )");
+
+        // 版本类型词表（设置里维护）。初始内容是从 studios 里搬出来的那几家中文 AV 解说频道：
+        // 它们本来就是"这一版是谁做的"，不是制片商，之前挂成片商是临时的将就
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS version_types (
+                id     TEXT    PRIMARY KEY,
+                name   TEXT    NOT NULL,
+                /* 只用于新建版本时建议文件名后缀（C=解说、E=剪辑…）。
+                   番号级联改名时不重算它，只换前缀，否则同类型的两版会撞成一个名字 */
+                suffix TEXT    NOT NULL DEFAULT '',
+                sort   INTEGER NOT NULL DEFAULT 0
             )");
 
         NonQuery(conn, @"
@@ -688,12 +938,16 @@ public class DataService : IDataService
                 utime   TEXT NOT NULL
             )");
 
+        // 点赞针对的是"某一部片的某一版"（v11 定）。file_id 指到 video_files 那一行，
+        // 界面从卡片上点默认版本时就是那一版；聚合口径见 VideoController 的三个榜：
+        // 记录按版本各算一条，不去重（日历显示总和、点赞榜带版本列、最近点赞按卡片标识区分）。
         NonQuery(conn, @"
             CREATE TABLE IF NOT EXISTS video_likes (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 video_id    TEXT    NOT NULL,
                 liked_at    TEXT    NOT NULL,
-                target_type TEXT    NOT NULL DEFAULT 'video'
+                target_type TEXT    NOT NULL DEFAULT 'video',
+                file_id     TEXT
             )");
 
         NonQuery(conn, @"
@@ -787,6 +1041,15 @@ public class DataService : IDataService
             ("idx_studio_aliases_alias", "CREATE INDEX IF NOT EXISTS idx_studio_aliases_alias ON studio_aliases(alias)"),
             ("idx_videos_studioid", "CREATE INDEX IF NOT EXISTS idx_videos_studioid ON videos(studioid)"),
             ("idx_video_links_video", "CREATE INDEX IF NOT EXISTS idx_video_links_video ON video_links(video_id, kind)"),
+            // 文件层（v11）：卡片查询一律走 "video_id = v.id AND is_default = 1"，
+            // 这条部分唯一索引既是那个 JOIN 的访问路径，也保证一部片至多一条默认版本
+            ("idx_video_files_default", "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_files_default ON video_files(video_id) WHERE is_default = 1"),
+            // 详情页的版本下拉：按片取全部版本；改名工具与字幕寻址按行级番号找文件
+            ("idx_video_files_video", "CREATE INDEX IF NOT EXISTS idx_video_files_video ON video_files(video_id, is_default DESC, code)"),
+            ("idx_video_files_code", "CREATE INDEX IF NOT EXISTS idx_video_files_code ON video_files(code)"),
+            ("idx_video_files_type", "CREATE INDEX IF NOT EXISTS idx_video_files_type ON video_files(type_id)"),
+            // 点赞榜/最近点赞按版本取记录；删除版本行时要按 file_id 找点赞
+            ("idx_video_likes_file", "CREATE INDEX IF NOT EXISTS idx_video_likes_file ON video_likes(file_id)"),
         };
 
         foreach (var (name, sql) in indexes)
@@ -854,6 +1117,47 @@ public class DataService : IDataService
         }
         return false;
     }
+
+    /// <summary>
+    /// 删行之前把这几行转存成 SQL 到备份目录。
+    ///
+    /// 与 DumpTableBeforeDrop 同一个动机：迁移不可逆，整库快照虽然兜得住，但"具体哪几行被搬走、
+    /// 被删掉"单独留一份，回滚或核对时才不必把整个库捞出来重看。
+    /// where 一律由本文件内部拼（id 是自己生成的 GUID），不接受外部输入。
+    /// </summary>
+    private void DumpRowsBeforeDelete(SqliteConnection conn, string table, string where)
+    {
+        if (!TableExists(conn, table)) return;
+
+        var backupPath = _db.GetBackupPath();
+        if (string.IsNullOrEmpty(backupPath) || !Directory.Exists(backupPath)) return;
+
+        var file = Path.Combine(backupPath, $"deleted_{table}_{DateTime.Now:yyyyMMdd-HHmmss}_{++_dumpSeq}.sql");
+        try
+        {
+            var lines = new List<string>();
+            using var cmd = new SqliteCommand($"SELECT * FROM [{table}] WHERE {where}", conn);
+            using var reader = cmd.ExecuteReader();
+            var cols = Enumerable.Range(0, reader.FieldCount).Select(reader.GetName).ToArray();
+            while (reader.Read())
+            {
+                var values = Enumerable.Range(0, reader.FieldCount).Select(i =>
+                    reader.IsDBNull(i) ? "NULL" : "'" + reader[i].ToString()?.Replace("'", "''") + "'");
+                lines.Add($"INSERT INTO [{table}] ({string.Join(", ", cols)}) VALUES ({string.Join(", ", values)});");
+            }
+
+            if (lines.Count == 0) return;
+            File.WriteAllLines(file, lines);
+            _logger.LogInformation("已把 [{Table}] 待删除的 {Count} 行转存到 {File}", table, lines.Count, file);
+        }
+        catch (Exception ex)
+        {
+            // 转存失败不阻断迁移：每日全库快照与 pre-migration 快照已经覆盖了这份数据
+            _logger.LogWarning(ex, "转存 [{Table}] 待删除行失败，仍继续迁移", table);
+        }
+    }
+
+    private int _dumpSeq;
 
     /// <summary>
     /// 删表前把它转存成 SQL 到备份目录。数据本身可能不值钱，但迁移不可逆，

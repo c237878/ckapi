@@ -174,9 +174,24 @@ public static class VideoMeta
     /// </summary>
     public static void PurgeVideo(SqliteConnection conn, string videoId, SqliteTransaction? tx = null)
     {
-        using var cmd = new SqliteCommand("DELETE FROM video_links WHERE video_id = @id", conn, tx);
-        cmd.Parameters.AddWithValue("@id", videoId);
-        cmd.ExecuteNonQuery();
+        using (var cmd = new SqliteCommand("DELETE FROM video_links WHERE video_id = @id", conn, tx))
+        {
+            cmd.Parameters.AddWithValue("@id", videoId);
+            cmd.ExecuteNonQuery();
+        }
+
+        // 版本行属于这部片（v11）：片没了，它名下的每一份文件记录一起走，
+        // 否则 video_files 里会留下指向不存在影片的孤儿行
+        using (var files = new SqliteCommand("DELETE FROM video_files WHERE video_id = @id", conn, tx))
+        {
+            files.Parameters.AddWithValue("@id", videoId);
+            files.ExecuteNonQuery();
+        }
+
+        // 点赞记录带上了版本列（file_id），删片时按影片清完就够了，不必再按版本补一刀
+        using var likes = new SqliteCommand("DELETE FROM video_likes WHERE video_id = @id", conn, tx);
+        likes.Parameters.AddWithValue("@id", videoId);
+        likes.ExecuteNonQuery();
     }
 
     /// <summary>
