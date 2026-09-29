@@ -50,6 +50,9 @@ public class VersionTypeController : ControllerBase
         conn.Open();
         if (Scalar(conn, "SELECT id FROM version_types WHERE name = @n", ("@n", name!)) is not null)
             return Ok(new { success = false, message = $"已有「{name}」这个版本类型" });
+        var suffixClash = SuffixTakenBy(conn, suffix!, null);
+        if (suffixClash is not null)
+            return Ok(new { success = false, message = $"尾巴「{suffix}」已经是「{suffixClash}」那一类的了，各类型要各用一个" });
 
         var sort = Convert.ToInt32(Scalar(conn, "SELECT IFNULL(MAX(sort), 0) + 1 FROM version_types") ?? 1);
         var id = VideoFiles.NewId();
@@ -73,6 +76,9 @@ public class VersionTypeController : ControllerBase
         if (Scalar(conn, "SELECT id FROM version_types WHERE name = @n AND id <> @i",
                 ("@n", name!), ("@i", id)) is not null)
             return Ok(new { success = false, message = $"已有「{name}」这个版本类型" });
+        var suffixClash = SuffixTakenBy(conn, suffix!, id);
+        if (suffixClash is not null)
+            return Ok(new { success = false, message = $"尾巴「{suffix}」已经是「{suffixClash}」那一类的了，各类型要各用一个" });
 
         NonQuery(conn, "UPDATE version_types SET name = @n, suffix = @s WHERE id = @i",
             ("@n", name!), ("@s", suffix!), ("@i", id));
@@ -132,6 +138,26 @@ public class VersionTypeController : ControllerBase
     }
 
     // ---------------------------------------------------------------- 小工具
+
+    /// <summary>
+    /// 这个尾巴是不是已经被别的类型占了。
+    ///
+    /// 为什么要求各类型互不相同：一部片同一个类型只能有一条，所以第二版必然是另一个类型，
+    /// 而新建时的行级标识是按「影片番号 + 该类型后缀」自动拼的——四家频道都填 C 的话，
+    /// 第二版一保存就撞上第一版的标识，自动值形同虚设（2026-09-29 实测就撞在这）。
+    /// 允许留空：不填尾巴的类型由界面要求手填标识，不参与自动拼接。
+    /// </summary>
+    private static string? SuffixTakenBy(SqliteConnection conn, string suffix, string? exceptId)
+    {
+        if (string.IsNullOrEmpty(suffix)) return null;
+        using var cmd = new SqliteCommand(@"
+            SELECT name FROM version_types
+            WHERE suffix = @s AND (@self = '' OR id <> @self)
+            LIMIT 1", conn);
+        cmd.Parameters.Add(new SqliteParameter("@s", suffix));
+        cmd.Parameters.Add(new SqliteParameter("@self", exceptId ?? ""));
+        return cmd.ExecuteScalar()?.ToString();
+    }
 
     /// <summary>去空白、限长度；不合法返回消息。suffix 允许为空（类型不一定要带尾巴）。</summary>
     private static (string? Name, string? Suffix, string? Error) Normalize(TypeRequest req)

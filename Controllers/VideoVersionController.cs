@@ -84,6 +84,11 @@ public class VideoVersionController : ControllerBase
             if (code.Length == 0)
                 return Ok(new { success = false, message = "这一版没有可用的文件名标识：影片还没填番号，版本类型也没配后缀" });
 
+            // 一部片同一个类型只能有一条（库里由 idx_video_files_movie_type 兜，这里先拦下来说人话）
+            var taken = VideoFiles.TypeTakenBy(conn, req.VideoId!, typeId);
+            if (taken is not null)
+                return Ok(new { success = false, message = $"这部片已经有「{taken}」这一版了，同一个类型不能再加第二条" });
+
             // 行级番号是"文件名该长什么样"的权威值，撞车了后面改名会互相覆盖，这里就拦住。
             // 自动拼出来的值最常撞：那几家解说频道的后缀都填了 C，同一部片加第二个解说版就会撞车，
             // 所以消息里要说清是哪种情况、以及两条出路（自己填一个尾巴，或给这个类型配别的后缀）
@@ -158,6 +163,11 @@ public class VideoVersionController : ControllerBase
                 {
                     return Ok(new { success = false, message = ex.Message });
                 }
+                var videoId = row["videoId"]?.ToString() ?? "";
+                // 换到别的类型也要过同一道闸：这部片已有那一类就拦下来说人话
+                var taken = VideoFiles.TypeTakenBy(conn, videoId, typeId, fileId);
+                if (taken is not null)
+                    return Ok(new { success = false, message = $"这部片已经有「{taken}」这一版了，同一个类型只能有一条" });
                 NonQuery(conn, "UPDATE video_files SET type_id = @t WHERE id = @id",
                     P("@t", typeId), P("@id", fileId));
             }

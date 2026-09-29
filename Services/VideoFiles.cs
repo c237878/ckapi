@@ -276,7 +276,9 @@ public static class VideoFiles
         var list = new List<Dictionary<string, object?>>();
         using var cmd = new SqliteCommand(@"
             SELECT vt.id, vt.name, vt.suffix, vt.sort,
-                   (SELECT COUNT(*) FROM video_files f WHERE f.type_id = vt.id) AS used
+                   (SELECT COUNT(*) FROM video_files f WHERE f.type_id = vt.id) AS used,
+                   /* 尾巴与别的类型撞上了没有：撞了的话同一部片的第二版会算出同一个自动标识 */
+                   (SELECT COUNT(*) FROM version_types o WHERE o.suffix = vt.suffix AND o.id <> vt.id AND vt.suffix <> '') AS dup
             FROM version_types vt ORDER BY vt.sort, vt.name", conn);
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -288,9 +290,35 @@ public static class VideoFiles
                 ["suffix"] = Str(reader, "suffix") ?? "",
                 ["sort"] = Int(reader, "sort"),
                 ["used"] = Int(reader, "used"),
+                // 尾巴被别的类型共用：新建这一类时会算出重复的行级标识，设置页要提醒
+                ["suffixDup"] = Int(reader, "dup") > 0,
             });
         }
         return list;
+    }
+
+    /// <summary>
+    /// 这一部片是不是已经有这个类型的版本了（2026-09-29 定：一部片同一个类型只能有一条）。
+    /// 改这一版自己的类型时要把自己排除掉，否则"没改类型只改名字"都会被自己挡住。
+    /// 返回已占用的那一版的显示名，没有占用返回 null。
+    ///
+    /// 这条规则顶掉了"给同类型的后缀各配一个不重复的尾巴"那种绕法：后缀只是新建时的建议值，
+    /// 真要一部片有两个解说版，那就是两个类型（湿姐 / 步非烟），而不是一类里塞两条。
+    /// </summary>
+    public static string? TypeTakenBy(SqliteConnection conn, string videoId, string typeId, string? exceptFileId = null)
+    {
+        if (string.IsNullOrEmpty(typeId)) return null;   // 原版行的唯一性由默认版本那条规则管
+        // 回显按"类型名优先"（与 DisplayName 同一口径）：那串长标题是副标题，
+        // 塞进拒绝消息里读起来像一坨乱码
+        using var cmd = new SqliteCommand(@"
+            SELECT IFNULL(vt.name, IFNULL(NULLIF(TRIM(f.label), ''), '原版')) || '（' || f.code || '）'
+            FROM video_files f LEFT JOIN version_types vt ON vt.id = f.type_id
+            WHERE f.video_id = @v AND f.type_id = @t AND f.id <> @self
+            LIMIT 1", conn);
+        cmd.Parameters.Add(new SqliteParameter("@v", videoId));
+        cmd.Parameters.Add(new SqliteParameter("@t", typeId));
+        cmd.Parameters.Add(new SqliteParameter("@self", exceptFileId ?? ""));
+        return cmd.ExecuteScalar()?.ToString();
     }
 
     /// <summary>类型 id 认不出就明确报错，别静默当成"没有类型"（与片商同一口径）。</summary>

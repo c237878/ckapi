@@ -601,12 +601,28 @@ public class DataService : IDataService
             if (ColumnExists(conn, "videos", column)) NonQuery(conn, $"ALTER TABLE videos DROP COLUMN {column}");
         }
 
-        // 10) 收口自检：每部片必须恰好一条默认版本，少一条就说明上面哪步没接住
+        // 10) 收口自检：每部片必须恰好一条默认版本，且同一类型只能有一条——
+        // 这两条都是 CreateIndexes 里唯一索引要兜的事，先在这儿查：索引建不上只留一条 warning，
+        // 之后每次启动都安静地少一个约束，比迁移当场中止难查得多
         var orphan = Convert.ToInt32(Scalar(conn, @"
             SELECT COUNT(*) FROM videos v
             WHERE (SELECT COUNT(*) FROM video_files f WHERE f.video_id = v.id AND f.is_default = 1) <> 1") ?? 0);
         if (orphan > 0)
             throw new InvalidOperationException($"{orphan} 部片没有恰好一条默认版本行，迁移中止");
+
+        var dupType = Convert.ToInt32(Scalar(conn, @"
+            SELECT COUNT(*) FROM (
+                SELECT video_id FROM video_files GROUP BY video_id, type_id HAVING COUNT(*) > 1)") ?? 0);
+        if (dupType > 0)
+        {
+            var sample = Scalar(conn, @"
+                SELECT p.code || ' / ' || IFNULL(vt.name, '原版') FROM video_files f
+                JOIN videos p ON p.id = f.video_id LEFT JOIN version_types vt ON vt.id = f.type_id
+                GROUP BY f.video_id, f.type_id HAVING COUNT(*) > 1 LIMIT 3")?.ToString() ?? "";
+            throw new InvalidOperationException(
+                $"{dupType} 组同一部片挂了同一个版本类型两次（例：{sample}），迁移中止。" +
+                "一部片的每个版本类型只能有一条，先在界面上把重复的那条改成别的类型再启动。");
+        }
 
         _logger.LogInformation(
             "文件层拆分完成：{Files} 个版本行 / {Movies} 部片，其中多版本片 {Multi} 部；videos 的七个文件列已删除",
@@ -761,7 +777,8 @@ public class DataService : IDataService
                 /* 本行的文件名标识：番号 + 尾巴，原版那一行等于影片番号。
                    它是「文件名该长什么样」的权威值，改名工具按它对齐，不每次从影片番号重算 */
                 code            TEXT    NOT NULL DEFAULT '',
-                /* 版本类型；'' 固定表示原版那一行 */
+                /* 版本类型；'' 固定表示原版那一行。
+                   同一部片的同一个类型只能有一条，由 idx_video_files_movie_type 兜 */
                 type_id         TEXT    NOT NULL DEFAULT '',
                 /* 版本名称，空则界面显示类型名 */
                 label           TEXT    NOT NULL DEFAULT '',
@@ -1044,6 +1061,10 @@ public class DataService : IDataService
             // 文件层（v11）：卡片查询一律走 "video_id = v.id AND is_default = 1"，
             // 这条部分唯一索引既是那个 JOIN 的访问路径，也保证一部片至多一条默认版本
             ("idx_video_files_default", "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_files_default ON video_files(video_id) WHERE is_default = 1"),
+            // 一部片的同一个类型只能有一条（2026-09-29 定）：type_id 是 NOT NULL，
+            // 空串固定表示原版，所以这一条同时兜住了"原版每部至多一条"。
+            // 比"同类型的后缀不许重复"更直接：后缀只是新建时的建议值，真要加第二版就该换个类型。
+            ("idx_video_files_movie_type", "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_files_movie_type ON video_files(video_id, type_id)"),
             // 详情页的版本下拉：按片取全部版本；改名工具与字幕寻址按行级番号找文件
             ("idx_video_files_video", "CREATE INDEX IF NOT EXISTS idx_video_files_video ON video_files(video_id, is_default DESC, code)"),
             ("idx_video_files_code", "CREATE INDEX IF NOT EXISTS idx_video_files_code ON video_files(code)"),
