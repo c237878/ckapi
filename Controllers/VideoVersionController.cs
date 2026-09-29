@@ -536,6 +536,52 @@ public class VideoVersionController : ControllerBase
     }
 
     /// <summary>
+    /// 把这一版的盘上文件名对齐到它的行级番号。
+    ///
+    /// **默认预检**（dryRun=true）：只回"会改成什么名"，一个字节都不动盘。
+    /// 这是刻意的设计——改了库里的文件名标识之后，盘上那个名字不会跟着变，
+    /// 要变必须在这儿显式 dryRun=false 走一次，避免"填错一格就把 20 GB 的文件改名"。
+    /// 库里的 file_path 只在改名成功后才更新（见 VideoFiles.AlignFileName）。
+    /// </summary>
+    [HttpPost("{fileId}/align-name")]
+    public IActionResult AlignName(string fileId, [FromQuery] bool dryRun = true)
+    {
+        try
+        {
+            using var conn = _db.GetConnection();
+            conn.Open();
+            var before = VideoFiles.Find(conn, fileId);
+            if (before is null) return NotFound(new { success = false, message = "版本不存在" });
+
+            var (ok, newPath, error) = VideoFiles.AlignFileName(conn, fileId, dryRun);
+            if (error is not null)
+                return Ok(new { success = false, dryRun, message = error, data = before });
+
+            if (!ok)
+                return Ok(new { success = true, dryRun, changed = false, message = "文件名已经与标识一致，不用动", data = before });
+
+            var to = Path.GetFileNameWithoutExtension(newPath);
+            return Ok(new
+            {
+                success = true,
+                dryRun,
+                changed = true,
+                message = dryRun
+                    ? $"预检：会把「{System.IO.Path.GetFileName(before["filePath"]?.ToString() ?? "")}」改成「{to}{Path.GetExtension(newPath)}」"
+                    : $"已改成「{to}{Path.GetExtension(newPath)}」",
+                data = VideoFiles.Find(conn, fileId),
+                oldFile = before["filePath"],
+                newFile = newPath
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AlignName failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
     /// 版本类型词表（设置里那个分区）+ 每类下的版本行数，供详情页下拉与新增版本对话框用。
     /// </summary>
     [HttpGet("types")]
