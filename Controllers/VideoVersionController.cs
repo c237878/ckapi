@@ -437,16 +437,23 @@ public class VideoVersionController : ControllerBase
                 }
             }
 
-            var sizeChanged = newSize != Convert.ToInt64(row["fileSize"] ?? 0L);
-            var pathChanged = newPath != currentPath;
-            if (sizeChanged || pathChanged)
+            // 重置就是"回到没量过、没标过的状态"：不论大小有没有变都要写。
+            // （这里原先挂在了 sizeChanged || pathChanged 里，于是文件没换的情况下点它什么也没发生——
+            //  而"文件没变、只想把两维结论清掉重来"正是这颗按钮最常见的用法。）
+            NonQuery(conn, @"
+                UPDATE video_files SET file_path = @p, file_size = @s, res_w = NULL, res_h = NULL,
+                                       scan_time = NULL, subtitle_state = 'unknown', watermark_state = 'unknown'
+                WHERE id = @id",
+                P("@p", newPath), P("@s", newSize), P("@id", fileId));
+
+            // 大小确实变了才挪影片的入库时间（与 v10 一致：它决定"最新入库"的排序，
+            // 补扫出来的真实大小该让这部片回到前面；没变就不该把一部老片顶到列表最前）
+            var wasDefault = row["isDefault"] is true;
+            if (wasDefault && newSize != Convert.ToInt64(row["fileSize"] ?? 0L))
             {
-                // 文件换了（或第一次找到），旧那份文件的分辨率与两维结论就不再算在这一版头上
-                NonQuery(conn, @"
-                    UPDATE video_files SET file_path = @p, file_size = @s, res_w = NULL, res_h = NULL,
-                                           scan_time = NULL, subtitle_state = 'unknown', watermark_state = 'unknown'
-                    WHERE id = @id",
-                    P("@p", newPath), P("@s", newSize), P("@id", fileId));
+                NonQuery(conn, "UPDATE videos SET ctime = @t WHERE id = @id",
+                    P("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")), P("@id", videoId));
+                messages.Add("入库时间已更新");
             }
 
             return Ok(new
