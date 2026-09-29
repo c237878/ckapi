@@ -118,9 +118,10 @@ public class LikeController : ControllerBase
                             code = isComic ? null : (reader["video_code"] == DBNull.Value ? null : reader["video_code"].ToString()),
                             coverPath = cover,
                             // 点赞落在哪一版（v11）：这一列让它看得出来，原版行没有类型名，用影片番号本身表示
-                            fileId = reader["file_id"] == DBNull.Value ? null : reader["file_id"].ToString(),
-                            versionCode = reader["version_code"] == DBNull.Value ? null : reader["version_code"].ToString(),
-                            versionName = reader["version_name"] == DBNull.Value ? null : reader["version_name"].ToString()
+                            fileId = Str(reader, "file_id"),
+                            versionCode = Str(reader, "version_code"),
+                            // 类型名优先（湿姐），没有类型才用版本名称，与 VideoFiles.DisplayName 同一口径
+                            versionName = Str(reader, "version_type") ?? Str(reader, "version_label")
                         });
                     }
                 }
@@ -133,6 +134,17 @@ public class LikeController : ControllerBase
             _logger.LogError(ex, "GetLikeList failed");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
+    }
+
+    /// <summary>列不存在或为 NULL 都返回 null：版本信息是后加的，旧记录不该因此整页 500</summary>
+    private static string? Str(SqliteDataReader reader, string column)
+    {
+        for (var i = 0; i < reader.FieldCount; i++)
+        {
+            if (reader.GetName(i).Equals(column, StringComparison.OrdinalIgnoreCase))
+                return reader.IsDBNull(i) ? null : reader.GetValue(i)?.ToString();
+        }
+        return null;
     }
 
     /// <summary>
