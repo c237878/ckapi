@@ -137,8 +137,57 @@ public class VideoStateController : ControllerBase
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
+    /// <summary>
+    /// 某一版上被点赞的时间点（v12 的 play_time 攒出来的）。
+    ///
+    /// 单独一个接口而不是塞进详情：绝大多数片子一个都没有，没必要每次进详情页都带一份空数组。
+    /// 排序按版本再按位置——界面上是一版一行，行内从左到右按时间。
+    /// </summary>
+    [HttpGet("{id}/moments")]
+    public IActionResult Moments(string id)
+    {
+        try
+        {
+            const string sql = @"
+                SELECT l.id, l.file_id, l.play_time, l.liked_at,
+                       f.code AS file_code,
+                       IFNULL((SELECT vt.name FROM version_types vt WHERE vt.id = f.type_id), NULLIF(TRIM(f.label), '')) AS version_name
+                FROM video_likes l
+                LEFT JOIN video_files f ON f.id = l.file_id
+                WHERE l.video_id = @id AND l.target_type = 'video' AND l.play_time IS NOT NULL
+                ORDER BY l.file_id, l.play_time";
+
+            var list = new List<object>();
+            using var conn = _db.GetConnection();
+            conn.Open();
+            using var cmd = new SqliteCommand(sql, conn);
+            cmd.Parameters.Add(new SqliteParameter("@id", id));
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var name = reader["version_name"] == DBNull.Value ? "" : reader["version_name"].ToString();
+                list.Add(new
+                {
+                    likeId = reader.GetInt64(0),
+                    fileId = reader["file_id"].ToString(),
+                    position = Math.Round(reader.GetDouble(2), 1),
+                    likedAt = reader.GetString(3),
+                    // 与 VideoFiles.DisplayName 同一口径：类型名优先，其次手填名称，都没有才叫原版
+                    versionName = string.IsNullOrWhiteSpace(name) ? "原版" : name.Trim()
+                });
+            }
+
+            return Ok(new { success = true, data = list });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "读取点赞时间点失败 videoId={Id}", id);
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
 }
 
+/// <summary>写入某一位播放进度或一个时间点用</summary>
 public class StateRequest
 {
     [System.Text.Json.Serialization.JsonPropertyName("fileId")]
