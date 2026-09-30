@@ -16,11 +16,16 @@ namespace ckapi.Utils;
 /// </summary>
 public static class Thumbs
 {
-    /// <summary>尺寸档位：路由里就用这两个字母，别传任意宽度，否则缓存目录会被无限撑大</summary>
+    /// <summary>
+    /// 尺寸档位：路由里就用这几个字母，别传任意宽度，否则缓存目录会被无限撑大。
+    /// n 是给"160 太糊、400 太贵"那一档：卡片画框一般 200~260 CSS px，240 刚好够，
+    /// 字节只有 m 的四成。用哪一档由设置里「列表封面清晰度」决定（system_settings.coverSize）。
+    /// </summary>
     public static readonly (string Name, int Width)[] Sizes =
     {
-        ("s", 160),   // 列表页头像
-        ("m", 400),   // 详情页相册
+        ("s", 160),   // 列表页头像 / 省流量的封面
+        ("n", 240),   // 列表封面：平衡档
+        ("m", 400),   // 详情页相册，以及不省流量的列表封面
     };
 
     public static int WidthOf(string? size)
