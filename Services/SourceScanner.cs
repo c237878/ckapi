@@ -32,8 +32,11 @@ public sealed class SourceScanner
     /// <param name="Codec">视频轨 fourcc，只用于日志</param>
     /// <param name="Error">探不出来的原因</param>
     /// <param name="Fingerprint">内容指纹；读不出来时为 null，写回时保留原值而不是清空</param>
+    /// <param name="Missing">文件在库里登记了、盘上却不存在。和"在但读不出头"分开数：
+    /// 前者是挂载卷掉了或文件被搬走，后者多半是没下完——处理动作完全不同</param>
     public sealed record Inspection(
-        bool Ok, int Width, int Height, string? Codec, string? Error, string? Fingerprint = null);
+        bool Ok, int Width, int Height, string? Codec, string? Error,
+        string? Fingerprint = null, bool Missing = false);
 
     /// <summary>
     /// 候选清单：有实体文件的版本行都算，默认跳过已经量过的。
@@ -67,7 +70,15 @@ public sealed class SourceScanner
     {
         var info = MediaProbe.Probe(row.FilePath);
         if (info is null)
-            return new Inspection(false, 0, 0, null, "文件不在，或读不出元数据（可能没下完／不是 MP4）");
+        {
+            // 只在探不出来的时候才多问一次存在性：这条路径本来就要放弃这一行，
+            // 一次 stat 的开销可以忽略，却把两种完全不同的故障分开了
+            var missing = !File.Exists(row.FilePath);
+            return new Inspection(false, 0, 0, null,
+                missing ? "文件不在盘上（卷没挂、被搬走，或还没下载完）"
+                        : "文件在，但读不出容器头（可能没下完／不是可解析的视频）",
+                Missing: missing);
+        }
 
         var (w, h, codec, _) = info.Value;
         if (w <= 0 || h <= 0)

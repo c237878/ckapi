@@ -51,6 +51,11 @@ builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 builder.Services.AddSingleton<ckapi.Services.McpService>();
 // 每日常规备份 + 轮转：进程长期不重启也得每天有份快照（详见 BackupService 注释）
 builder.Services.AddHostedService<ckapi.Services.BackupService>();
+// 每日自动增量扫描 + 每日盘上核对：同样跟着进程走，不靠外部 cron（详见 ScanScheduleService 注释）
+// 先注册单例再用工厂挂成 hosted service：面板要读的是"那个正在计时的实例"的结果，
+// 只写 AddHostedService 的话控制器按具体类型根本解析不到（没有对应的描述符）
+builder.Services.AddSingleton<ckapi.Services.ScanScheduleService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ckapi.Services.ScanScheduleService>());
 // 破坏性接口的管理口令门禁（设置-安全里开关；没设口令时不拦）
 builder.Services.AddScoped<ckapi.Utils.AdminTokenFilter>();
 

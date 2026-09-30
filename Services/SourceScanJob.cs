@@ -13,6 +13,9 @@ namespace ckapi.Services;
 ///
 /// 进程内单例、同一时刻只跑一个。重启会丢进度，但已写进去的分辨率都在，
 /// 重跑默认只挑没量过的（接口留了 force=true 全库重来，界面上不摆按钮）。
+///
+/// 每天自己起一次的是 <see cref="ScanScheduleService"/>，这里只负责"跑"和"跑成什么样"：
+/// 上一轮结果存成 <see cref="LastRun"/>，面板才答得出"今天扫过没有、读不出的是几个"。
 /// </summary>
 public sealed class SourceScanJob
 {
@@ -34,9 +37,18 @@ public sealed class SourceScanJob
     private volatile int _total;
     private volatile int _ok;
     private volatile int _missed;
+
+    /// <summary>missed 里"文件根本不在盘上"的那部分。剩下的就是"在，但读不出头"</summary>
+    private volatile int _missing;
+
+    private volatile bool _cancelled;
+    private volatile string _trigger = "手动";
     private volatile bool _force;
     private DateTime? _startedAt;
     private volatile string? _note;
+
+    /// <summary>上一轮的结果快照。定时任务没人盯着，跑完得有个地方能说"今天扫过了，读了多少"</summary>
+    private volatile RunResult? _lastRun;
 
     public SourceScanJob(SourceScanner scanner, SQLiteHelper db, ILogger<SourceScanJob> logger)
     {
@@ -47,7 +59,19 @@ public sealed class SourceScanJob
 
     public bool IsRunning => Volatile.Read(ref _running) == 1;
 
-    public (bool Started, string Message) Start(bool force)
+    /// <summary>上一轮的结果快照（没跑过为 null）。给健康检查用，避免它去解 Status() 那个匿名对象</summary>
+    public RunResult? LastRun => _lastRun;
+
+    /// <summary>
+    /// 一次扫描的结论。跑完才写，中途不更新——正在跑的那一轮看的是上面那些 volatile 计数。
+    /// Trigger 是"谁起的头"（手动 / 定时）；Missing 是 Missed 里"文件根本不在盘上"的那部分，
+    /// 剩下的才是"文件在、但读不出容器头"，两者的处理方式不一样。
+    /// </summary>
+    public sealed record RunResult(
+        string FinishedAt, string Trigger, bool Force, int Total, int Processed, int Ok,
+        int Missed, int Missing, bool Cancelled, string? Note);
+
+    public (bool Started, string Message) Start(bool force, string trigger = "手动")
     {
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             return (false, "扫描任务已经在跑了，先停下它");
@@ -56,6 +80,9 @@ public sealed class SourceScanJob
         _total = 0;
         _ok = 0;
         _missed = 0;
+        _missing = 0;
+        _cancelled = false;
+        _trigger = trigger;
         _force = force;
         _note = null;
         _startedAt = DateTime.UtcNow;
@@ -70,6 +97,7 @@ public sealed class SourceScanJob
     public void Stop()
     {
         if (!IsRunning) return;
+        _cancelled = true;
         _note = "已请求停止";
         _cts.Cancel();
     }
@@ -88,16 +116,19 @@ public sealed class SourceScanJob
             running = IsRunning,
             what = "分辨率",
             whatKey = "source",
+            trigger = _trigger,
             force = _force,
             processed,
             total,
             ok = _ok,
             missed = _missed,
+            missing = _missing,
             remaining,
             percent = total == 0 ? 0 : (int)Math.Round(processed * 100.0 / total),
             elapsed,
             etaSeconds = eta,
-            note = _note
+            note = _note,
+            lastRun = _lastRun
         };
     }
 
@@ -155,6 +186,8 @@ public sealed class SourceScanJob
                         if (ins is not { Ok: true })
                         {
                             _missed++;
+                            // 取消导致整批没跑完时 found[i] 会是 null，这里不能直接取属性
+                            if (ins?.Missing == true) _missing++;
                             continue;
                         }
 
@@ -174,9 +207,14 @@ public sealed class SourceScanJob
         {
             Interlocked.Exchange(ref _running, 0);
             sem.Dispose();
+            // 结果先落成快照再写日志：面板要在"上次扫描"那一行读到它，
+            // 而这一轮要是抛异常中断了，快照里的数字就是中断前那一刻的真实进度
+            _lastRun = new RunResult(
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), _trigger, _force, _total, _processed,
+                _ok, _missed, _missing, _cancelled, _note);
             _logger.LogInformation(
-                "片源扫描结束（{Mode}）：查 {Processed} 个，量到 {Ok} 个，读不出 {Missed} 个",
-                _force ? "重扫全部" : "只扫未量", _processed, _ok, _missed);
+                "片源扫描结束（{Mode}·{Trigger}）：查 {Processed} 个，量到 {Ok} 个，读不出 {Missed} 个（其中盘上没有 {Missing} 个）",
+                _force ? "重扫全部" : "只扫未量", _trigger, _processed, _ok, _missed, _missing);
         }
     }
 }

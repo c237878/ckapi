@@ -147,7 +147,7 @@ public class SystemStatusController : ControllerBase
             "notice",
             @"SELECT COUNT(*) FROM video_files WHERE IFNULL(file_path, '') <> '' AND IFNULL(file_size, 0) = 0",
             null,
-            Hint: "扫描还没轮到，或者文件确实不在盘上——这一条要结合「深度自检」才知道是哪种"),
+            Hint: "扫描只挑有 file_size 的行，所以这一类永远轮不到；每天的盘上核对会直接告它是没下完还是根本不在（看面板底部「盘上核对」）"),
 
         new("res_missing",
             "有文件但分辨率还没扫",
@@ -170,15 +170,17 @@ public class SystemStatusController : ControllerBase
     private readonly Utils.SQLiteHelper _db;
     private readonly IConfiguration _config;
     private readonly SourceScanJob _scanJob;
+    private readonly ScanScheduleService _scanSchedule;
     private readonly ScrapeJob _scrapeJob;
 
     public SystemStatusController(ILogger<SystemStatusController> logger, Utils.SQLiteHelper db,
-        IConfiguration config, SourceScanJob scanJob, ScrapeJob scrapeJob)
+        IConfiguration config, SourceScanJob scanJob, ScanScheduleService scanSchedule, ScrapeJob scrapeJob)
     {
         _logger = logger;
         _db = db;
         _config = config;
         _scanJob = scanJob;
+        _scanSchedule = scanSchedule;
         _scrapeJob = scrapeJob;
     }
 
@@ -367,6 +369,15 @@ public class SystemStatusController : ControllerBase
                 {
                     sourceScan = _scanJob.IsRunning,
                     scrape = _scrapeJob.IsRunning
+                },
+                // 扫描的"跑成什么样"：面板要能回答今天定时扫过没有、量到几个、盘上少了几个。
+                // 这些不是 SQL 不变量（要么得逐条 stat，要么根本是内存里的任务状态），
+                // 所以放这儿而不是 checks
+                scan = new
+                {
+                    running = _scanJob.IsRunning,
+                    lastRun = _scanJob.LastRun,
+                    schedule = _scanSchedule.Status()
                 },
                 checkedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
             }
