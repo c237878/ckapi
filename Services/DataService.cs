@@ -26,6 +26,9 @@ public class DataService : IDataService
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
     private const int TargetVersion = 12;
 
+    /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
+    public static int SchemaTargetVersion => TargetVersion;
+
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
     /// 在构造函数里赋值：v2 步骤要用实例日志器，而字段初始化器不能引用实例成员。
