@@ -14,9 +14,9 @@ namespace ckapi.Controllers;
 /// 所以把它们写成一条命令就能跑完的断言集，而不是靠人想起来去抽查。
 ///
 /// 这里**只做纯 SQL 断言**（整库量级毫秒到几十毫秒，进一次设置页跑一遍没问题）。
-/// 需要读挂载卷的那些——file_path 死链、封面文件是否真在盘上、图片目录与库是否相符——
-/// 一条都不放在这儿：全库 stat 是四千多次网络往返（SMB 上 0.1~0.5 秒一次），
-/// 同步接口不能答应这种成本，它们属于"深度自检"任务，另说。
+/// 需要读挂载卷的那些——file_path 死链、封面文件是否真在盘上——一条都不放在这儿：
+/// 全库 stat 是四千多次网络往返（SMB 上 0.1~0.5 秒一次），同步接口不能答应这种成本。
+/// 那部分已经做成了后台每天跑一轮的"盘上核对"，结果也在这个面板上（见 ScanScheduleService）。
 /// </summary>
 [ApiController]
 [Route("api/system")]
@@ -176,9 +176,12 @@ public class SystemStatusController : ControllerBase
     private readonly SourceScanJob _scanJob;
     private readonly ScanScheduleService _scanSchedule;
     private readonly ScrapeJob _scrapeJob;
+    private readonly BackupService _backup;
+    private readonly IServiceScopeFactory _scopes;
 
     public SystemStatusController(ILogger<SystemStatusController> logger, Utils.SQLiteHelper db,
-        IConfiguration config, SourceScanJob scanJob, ScanScheduleService scanSchedule, ScrapeJob scrapeJob)
+        IConfiguration config, SourceScanJob scanJob, ScanScheduleService scanSchedule, ScrapeJob scrapeJob,
+        BackupService backup, IServiceScopeFactory scopes)
     {
         _logger = logger;
         _db = db;
@@ -186,6 +189,8 @@ public class SystemStatusController : ControllerBase
         _scanJob = scanJob;
         _scanSchedule = scanSchedule;
         _scrapeJob = scrapeJob;
+        _backup = backup;
+        _scopes = scopes;
     }
 
     /// <summary>
@@ -286,13 +291,105 @@ public class SystemStatusController : ControllerBase
     {
         try
         {
-            return Ok(new { success = true, data = BackupService.Status(_db.GetDbPath(), _db.GetBackupPath()) });
+            return Ok(new { success = true, data = _backup.Status() });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "读取备份概况失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
+    }
+
+    /// <summary>请求体：快照目录与新名字。都是界面表单里直接填的那两个值。</summary>
+    public sealed record BackupDirRequest(string? Path, bool RemoveSource = true);
+    public sealed record RestoreRequest(string Name);
+
+    /// <summary>
+    /// 马上存一份快照（文件名带时刻）。只是往快照目录里**加**一个文件，不删不改任何东西，
+    /// 所以没挂管理口令；同一分钟内重复点会得到同一个文件名，不会堆出十几份。
+    /// </summary>
+    [HttpPost("backup/now")]
+    public IActionResult BackupNow()
+    {
+        var (created, message, file) = _backup.BackupNow();
+        return Ok(new { success = true, message, data = new { file, created, backups = _backup.Status() } });
+    }
+
+    /// <summary>只改"以后往哪儿写"，不动已有文件。传空 path 就是退回配置文件里那份默认目录。</summary>
+    [HttpPost("backup/dir")]
+    public IActionResult SetBackupDir([FromBody] BackupDirRequest req)
+    {
+        var (ok, message) = _backup.SetDir(req.Path);
+        return Ok(new { success = ok, message, data = _backup.Status() });
+    }
+
+    /// <summary>
+    /// 把已有快照搬（或复制）到新目录。**会删源文件**（removeSource=true 时），所以挂口令；
+    /// 而且只搬自己命名的那些 ckplayer_*.db，同一目录里别的项目的文件一律留在原地。
+    /// </summary>
+    [Utils.AdminToken]
+    [HttpPost("backup/transfer")]
+    public IActionResult TransferBackupDir([FromBody] BackupDirRequest req)
+    {
+        var (ok, message, moved, skipped, bytes) = _backup.TransferTo(req.Path, req.RemoveSource);
+        if (ok) _logger.LogInformation("快照目录转移：{Message}", message);
+        return Ok(new
+        {
+            success = ok,
+            message,
+            data = new { moved, skipped, bytes, backups = _backup.Status() }
+        });
+    }
+
+    /// <summary>删掉一份快照。删文件是 irreversible 的，挂口令 + 界面二次确认。</summary>
+    [Utils.AdminToken]
+    [HttpDelete("backup/{name}")]
+    public IActionResult DeleteBackup(string name)
+    {
+        var (ok, message) = _backup.DeleteOne(name);
+        return Ok(new { success = ok, message, data = _backup.Status() });
+    }
+
+    /// <summary>
+    /// 恢复到指定快照：先给当前库存一份 pre-restore 凭证，再把快照灌回当前库，最后立刻重跑一次
+    /// 初始化把结构补到当前版本（恢复 11 号那份旧快照时会自动跑 11→12→13→14，实测过）。
+    /// 丢口令 + 界面二次确认才走到这儿；扫描在跑的时候先拒绝，别让一边写一边被整库替换。
+    /// </summary>
+    [Utils.AdminToken]
+    [HttpPost("restore")]
+    public IActionResult Restore([FromBody] RestoreRequest req)
+    {
+        if (_scanJob.IsRunning)
+            return Ok(new { success = false, message = "片源扫描正在写库，先等它跑完（列表页可以停）再恢复" });
+
+        var (ok, message, info) = _backup.RestoreFrom(req.Name);
+        if (!ok) return Ok(new { success = false, message });
+
+        // 结构补齐：老快照的 user_version 比代码低，不补的话界面一碰到新列就报错
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            scope.ServiceProvider.GetRequiredService<IDataService>().Initialize();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "恢复后补结构失败");
+            return Ok(new
+            {
+                success = false,
+                message = $"数据已经按 {info!.Snapshot} 灌回来了，但补结构时出错，请重启后端让它再补一次（{ex.Message}）",
+                data = new { restore = info, final = _backup.Now(), backups = _backup.Status() }
+            });
+        }
+
+        // 补完结构再读一次：恢复 09-13 那种老快照时，版本行是这一步才建出来的，
+        // 用灌回那一刻的数字报"0 个版本"会让人以为恢复把数据弄没了
+        return Ok(new
+        {
+            success = true,
+            message = $"{message}；恢复前的库存在 {info!.PreRestoreFile}",
+            data = new { restore = info, final = _backup.Now(), backups = _backup.Status() }
+        });
     }
 
     /// <summary>

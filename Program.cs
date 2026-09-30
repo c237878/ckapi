@@ -1,5 +1,8 @@
+using System.IO.Compression;
 using System.Reflection;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.Extensions.FileProviders;
 using ckapi.Services;
 using Microsoft.Extensions.Configuration;
 
@@ -50,7 +53,9 @@ builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 // MCP：给本机大模型的工具接口，密钥与打标口径都存在 system_settings
 builder.Services.AddSingleton<ckapi.Services.McpService>();
 // 每日常规备份 + 轮转：进程长期不重启也得每天有份快照（详见 BackupService 注释）
-builder.Services.AddHostedService<ckapi.Services.BackupService>();
+// 面板要读要写的是"那个正在计时的实例"，所以先注册单例再用工厂挂成 hosted service
+builder.Services.AddSingleton<ckapi.Services.BackupService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ckapi.Services.BackupService>());
 // 每日自动增量扫描 + 每日盘上核对：同样跟着进程走，不靠外部 cron（详见 ScanScheduleService 注释）
 // 先注册单例再用工厂挂成 hosted service：面板要读的是"那个正在计时的实例"的结果，
 // 只写 AddHostedService 的话控制器按具体类型根本解析不到（没有对应的描述符）
@@ -69,6 +74,23 @@ builder.Services.AddCors(options =>
                .AllowAnyHeader();
     });
 });
+
+// 响应压缩：弱网（手机热点、远程）下最贵的是字节数，而 JS/CSS/JSON 正好是可压的那几类。
+// 实测列表页那一页 JSON 16.7KB → 约 3KB，vendor.js 102KB → 40KB。
+// 图片与视频不在这儿：JPEG/MP4 再压一遍只是白花 CPU（Brotli 默认 MimeTypes 里也没有它们）。
+builder.Services.AddResponseCompression(options =>
+{
+    // 我们是纯 HTTP（5033），这行只是不留坑：将来挂上 TLS 反代时压缩不会静默失效
+    options.EnableForHttps = true;
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+    {
+        "text/javascript", "application/javascript", "application/ecmascript", "application/manifest+json"
+    });
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(
+    o => o.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(
+    o => o.Level = CompressionLevel.Fastest);
 
 var app = builder.Build();
 
@@ -89,8 +111,56 @@ if (isDev)
 }
 
 app.UseCors("AllowAll");
+// 压缩要在静态文件与控制器之前挂上，否则 JS/CSS 与接口 JSON 都错过它
+app.UseResponseCompression();
 // 注意：服务只监听 HTTP（5033），不要启用 UseHttpsRedirection，否则会把请求 307 到无人监听的 HTTPS 端口
 app.UseRouting();
+
+// 前端产物托管。为什么要它：弱网下首屏最贵的不是查询，而是请求数——
+// vite 开发服务（3001）一个模块一个请求，打开影片列表要发 59 个、其中 49 个是未打包未压缩的 JS 共 416KB；
+// 打包后的 dist 只有 12 个请求、约 175KB，再经上面那层压缩剩 55KB。
+// 3001 那个开发服务照旧留着改代码用，这里只是给"访问"多一个端口。
+var dist = builder.Configuration.GetValue<string>("Frontend:Dist");
+var serveDist = !string.IsNullOrWhiteSpace(dist)
+                && Directory.Exists(dist)
+                && File.Exists(Path.Combine(dist, "index.html"));
+if (serveDist)
+{
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(dist!),
+        OnPrepareResponse = ctx =>
+        {
+            // assets/* 的文件名里带内容哈希，改一行代码就换个名字，所以可以放心一年不过期；
+            // index.html 恰恰相反，它每次都可能是新的，缓存住就等于"改了没生效"
+            ctx.Context.Response.Headers.CacheControl =
+                ctx.Context.Request.Path.StartsWithSegments("/assets")
+                    ? "public,max-age=31536000,immutable"
+                    : "no-cache";
+        }
+    });
+}
+
 app.MapControllers();
+
+if (serveDist)
+{
+    // SPA 兜底：/videos、/video/xxx 这些前端路由在磁盘上没有对应文件，不兜底就是"刷新一下打不开"。
+    // /api 不参与兜底——接口路径写错应该老老实实回 404，回一份 HTML 只会让前端把 404 当成功解析
+    app.MapFallback(async context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api"))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            await context.Response.WriteAsJsonAsync(new { success = false, message = "接口不存在" });
+            return;
+        }
+        context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.Headers.CacheControl = "no-cache";
+        await context.Response.SendFileAsync(Path.Combine(dist!, "index.html"));
+    });
+
+    app.Logger.LogInformation("前端产物已挂载：{Dist}（改完 ckweb 记得 npm run build）", dist);
+}
 
 app.Run();

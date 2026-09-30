@@ -10,14 +10,20 @@ public class SQLiteHelper
 {
     private readonly string _connectionString;
     private readonly string _dbPath;
-    private readonly string? _backupPath;
+    private readonly string? _backupPathDefault;
     private readonly ILogger<SQLiteHelper> _logger;
+
+    /// <summary>
+    /// 界面上设过的备份目录（system_settings.backup_dir）。空表示"没设过"，用 appsettings 里那份。
+    /// 备份目录跨项目共用，所以他随时能把它挪到一个只放本程序快照的目录去。
+    /// </summary>
+    private string? _backupPathOverride;
 
     public SQLiteHelper(IConfiguration configuration, ILogger<SQLiteHelper> logger)
     {
         _logger = logger;
         var connStr = configuration.GetConnectionString("DefaultConnection") ?? "Data Source=ckweb.db";
-        _backupPath = NullIfEmpty(configuration["ConnectionStrings:BackupPath"]);
+        _backupPathDefault = NullIfEmpty(configuration["ConnectionStrings:BackupPath"]);
 
         // 从连接串解析数据库文件，避免对 "Data Source=x;Mode=..." 这类多参串做字符串替换
         var builder = new SqliteConnectionStringBuilder(connStr);
@@ -37,8 +43,23 @@ public class SQLiteHelper
 
     public string GetDbPath() => _dbPath;
 
-    /// <summary>备份目录，未配置时返回 null。</summary>
-    public string? GetBackupPath() => _backupPath;
+    /// <summary>备份目录，未配置时返回 null。界面上设过就以界面为准。</summary>
+    public string? GetBackupPath() => Volatile.Read(ref _backupPathOverride) ?? _backupPathDefault;
+
+    /// <summary>appsettings 里那份默认值，用来在界面上说清"现在生效的是界面值还是配置文件值"。</summary>
+    public string? GetDefaultBackupPath() => _backupPathDefault;
+
+    /// <summary>
+    /// 设/清备份目录。传空 = 清掉界面值、回到 appsettings 那份。
+    /// 只管内存里的这一把，落库由调用方负责（备份动作发生在建表之前，所以启动时也要能喂给它）。
+    /// </summary>
+    public void SetBackupPathOverride(string? path)
+    {
+        var value = NullIfEmpty(path);
+        Volatile.Write(ref _backupPathOverride, value);
+        _logger.LogInformation("快照目录改用：{Path}（配置里那份是 {Default}）",
+            value ?? "(未设，用配置默认)", _backupPathDefault ?? "(配置里没写)");
+    }
 
     /// <summary>
     /// 取一条**已打开**并配好连接级参数的连接。
@@ -139,18 +160,16 @@ public class SQLiteHelper
     /// <param name="tag">文件名后缀，用于结构迁移前的即时快照 —— 它不能被当天的常规快照顶掉</param>
     public bool BackupDatabase(string reason, bool force = false, string? tag = null)
     {
-        if (string.IsNullOrEmpty(_backupPath))
-            return false;
+        var backupDir = GetBackupPath();
+        if (string.IsNullOrEmpty(backupDir)) return false;
 
-        if (!Directory.Exists(_backupPath))
+        if (!Directory.Exists(backupDir))
         {
-            _logger.LogWarning("备份目录不存在，跳过备份（{BackupPath}）", _backupPath);
+            _logger.LogWarning("备份目录不存在，跳过备份（{BackupPath}）", backupDir);
             return false;
         }
 
-        var fileName = $"{Path.GetFileNameWithoutExtension(_dbPath)}_{DateTime.Now:yyyy-MM-dd}";
-        if (!string.IsNullOrEmpty(tag)) fileName += $"_{tag}";
-        var backupFile = Path.Combine(_backupPath, fileName + Path.GetExtension(_dbPath));
+        var backupFile = Path.Combine(backupDir, BuildBackupFileName(tag) + Path.GetExtension(_dbPath));
 
         if (!force && File.Exists(backupFile))
             return false;
@@ -171,6 +190,17 @@ public class SQLiteHelper
             _logger.LogError(ex, "数据库备份失败: {BackupFile}", backupFile);
             return false;
         }
+    }
+
+    /// <summary>
+    /// 快照文件名：库名_yyyy-MM-dd[_tag].db。命名规则只有这一处——
+    /// 界面点了「马上备份一份」要回显它写了哪个文件，不能各自拼一遍字符串。
+    /// </summary>
+    public string BuildBackupFileName(string? tag = null)
+    {
+        var fileName = $"{Path.GetFileNameWithoutExtension(_dbPath)}_{DateTime.Now:yyyy-MM-dd}";
+        if (!string.IsNullOrEmpty(tag)) fileName += $"_{tag}";
+        return fileName;
     }
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;

@@ -369,31 +369,10 @@ public class ScanScheduleService : BackgroundService
     }
 
     /// <summary>记一笔"这一轮是什么时候开始的"</summary>
-    private void MarkRunStarted() => WriteSetting(SettingLastRun, DateTime.Now.ToString(TimeFormat));
-
-    /// <summary>
-    /// 覆盖式写入。system_settings.name 上没有唯一约束，ON CONFLICT 会直接报错，
-    /// 所以按现有惯例先删再插（同 SecurityController / TaxonomyController 的写法）。
-    /// </summary>
-    private void WriteSetting(string name, string content)
+    private void MarkRunStarted()
     {
-        var now = DateTime.Now.ToString(TimeFormat);
         using var conn = _db.GetConnection();
-        conn.Open();
-        using var tx = conn.BeginTransaction();
-        using (var del = new SqliteCommand("DELETE FROM system_settings WHERE name = @n", conn, tx))
-        {
-            del.Parameters.AddWithValue("@n", name);
-            del.ExecuteNonQuery();
-        }
-        using var ins = new SqliteCommand(
-            "INSERT INTO system_settings (id, name, content, ctime, utime) VALUES (@id, @n, @c, @t, @t)", conn, tx);
-        ins.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
-        ins.Parameters.AddWithValue("@n", name);
-        ins.Parameters.AddWithValue("@c", content);
-        ins.Parameters.AddWithValue("@t", now);
-        ins.ExecuteNonQuery();
-        tx.Commit();
+        SettingStore.Upsert(conn, SettingLastRun, DateTime.Now.ToString(TimeFormat));
     }
 
     /// <summary>

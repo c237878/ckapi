@@ -530,7 +530,14 @@ public class DataService : IDataService
 
         // 4) 每部活下来的片各建一条原版行：番号就是它的文件名标识，is_default=1
         var foldIds = InList(folded.Select(x => x.Id));
-        var exclude = folded.Count == 0 ? "" : $"WHERE v.id NOT IN ({foldIds}) AND";
+        // 那句"已经建过默认行的就别再建"永远要在，但 WHERE 只能出现一次：
+        // 原先把 exclude 拼成空串时，SQL 直接变成 `FROM videos v NOT EXISTS (...)` ——
+        // 库里一条解说片都没有（早期的备份、按快照恢复回来的旧库都是这种）就报
+        // near "EXISTS": syntax error，迁移整条挂在这儿
+        var alreadyDefault = "NOT EXISTS (SELECT 1 FROM video_files f WHERE f.video_id = v.id AND f.is_default = 1)";
+        var where = folded.Count == 0
+            ? $"WHERE {alreadyDefault}"
+            : $"WHERE v.id NOT IN ({foldIds}) AND {alreadyDefault}";
         var made = NonQuery(conn, $@"
             INSERT INTO video_files (id, video_id, code, type_id, label, file_path, file_size,
                                      res_w, res_h, subtitle_state, watermark_state, scan_time, is_default, ctime)
@@ -538,8 +545,7 @@ public class DataService : IDataService
                    IFNULL(v.file_path, ''), IFNULL(v.file_size, 0), v.res_w, v.res_h,
                    IFNULL(v.subtitle_state, 'unknown'), IFNULL(v.watermark_state, 'unknown'), v.scan_time, 1, v.ctime
             FROM videos v
-            {exclude}
-              NOT EXISTS (SELECT 1 FROM video_files f WHERE f.video_id = v.id AND f.is_default = 1)");
+            {where}");
         _logger.LogInformation("已为 {Made} 部片建出默认版本行", made);
 
         // 5) 删掉被折走的解说影片行。它挂的演员与系列父片都有（实测差集为 0），点赞 0 条，
@@ -731,12 +737,18 @@ public class DataService : IDataService
 
             var isFresh = !TableExists(conn, "videos");
 
+            // 快照目录可以在界面上改（存 system_settings.backup_dir），必须在下面这份"迁移前快照"之前
+            // 交给 SQLiteHelper，否则最要紧的那份凭证还会写到旧目录里去
+            ApplyBackupDir(conn);
+
             // 结构迁移前必须留一份即时快照，且不能被"当天已有常规快照"顶掉：
             // 实测过一次 07:42 的常规快照让 22:32 的迁移跳过了备份，纯属侥幸。
+            // 名字里带时刻，是因为一天可能迁两次（早上一轮、按快照恢复完又补一轮）——
+            // 用 force 覆盖同一天的 pre-migration 等于把第一次那份凭证弄丢
             var pendingMigration = !isFresh && GetVersion(conn) < TargetVersion;
             _db.BackupDatabase(pendingMigration ? "结构迁移前" : "启动",
                 force: pendingMigration,
-                tag: pendingMigration ? "pre-migration" : null);
+                tag: pendingMigration ? $"pre-migration-{DateTime.Now:HHmm}" : null);
 
             CreateBaseTables(conn);
 
@@ -801,6 +813,25 @@ public class DataService : IDataService
         => NonQuery(conn, $"PRAGMA user_version = {version}");
 
     private static void Analyze(SqliteConnection conn) => NonQuery(conn, "ANALYZE");
+
+    /// <summary>
+    /// 把界面上设过的快照目录交给 SQLiteHelper。表还没建、或压根没设过，就什么都不做——
+    /// 那时用的是 appsettings 里那份默认值。读失败也只退回默认，不该让库起不来。
+    /// </summary>
+    private void ApplyBackupDir(SqliteConnection conn)
+    {
+        try
+        {
+            if (!TableExists(conn, "system_settings")) return;
+            var configured = Scalar(conn, "SELECT content FROM system_settings WHERE name = @n",
+                P("@n", BackupService.SettingDir))?.ToString();
+            if (!string.IsNullOrWhiteSpace(configured)) _db.SetBackupPathOverride(configured);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "读取快照目录设置失败，这一轮先用配置文件里那份");
+        }
+    }
 
     // ---------------------------------------------------------------- 基线结构
 
