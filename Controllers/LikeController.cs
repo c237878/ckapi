@@ -77,7 +77,7 @@ public class LikeController : ControllerBase
                 total = Convert.ToInt32(countCmd.ExecuteScalar());
 
                 var sql = $@"
-                    SELECT vl.id, vl.video_id, vl.liked_at, vl.target_type, vl.file_id,
+                    SELECT vl.id, vl.video_id, vl.liked_at, vl.target_type, vl.file_id, vl.play_time,
                            v.name as video_name, v.code as video_code, v.cover_path as video_cover,
                            lf.code as version_code,
                            (SELECT vt.name FROM version_types vt WHERE vt.id = lf.type_id) as version_type,
@@ -121,7 +121,10 @@ public class LikeController : ControllerBase
                             fileId = Str(reader, "file_id"),
                             versionCode = Str(reader, "version_code"),
                             // 类型名优先（湿姐），没有类型才用版本名称，与 VideoFiles.DisplayName 同一口径
-                            versionName = Str(reader, "version_type") ?? Str(reader, "version_label")
+                            versionName = Str(reader, "version_type") ?? Str(reader, "version_label"),
+                            // 点赞那一刻的播放位置（秒，v12）。老记录没有就是 null，
+                            // 前端显示"—"而不是 0：0 会被读成"片头就点了赞"
+                            playTime = reader["play_time"] == DBNull.Value ? (double?)null : Convert.ToDouble(reader["play_time"])
                         });
                     }
                 }

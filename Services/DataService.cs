@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 11;
+    private const int TargetVersion = 12;
 
     /// <summary>
     /// 历史库追赶路径。键为"应用此步骤后达到的版本"，只执行 user_version 之下的步骤。
@@ -632,6 +632,21 @@ public class DataService : IDataService
                 SELECT COUNT(*) FROM (SELECT video_id FROM video_files GROUP BY video_id HAVING COUNT(*) > 1)") ?? 0));
     }
 
+    /// <summary>
+    /// v12：video_likes 加 play_time（REAL，秒，可空）——点赞那一刻的播放位置。
+    ///
+    /// 为什么要存：一部片里被点赞的那些时间点就是"精彩瞬间"的原始材料，攒着以后能做集锦；
+    /// 现在不存，以后想知道"她当时看到哪儿点的赞"就再也问不回来了。
+    /// 位置属于**这一版**的时间轴（原版 119 分钟、解说版 21 分钟，同一个数字不是同一个画面），
+    /// 所以它和 file_id 是成对读的，单独一个数没有意义。
+    ///
+    /// 只加列，不回填：老记录当时没这个信息，猜不出来，留 NULL 让界面显示"—"。
+    /// </summary>
+    private void AddLikePlayTime(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "video_likes", "play_time", "REAL");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -655,6 +670,7 @@ public class DataService : IDataService
             .Append((9, "片商收成 videos.studioid 单值，删掉 video_studios（见 StudioToOneColumn 注释）", StudioToOneColumn))
             .Append((10, "撤掉题材标签与关联合辑六张表（见 DropTagAndGroups 注释）", DropTagAndGroups))
             .Append((11, "文件层拆到 video_files，解说片折回父片当版本（见 SplitVideoFiles 注释）", SplitVideoFiles))
+            .Append((12, "点赞记录带上点赞那一刻的播放进度 play_time（见 AddLikePlayTime 注释）", AddLikePlayTime))
             .ToArray();
     }
 
@@ -964,7 +980,8 @@ public class DataService : IDataService
                 video_id    TEXT    NOT NULL,
                 liked_at    TEXT    NOT NULL,
                 target_type TEXT    NOT NULL DEFAULT 'video',
-                file_id     TEXT
+                file_id     TEXT,
+                play_time   REAL
             )");
 
         NonQuery(conn, @"

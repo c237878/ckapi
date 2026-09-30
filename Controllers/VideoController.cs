@@ -450,7 +450,7 @@ public class VideoController : ControllerBase
     /// file_id 与 video_id 都存：前者用于榜单按版本分条，后者用于"这部片一共被赞几次"。
     /// </summary>
     [HttpPost("{id}/like")]
-    public IActionResult LikeVideo(string id, [FromQuery] string? fileId = null)
+    public IActionResult LikeVideo(string id, [FromQuery] string? fileId = null, [FromQuery] double? time = null)
     {
         try
         {
@@ -474,14 +474,20 @@ public class VideoController : ControllerBase
                     return Ok(new { success = false, message = "这一版不属于这部片" });
             }
 
-            // 插入点赞记录
+            // 插入点赞记录。play_time 是点赞那一刻的播放位置（秒，v12）：
+            // 从列表页/卡片点进来没有播放器，就没有这个值，留 NULL 而不是 0——
+            // 0 会被读成"片头就点了赞"，NULL 才是"当时不知道"
+            double? playTime = time is not null && double.IsFinite(time.Value) && time.Value >= 0
+                ? Math.Round(time.Value, 1)
+                : null;
             var likedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             using (var insertCmd = new SqliteCommand(
-                       "INSERT INTO video_likes (video_id, liked_at, target_type, file_id) VALUES (@videoId, @likedAt, 'video', @fileId)", conn))
+                       "INSERT INTO video_likes (video_id, liked_at, target_type, file_id, play_time) VALUES (@videoId, @likedAt, 'video', @fileId, @playTime)", conn))
             {
                 insertCmd.Parameters.Add(new SqliteParameter("@videoId", id));
                 insertCmd.Parameters.Add(new SqliteParameter("@likedAt", likedAt));
                 insertCmd.Parameters.Add(new SqliteParameter("@fileId", (object?)targetFileId ?? DBNull.Value));
+                insertCmd.Parameters.Add(new SqliteParameter("@playTime", (object?)playTime ?? DBNull.Value));
                 insertCmd.ExecuteNonQuery();
             }
 
