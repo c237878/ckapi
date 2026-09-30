@@ -48,6 +48,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? watermark = null,
         [FromQuery] string? resolution = null,
         [FromQuery] string? studio = null,
+        [FromQuery] string? typeId = null,
         [FromQuery] bool? prioritizeUnrated = null,
         [FromQuery] string? sortBy = null)
     {
@@ -104,12 +105,23 @@ public class VideoController : ControllerBase
                 StudioId = studio, HasFile = hasFile
             });
 
+            // 按版本类型筛（设置里「看这一类型下有哪些影片」走这里）：df 从"默认那一版"
+            // 换成"该类型那一版"。一部片同一个类型只能有一条（v12），所以仍是一对一，
+            // 卡片上的大小/分辨率/两维状态也跟着变成这一版的——筛的就是它，数字该说它的
+            var fileJoin = VideoCardQuery.FileJoin;
+            if (!string.IsNullOrEmpty(typeId))
+            {
+                fileJoin = "LEFT JOIN video_files df ON df.video_id = v.id AND df.type_id = @typeId";
+                whereClause += " AND df.type_id = @typeId";
+                parameters.Add(new SqliteParameter("@typeId", typeId));
+            }
+
             using var conn = GetConnection();
             conn.Open();
 
             // 总数（原先这里另开了一条连接，与列表查询各一次握手）
             // 挂默认版本行：文件层筛选（字幕/水印/分辨率/有无文件）看的是它，不挂就没有 df 这个别名
-            var countSql = $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM videos v {fileJoin} {whereClause}";
             int total;
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
@@ -121,7 +133,7 @@ public class VideoController : ControllerBase
             var sql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
-                {VideoCardQuery.FileJoin}
+                {fileJoin}
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
                 ORDER BY " + orderBy + @"
