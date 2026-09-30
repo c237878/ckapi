@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 13;
+    private const int TargetVersion = 14;
 
     /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
     public static int SchemaTargetVersion => TargetVersion;
@@ -669,6 +669,18 @@ public class DataService : IDataService
             )");
     }
 
+    /// <summary>
+    /// v14：video_files 加 fingerprint，用来发现"同一部片重复入库"。
+    ///
+    /// 只加列不回填：回填要读三千多个文件的头尾，那是几十分钟级的活，不该塞在一次启动迁移里。
+    /// 由扫描顺手补（SourceScanner.Pending 把"指纹还空着"也当候选），跑一次普通扫描就齐了。
+    /// 索引故意不是唯一的：重复是"给人看的证据"，不是"该被数据库拒绝的错误"。
+    /// </summary>
+    private void AddFingerprint(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "video_files", "fingerprint", "TEXT");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -694,6 +706,7 @@ public class DataService : IDataService
             .Append((11, "文件层拆到 video_files，解说片折回父片当版本（见 SplitVideoFiles 注释）", SplitVideoFiles))
             .Append((12, "点赞记录带上点赞那一刻的播放进度 play_time（见 AddLikePlayTime 注释）", AddLikePlayTime))
             .Append((13, "播放进度搬到服务端 file_state 表（见 AddFileState 注释）", AddFileState))
+            .Append((14, "版本行加内容指纹 fingerprint（见 AddFingerprint 注释）", AddFingerprint))
             .ToArray();
     }
 
@@ -836,6 +849,9 @@ public class DataService : IDataService
                 subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
                 watermark_state TEXT    NOT NULL DEFAULT 'unknown',
                 scan_time       TEXT,
+                /* 内容指纹：头尾各 64KB + 大小的 SHA256，带算法前缀。
+                   空 = 还没扫到；由扫描任务顺手补，不在启动迁移里回填 */
+                fingerprint     TEXT,
                 /* 当前作为影片口径的那一版：列表筛选、统计、卡片字段都走它。
                    用户可以设任意一版为默认，所以它与文件名无关 */
                 is_default      INTEGER NOT NULL DEFAULT 0,
@@ -1126,6 +1142,7 @@ public class DataService : IDataService
             ("idx_video_files_video", "CREATE INDEX IF NOT EXISTS idx_video_files_video ON video_files(video_id, is_default DESC, code)"),
             ("idx_video_files_code", "CREATE INDEX IF NOT EXISTS idx_video_files_code ON video_files(code)"),
             ("idx_video_files_type", "CREATE INDEX IF NOT EXISTS idx_video_files_type ON video_files(type_id)"),
+            ("idx_video_files_fingerprint", "CREATE INDEX IF NOT EXISTS idx_video_files_fingerprint ON video_files(fingerprint)"),
             // 点赞榜/最近点赞按版本取记录；删除版本行时要按 file_id 找点赞
             ("idx_video_likes_file", "CREATE INDEX IF NOT EXISTS idx_video_likes_file ON video_likes(file_id)"),
         };

@@ -31,8 +31,9 @@ public sealed class SourceScanner
     /// <param name="Height">显示高</param>
     /// <param name="Codec">视频轨 fourcc，只用于日志</param>
     /// <param name="Error">探不出来的原因</param>
+    /// <param name="Fingerprint">内容指纹；读不出来时为 null，写回时保留原值而不是清空</param>
     public sealed record Inspection(
-        bool Ok, int Width, int Height, string? Codec, string? Error);
+        bool Ok, int Width, int Height, string? Codec, string? Error, string? Fingerprint = null);
 
     /// <summary>
     /// 候选清单：有实体文件的版本行都算，默认跳过已经量过的。
@@ -41,12 +42,14 @@ public sealed class SourceScanner
     /// </summary>
     public List<Row> Pending(SqliteConnection conn, bool force)
     {
+        // 候选 = 还没量分辨率的，或还没算指纹的。后者让"补指纹"不需要单独一个任务：
+        // 跑一次普通扫描就顺带补齐。
         var sql = $@"
             SELECT id, file_path, IFNULL(file_size, 0) AS fs
             FROM video_files
             WHERE IFNULL(file_size, 0) > 0
               AND file_path <> ''
-              {(force ? "" : "AND (res_w IS NULL OR res_h IS NULL OR res_h <= 0)")}
+              {(force ? "" : "AND (res_w IS NULL OR res_h IS NULL OR res_h <= 0 OR fingerprint IS NULL)")}
             ORDER BY id";
 
         var rows = new List<Row>();
@@ -70,19 +73,26 @@ public sealed class SourceScanner
         if (w <= 0 || h <= 0)
             return new Inspection(false, 0, 0, codec, "容器头里没有画面宽高");
 
-        return new Inspection(true, w, h, codec, null);
+        // 指纹顺手算：探测本来就要开这个文件读盒头，多读头尾各 64KB 是同一趟 SMB 连接上的
+        // 两次小读，比单独跑一轮"全库补指纹"便宜得多
+        return new Inspection(true, w, h, codec, null, Utils.FileFingerprint.Compute(row.FilePath));
     }
 
     /// <summary>把探测结果写进去。tx 由批量任务给，一整批一个事务。</summary>
     public void Write(SqliteConnection conn, SqliteTransaction? tx, Row row, Inspection ins)
     {
+        // 指纹读不到就别把已有的抹掉（挂载盘抖一下不该让数据倒退），所以用 COALESCE
         const string sql = @"
-            UPDATE video_files SET res_w = @w, res_h = @h, scan_time = @t WHERE id = @id";
+            UPDATE video_files
+            SET res_w = @w, res_h = @h, scan_time = @t,
+                fingerprint = COALESCE(@fp, fingerprint)
+            WHERE id = @id";
 
         using var cmd = new SqliteCommand(sql, conn, tx);
         cmd.Parameters.AddWithValue("@w", ins.Width);
         cmd.Parameters.AddWithValue("@h", ins.Height);
         cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        cmd.Parameters.AddWithValue("@fp", (object?)ins.Fingerprint ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@id", row.FileId);
         cmd.ExecuteNonQuery();
     }

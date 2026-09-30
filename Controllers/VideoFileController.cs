@@ -27,6 +27,93 @@ public class VideoFileController : ControllerBase
     }
 
     /// <summary>
+    /// 疑似重复：内容指纹相同、但挂在不同影片/不同版本行上的文件。
+    ///
+    /// 只报证据，不自动合并也不自动删——理由与演员合并那条一致：
+    /// "同一个指纹"说明的是文件内容相同，至于该留哪一条（哪条的番号是对的、哪条有封面、
+    /// 哪条被演员关联挂着）只有人看得清。误删一个 4GB 文件不可恢复。
+    ///
+    /// 指纹是扫描顺手算的（头尾 64KB + 大小），所以还没扫到的行不会出现在这里——
+    /// 界面上要一起把"已算指纹 / 总行数"显示出来，否则空列表会被误读成"没有重复"。
+    /// </summary>
+    [HttpGet("duplicates")]
+    public IActionResult Duplicates()
+    {
+        try
+        {
+            const string sql = @"
+                SELECT f.fingerprint, f.id, f.video_id, f.code, f.file_path, IFNULL(f.file_size, 0),
+                       v.name, v.code
+                FROM video_files f
+                JOIN videos v ON v.id = f.video_id
+                WHERE f.fingerprint IS NOT NULL AND f.fingerprint <> ''
+                  AND f.fingerprint IN (
+                      SELECT fingerprint FROM video_files
+                      WHERE fingerprint IS NOT NULL AND fingerprint <> ''
+                      GROUP BY fingerprint HAVING COUNT(DISTINCT video_id) > 1)
+                ORDER BY f.fingerprint, v.code";
+
+            var groups = new List<Dictionary<string, object?>>();
+            var seen = new Dictionary<string, Dictionary<string, object?>>();
+            using (var conn = _db.GetConnection())
+            {
+                conn.Open();
+                using var cmd = new SqliteCommand(sql, conn);
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var fp = reader.GetString(0);
+                    if (!seen.TryGetValue(fp, out var group))
+                    {
+                        group = new Dictionary<string, object?> { ["fingerprint"] = fp, ["files"] = new List<object>() };
+                        seen[fp] = group;
+                        groups.Add(group);
+                    }
+                    ((List<object>)group["files"]!).Add(new
+                    {
+                        fileId = reader.GetString(1),
+                        videoId = reader.GetString(2),
+                        fileCode = reader.GetString(3),
+                        path = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                        size = reader.GetInt64(5),
+                        videoName = reader.GetString(6),
+                        videoCode = reader.GetString(7)
+                    });
+                }
+            }
+
+            // 覆盖率给界面当"空列表意味着什么"的说明：没扫到指纹的行不会出现在结果里，
+            // 所以 0 组既可能是真没重复，也可能是还没扫
+            int fingerprinted, filesWithContent;
+            using (var conn2 = _db.GetConnection())
+            {
+                conn2.Open();
+                fingerprinted = Convert.ToInt32(new SqliteCommand(
+                    "SELECT COUNT(*) FROM video_files WHERE IFNULL(fingerprint, '') <> ''", conn2).ExecuteScalar() ?? 0);
+                filesWithContent = Convert.ToInt32(new SqliteCommand(
+                    @"SELECT COUNT(*) FROM video_files WHERE IFNULL(file_size, 0) > 0 AND file_path <> ''", conn2).ExecuteScalar() ?? 0);
+            }
+
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    groups,
+                    groupCount = groups.Count,
+                    fingerprinted,
+                    filesWithContent
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "查询疑似重复失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
     /// 检查并重命名文件名，使之与库里记的番号一致。
     /// 只动"文件确实在盘上、且文件名与番号不符"的行；目标名已被占用的一律跳过并说明原因。
     ///
