@@ -686,6 +686,13 @@ public class DataService : IDataService
             using var conn = _db.GetConnection();
             conn.Open();
 
+            // 库级一次性设置：WAL 让"前台在读"和"后台扫描在写"不再互斥
+            // （默认 delete 模式下写事务要独占，撞车就直接 SQLITE_BUSY）。
+            // journal_mode 会写进库文件，之后每条连接都自动是这个模式；-wal/-shm 落在库旁边，
+            // 所以库必须在支持共享内存的本地盘上（这条已经成立：/Volumes/disk1 是本地盘，媒体卷才走 SMB）
+            var journalMode = Scalar(conn, "PRAGMA journal_mode=WAL")?.ToString();
+            _logger.LogInformation("SQLite 日志模式：{Mode}", string.IsNullOrEmpty(journalMode) ? "未知" : journalMode);
+
             var isFresh = !TableExists(conn, "videos");
 
             // 结构迁移前必须留一份即时快照，且不能被"当天已有常规快照"顶掉：
