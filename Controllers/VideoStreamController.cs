@@ -13,17 +13,21 @@ public class VideoStreamController : ControllerBase
 {
     private readonly IConfiguration _config;
     private readonly ILogger<VideoStreamController> _logger;
+    private readonly Utils.SQLiteHelper _db;
 
-    public VideoStreamController(IConfiguration config, ILogger<VideoStreamController> logger)
+    public VideoStreamController(IConfiguration config, ILogger<VideoStreamController> logger, Utils.SQLiteHelper db)
     {
         _config = config;
         _logger = logger;
+        _db = db;
     }
 
-    private SqliteConnection GetConnection()
-    {
-        return new SqliteConnection(_config.GetConnectionString("DefaultConnection"));
-    }
+    /// <summary>
+    /// 走 SQLiteHelper 而不是自己 new 连接：连接级参数（busy_timeout / synchronous）在那里统一设。
+    /// 这里原先是手写 `new SqliteConnection(连接串)`，等于这一个控制器的连接全都拿不到默认参数——
+    /// 而它恰恰是最常被访问的（每个封面、每段流都过它）。
+    /// </summary>
+    private SqliteConnection GetConnection() => _db.GetConnection();
 
     /// <summary>
     /// 视频流代理（支持 Range 请求，可拖动进度条）。
@@ -81,6 +85,54 @@ public class VideoStreamController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "GetCover failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 封面缩略图（size 只认 Thumbs 里那两档：s=160 / m=400）。
+    ///
+    /// 为什么要：卡片画框只有一两百像素宽，却去拉一张中位 142KB、p99 2.7MB 的原图，
+    /// 而这些图在挂载卷上——一屏 24 张就是 3MB 加 24 次网络往返。
+    /// 复用演员图那套 Thumbs：按需生成、落本地缓存盘（不是媒体卷）、按源文件 mtime 失效，
+    /// 换封面不需要任何清缓存动作。
+    ///
+    /// 原图那条路由（cover/{id}）保留：详情页大图与"另存封面"要的是原画质。
+    /// </summary>
+    [HttpGet("cover/{id}/{size}")]
+    public IActionResult GetCoverThumb(string id, string size)
+    {
+        try
+        {
+            var width = Utils.Thumbs.WidthOf(size);
+            if (width == 0) return NotFound(new { success = false, message = "没有这个缩略图档位" });
+
+            string? coverPath;
+            using (var conn = GetConnection())
+            {
+                conn.Open();
+                using var cmd = new SqliteCommand("SELECT cover_path FROM videos WHERE id = @id", conn);
+                cmd.Parameters.Add(new SqliteParameter("@id", id));
+                coverPath = cmd.ExecuteScalar()?.ToString();
+            }
+
+            if (string.IsNullOrWhiteSpace(coverPath)) return NotFound(new { success = false, message = "封面不存在" });
+
+            var name = Path.GetFileName(coverPath);
+            var thumb = Utils.Thumbs.Ensure(coverPath,
+                Utils.Thumbs.CacheRoot(_config, _db.GetDbPath()), "cover", name, width, out _, out _);
+
+            // 解码不了的就退回原图（损坏、或没编进来的格式）：页面至少还有东西可看，
+            // 而不是因为一个缩略图生成失败就空一块
+            var result = thumb is null
+                ? Utils.CachedFile.TryServe(this, coverPath, "image/jpeg")
+                : Utils.CachedFile.TryServe(this, thumb.Value.Path, "image/webp");
+
+            return result ?? NotFound(new { success = false, message = "封面读不出来" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GetCoverThumb failed id={Id} size={Size}", id, size);
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
