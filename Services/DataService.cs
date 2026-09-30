@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 12;
+    private const int TargetVersion = 13;
 
     /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
     public static int SchemaTargetVersion => TargetVersion;
@@ -650,6 +650,25 @@ public class DataService : IDataService
         AddColumnIfMissing(conn, "video_likes", "play_time", "REAL");
     }
 
+    /// <summary>
+    /// v13：建 file_state（服务端播放进度）。
+    ///
+    /// 原来进度只在浏览器本地，换设备/清缓存就归零；这份状态值得进库的理由还在后面：
+    /// 点赞已经记了 play_time（v12），"看到哪儿"和"哪些点被赞过"放在一起才做得出精彩瞬间。
+    ///
+    /// 不回填：本地 localStorage 里那些值只有那台设备自己看得见，服务器也读不到它们，
+    /// 由前端第一次读到本地值时自己传上来（见 VideoDetail 的进度逻辑）。
+    /// </summary>
+    private void AddFileState(SqliteConnection conn)
+    {
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS file_state (
+                file_id    TEXT NOT NULL PRIMARY KEY,
+                position   REAL NOT NULL,
+                updated_at TEXT NOT NULL
+            )");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -674,6 +693,7 @@ public class DataService : IDataService
             .Append((10, "撤掉题材标签与关联合辑六张表（见 DropTagAndGroups 注释）", DropTagAndGroups))
             .Append((11, "文件层拆到 video_files，解说片折回父片当版本（见 SplitVideoFiles 注释）", SplitVideoFiles))
             .Append((12, "点赞记录带上点赞那一刻的播放进度 play_time（见 AddLikePlayTime 注释）", AddLikePlayTime))
+            .Append((13, "播放进度搬到服务端 file_state 表（见 AddFileState 注释）", AddFileState))
             .ToArray();
     }
 
@@ -992,6 +1012,16 @@ public class DataService : IDataService
                 target_type TEXT    NOT NULL DEFAULT 'video',
                 file_id     TEXT,
                 play_time   REAL
+            )");
+
+        // 「这一版看到哪儿了」放在服务端而不是浏览器 localStorage（v13）：
+        // 换设备、清缓存、换浏览器都不再从头看起。独立一张表而不是往 video_files 加列——
+        // 它不是文件的属性，而是"某人在这份文件上的状态"，以后要分用户也是这张表加一列 owner。
+        NonQuery(conn, @"
+            CREATE TABLE IF NOT EXISTS file_state (
+                file_id    TEXT NOT NULL PRIMARY KEY,
+                position   REAL NOT NULL,
+                updated_at TEXT NOT NULL
             )");
 
         NonQuery(conn, @"

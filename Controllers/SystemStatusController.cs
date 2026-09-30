@@ -135,6 +135,13 @@ public class SystemStatusController : ControllerBase
               WHERE NOT EXISTS (SELECT 1 FROM sqlite_master m WHERE m.type = 'index' AND m.name = n.name)) x",
             "这两个索引是不变量的执行者；缺了的话下面几条计数检查也才第一次真正有意义"),
 
+        new("state_orphan",
+            "观看进度指向已经不存在的版本",
+            "error",
+            @"SELECT COUNT(*) FROM file_state s WHERE NOT EXISTS (SELECT 1 FROM video_files f WHERE f.id = s.file_id)",
+            null,
+            "删版本行时应连带清掉；留着只是脏数据，但能看出哪条删除路径漏了清理"),
+
         new("size_missing",
             "有路径但没量到大小",
             "notice",

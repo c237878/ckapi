@@ -271,6 +271,8 @@ public class VideoVersionController : ControllerBase
             }
             // 指向这一版的点赞记录跟着抹掉：留着会变成"赞过一个已经不存在的版本"
             NonQuery(conn, "DELETE FROM video_likes WHERE file_id = @id", P("@id", fileId));
+            // 观看进度也属于这一版：行没了留着就是永远没人读的垃圾键（file_state 以 file_id 为主键）
+            NonQuery(conn, "DELETE FROM file_state WHERE file_id = @id", P("@id", fileId));
 
             var fileDeleted = false;
             if (deleteFile && filePath.Length > 0 && System.IO.File.Exists(filePath))
