@@ -109,46 +109,63 @@ public class BackupService : BackgroundService
         return removed;
     }
 
-    /// <summary>快照条目。用 record 而不是匿名类型：Status 要排序取前 14 条，匿名类型跨不了那道。</summary>
+    /// <summary>快照条目。用 record 而不是匿名类型：健康检查也要读这份清单。</summary>
     public record SnapshotItem(string Name, long Bytes, string Mtime, string Kind);
 
-    /// <summary>给「运行状态」面板看的备份概况。</summary>
+    /// <summary>备份概况的精简版，给健康检查用（它只关心"最近一份是什么时候"）。</summary>
+    public record BackupSummary(bool Configured, SnapshotItem? Latest, int Count);
+
+    public static BackupSummary Summary(string dbPath, string? backupDir)
+    {
+        var items = Items(dbPath, backupDir);
+        var configured = !string.IsNullOrEmpty(backupDir) && Directory.Exists(backupDir);
+        return new BackupSummary(configured, items.FirstOrDefault(), items.Count);
+    }
+
+    /// <summary>给「运行状态」面板看的备份清单。</summary>
     public static object Status(string dbPath, string? backupDir)
     {
-        var prefix = Path.GetFileNameWithoutExtension(dbPath);
-        var ok = !string.IsNullOrEmpty(backupDir) && Directory.Exists(backupDir);
-
-        var items = new List<SnapshotItem>();
-        if (ok)
-        {
-            // 两种都算自己的：常规每日快照，以及迁移前那份（后者界面会单独标出来）
-            var pattern = new Regex(
-                @"^" + Regex.Escape(prefix) + @"_(?<date>\d{4}-\d{2}-\d{2})(?<tag>_[A-Za-z-]+)?\.db$");
-
-            foreach (var file in Directory.GetFiles(backupDir!, prefix + "*.db"))
-            {
-                var name = Path.GetFileName(file);
-                var m = pattern.Match(name);
-                if (!m.Success) continue;
-                var fi = new FileInfo(file);
-                items.Add(new SnapshotItem(
-                    name,
-                    fi.Length,
-                    fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                    m.Groups["tag"].Success ? m.Groups["tag"].Value.TrimStart('_') : "daily"));
-            }
-        }
-
-        var top = items.OrderByDescending(x => x.Mtime).Take(14).ToList();
+        var top = Items(dbPath, backupDir);
         return new
         {
             backupDir = backupDir ?? "",
-            configured = ok,
+            configured = !string.IsNullOrEmpty(backupDir) && Directory.Exists(backupDir),
             latest = top.FirstOrDefault(),
-            count = items.Count,
+            count = top.Count,
             keepDailyDays = KeepDailyDays,
             keepWeeklyDays = KeepWeeklyDays,
             items = top
         };
     }
+
+    /// <summary>
+    /// 列出自己的快照，按日期从新到旧，只取界面用得上的前 14 份。
+    /// 排序用文件名而不是 mtime：名字里就是 ISO 日期，而拷贝或恢复过的文件 mtime 会变、日期不会。
+    /// </summary>
+    private static List<SnapshotItem> Items(string dbPath, string? backupDir)
+    {
+        var prefix = Path.GetFileNameWithoutExtension(dbPath);
+        var items = new List<SnapshotItem>();
+        if (string.IsNullOrEmpty(backupDir) || !Directory.Exists(backupDir)) return items;
+
+        // 两种都算自己的：常规每日快照，以及带标签的那份（迁移前 / 合并前，界面分开标）
+        var pattern = new Regex(
+            @"^" + Regex.Escape(prefix) + @"_(?<date>\d{4}-\d{2}-\d{2})(?<tag>_[A-Za-z-]+)?\.db$");
+
+        foreach (var file in Directory.GetFiles(backupDir, prefix + "*.db"))
+        {
+            var name = Path.GetFileName(file);
+            var m = pattern.Match(name);
+            if (!m.Success) continue;
+            var fi = new FileInfo(file);
+            items.Add(new SnapshotItem(
+                name,
+                fi.Length,
+                fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                m.Groups["tag"].Success ? m.Groups["tag"].Value.TrimStart('_') : "daily"));
+        }
+
+        return items.OrderByDescending(x => x.Name, StringComparer.Ordinal).Take(14).ToList();
+    }
+
 }

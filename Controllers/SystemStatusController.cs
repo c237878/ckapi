@@ -161,11 +161,18 @@ public class SystemStatusController : ControllerBase
 
     private readonly ILogger<SystemStatusController> _logger;
     private readonly Utils.SQLiteHelper _db;
+    private readonly IConfiguration _config;
+    private readonly SourceScanJob _scanJob;
+    private readonly ScrapeJob _scrapeJob;
 
-    public SystemStatusController(ILogger<SystemStatusController> logger, Utils.SQLiteHelper db)
+    public SystemStatusController(ILogger<SystemStatusController> logger, Utils.SQLiteHelper db,
+        IConfiguration config, SourceScanJob scanJob, ScrapeJob scrapeJob)
     {
         _logger = logger;
         _db = db;
+        _config = config;
+        _scanJob = scanJob;
+        _scrapeJob = scrapeJob;
     }
 
     /// <summary>
@@ -272,6 +279,110 @@ public class SystemStatusController : ControllerBase
         {
             _logger.LogError(ex, "读取备份概况失败");
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>
+    /// 健康检查：库能不能写、配置里那几个目录在不在、备份多久没跑了、有没有任务在跑。
+    ///
+    /// 为什么要这个：这个项目的故障面很特别——数据在挂载卷上（SMB），
+    /// 卷没挂上时表现是"封面全空、扫描说没文件"，而服务本身看着完全健康。
+    /// 有了这一个接口，前端能在顶栏给个提示，而不是让人以为是软件坏了。
+    ///
+    /// 只 stat 目录是否存在，绝不列举内容：/Volumes/av 那种共享目录列一次就是一次
+    /// 网络往返，冷读能要十几秒。探活不能比它要发现的问题更慢。
+    /// </summary>
+    [HttpGet("health")]
+    public IActionResult Health()
+    {
+        var problems = new List<string>();
+
+        // 库所在目录可写：真实故障里"盘满 / 卷变只读"最难猜，直接试一手
+        var dbWritable = TryWritable(Path.GetDirectoryName(_db.GetDbPath()));
+        if (!dbWritable) problems.Add("数据库所在目录不可写（盘满或只读）");
+
+        var volumes = new List<object>();
+        using (var conn = _db.GetConnection())
+        {
+            conn.Open();
+            using var cmd = new SqliteCommand(
+                "SELECT category, path FROM scan_directories WHERE IFNULL(path, '') <> '' ORDER BY category, path", conn);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var path = reader["path"].ToString() ?? "";
+                var present = Directory.Exists(path);
+                volumes.Add(new { purpose = reader["category"].ToString(), path, present });
+                if (!present) problems.Add($"「{reader["category"]}」目录不在：{path}");
+            }
+        }
+
+        var backups = BackupService.Summary(_db.GetDbPath(), _db.GetBackupPath());
+        if (!backups.Configured)
+        {
+            problems.Add("没配置备份目录");
+        }
+        else if (backups.Latest is null)
+        {
+            problems.Add("备份目录里还没有任何快照");
+        }
+        else if (DateTime.TryParse(backups.Latest.Mtime, out var when) && (DateTime.Now - when).TotalDays > 2)
+        {
+            // 快照靠服务每小时自查，两天没有就说明进程没跑或被清盘了
+            problems.Add($"最近的快照是 {when:yyyy-MM-dd}，超过两天没落了");
+        }
+
+        var thumbsWritable = TryWritable(Utils.Thumbs.CacheRoot(_config, _db.GetDbPath()));
+        if (!thumbsWritable) problems.Add("缩略图缓存目录不可写");
+
+        var schema = 0;
+        using (var conn = _db.GetConnection())
+        {
+            conn.Open();
+            schema = Convert.ToInt32(Scalar(conn, "PRAGMA user_version") ?? 0);
+        }
+        if (schema != DataService.SchemaTargetVersion)
+            problems.Add($"库结构停在 {schema}，代码期望 {DataService.SchemaTargetVersion}");
+
+        return Ok(new
+        {
+            success = true,
+            data = new
+            {
+                ok = problems.Count == 0,
+                problems,
+                dbWritable,
+                thumbsWritable,
+                schemaVersion = schema,
+                volumes,
+                backups,
+                running = new
+                {
+                    sourceScan = _scanJob.IsRunning,
+                    scrape = _scrapeJob.IsRunning
+                },
+                checkedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            }
+        });
+    }
+
+    /// <summary>能不能写：建一个临时文件再删。只判断目录，不碰里面的内容。</summary>
+    private static bool TryWritable(string? dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return false;
+        var probe = Path.Combine(dir, $".wprobe-{Environment.ProcessId}-{Guid.NewGuid():N}");
+        try
+        {
+            System.IO.File.WriteAllText(probe, "1");
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            try { if (System.IO.File.Exists(probe)) System.IO.File.Delete(probe); } catch { /* 探活留下的垃圾删不掉就算了 */ }
         }
     }
 
