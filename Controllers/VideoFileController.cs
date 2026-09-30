@@ -33,6 +33,7 @@ public class VideoFileController : ControllerBase
     /// **默认是预检（dryRun=true）**：这个动作会改盘上真实文件名，一次可能涉及很多个，
     /// 所以先看清单。界面点「执行改名」时才带 ?dryRun=false。
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("rename-to-code")]
     public IActionResult RenameFilesToCode([FromQuery] bool dryRun = true)
     {

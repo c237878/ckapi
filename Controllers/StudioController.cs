@@ -271,6 +271,7 @@ public class StudioController : ControllerBase
         }
     }
 
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteStudio(string id)
     {

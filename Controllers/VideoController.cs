@@ -781,6 +781,7 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 删除视频
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteVideo(string id, [FromQuery] bool deleteFiles = false)
     {
@@ -876,6 +877,7 @@ public class VideoController : ControllerBase
     /// <summary>
     /// 批量删除视频
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("batch")]
     public IActionResult BatchDeleteVideos([FromBody] BatchDeleteRequest req, [FromQuery] bool deleteFiles = false)
     {

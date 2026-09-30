@@ -191,6 +191,7 @@ public class ScanDirectoryController : ControllerBase
     /// <summary>
     /// 删除扫描目录
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteDirectory(string id)
     {

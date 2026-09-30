@@ -82,6 +82,7 @@ public class ScrapeChannelController : ControllerBase
         }
     }
 
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult Delete(string id)
     {
@@ -99,6 +100,7 @@ public class ScrapeChannelController : ControllerBase
     }
 
     /// <summary>清掉冷却与当日计数：换了 IP、或确认对方已放行时用</summary>
+    [Utils.AdminToken]
     [HttpPost("{id}/reset")]
     public IActionResult Reset(string id)
     {

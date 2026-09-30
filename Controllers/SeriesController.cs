@@ -298,6 +298,7 @@ public class SeriesController : ControllerBase
     /// <summary>
     /// 删除系列
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteSeries(string id)
     {

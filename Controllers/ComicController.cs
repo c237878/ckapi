@@ -252,6 +252,7 @@ public class ComicController : ControllerBase
     /// <summary>
     /// 删除漫画
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteComic(string id)
     {
@@ -426,6 +427,7 @@ public class ComicController : ControllerBase
     /// <summary>
     /// 删除章节
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("chapter/{id}")]
     public IActionResult DeleteChapter(string id)
     {
@@ -569,6 +571,7 @@ public class ComicController : ControllerBase
     /// <summary>
     /// 还原章节内所有图片（清空 _decrypted 目录）
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("restore/batch")]
     public IActionResult RestoreBatch([FromBody] Models.DecryptTaskRequest req)
     {
@@ -661,6 +664,7 @@ public class ComicController : ControllerBase
     /// <summary>
     /// 批量解密章节内所有图片
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("decrypt/batch")]
     public IActionResult DecryptBatch([FromBody] Models.DecryptTaskRequest req)
     {

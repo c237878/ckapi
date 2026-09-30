@@ -311,6 +311,7 @@ public class ActorController : ControllerBase
     /// <summary>
     /// 删除演员
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult DeleteActor(string id)
     {
@@ -428,6 +429,7 @@ public class ActorController : ControllerBase
     /// 被合并方名下还有照片时直接拒绝 —— 图片按 &lt;艳图目录&gt;/&lt;演员ID&gt;/ 定位，
     /// 只把行改挂到目标名下会得到一批 404，磁盘目录得由人先挪。
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("merge")]
     public IActionResult MergeActors([FromBody] MergeActorsRequest request)
     {
@@ -1092,6 +1094,7 @@ public class ActorController : ControllerBase
     ///
     /// 删的正好是当前主图时，顺手把剩下的任意一张设成主图，不留"有照片却没头像"的空档。
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}/image")]
     public IActionResult DeleteActorImage(
         string id, [FromQuery] string? fileName = null, [FromQuery] bool deleteFile = true)

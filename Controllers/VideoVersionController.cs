@@ -238,6 +238,7 @@ public class VideoVersionController : ControllerBase
     /// 删掉一版。只剩一版时不许删——那部片就没有文件层了，列表筛选与统计会当场失去依据，
     /// 要真不想要这部片，去删影片。deleteFile=true 顺手把盘上那份也删掉。
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{fileId}")]
     public IActionResult Delete(string fileId, [FromQuery] bool deleteFile = false)
     {
@@ -374,6 +375,7 @@ public class VideoVersionController : ControllerBase
     /// 顺带把这部片的封面找回来（封面在影片层，一部一张，按影片番号 {code}.jpg 配）。
     /// 换文件了就把分辨率与扫描时间清空、两维回到未标——那是上一份文件的结论，不该跟着新文件走。
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("{fileId}/reset-file-size")]
     public IActionResult ResetFileSize(string fileId)
     {
@@ -471,6 +473,7 @@ public class VideoVersionController : ControllerBase
     }
 
     /// <summary>删掉这一版的物理文件，库里把路径与大小清空（版本行留着，条目还在）</summary>
+    [Utils.AdminToken]
     [HttpDelete("{fileId}/file")]
     public IActionResult DeleteFile(string fileId)
     {
@@ -560,6 +563,7 @@ public class VideoVersionController : ControllerBase
     /// 要变必须在这儿显式 dryRun=false 走一次，避免"填错一格就把 20 GB 的文件改名"。
     /// 库里的 file_path 只在改名成功后才更新（见 VideoFiles.AlignFileName）。
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("{fileId}/align-name")]
     public IActionResult AlignName(string fileId, [FromQuery] bool dryRun = true)
     {

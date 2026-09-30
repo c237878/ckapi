@@ -89,6 +89,7 @@ public class VersionTypeController : ControllerBase
     /// 删除。已经有版本用着它就不许删——那些行会失去类型名，界面上变成一片空白；
     /// 真不想要这一类，先把用了它的版本改成别的类型。
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult Delete(string id)
     {

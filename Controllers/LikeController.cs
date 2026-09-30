@@ -153,6 +153,7 @@ public class LikeController : ControllerBase
     /// <summary>
     /// 删除单条点赞记录
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult Delete(int id)
     {
@@ -175,6 +176,7 @@ public class LikeController : ControllerBase
     /// <summary>
     /// 批量删除点赞记录
     /// </summary>
+    [Utils.AdminToken]
     [HttpPost("batch-delete")]
     public IActionResult BatchDelete([FromBody] LikeBatchDeleteRequest req)
     {

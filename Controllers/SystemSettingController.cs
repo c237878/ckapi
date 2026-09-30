@@ -130,6 +130,7 @@ public class SystemSettingController : ControllerBase
     /// <summary>
     /// 删除设置
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult Delete(string id)
     {

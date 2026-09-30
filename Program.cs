@@ -51,6 +51,8 @@ builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 builder.Services.AddSingleton<ckapi.Services.McpService>();
 // 每日常规备份 + 轮转：进程长期不重启也得每天有份快照（详见 BackupService 注释）
 builder.Services.AddHostedService<ckapi.Services.BackupService>();
+// 破坏性接口的管理口令门禁（设置-安全里开关；没设口令时不拦）
+builder.Services.AddScoped<ckapi.Utils.AdminTokenFilter>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

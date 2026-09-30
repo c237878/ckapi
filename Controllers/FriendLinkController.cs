@@ -188,6 +188,7 @@ public class FriendLinkController : ControllerBase
     /// <summary>
     /// 删除友情链接
     /// </summary>
+    [Utils.AdminToken]
     [HttpDelete("{id}")]
     public IActionResult Delete(string id)
     {
