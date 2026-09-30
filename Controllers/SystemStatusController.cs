@@ -150,11 +150,15 @@ public class SystemStatusController : ControllerBase
             Hint: "扫描只挑有 file_size 的行，所以这一类永远轮不到；每天的盘上核对会直接告它是没下完还是根本不在（看面板底部「盘上核对」）"),
 
         new("res_missing",
-            "有文件但分辨率还没扫",
+            "有文件但读不出分辨率",
             "notice",
             @"SELECT COUNT(*) FROM video_files WHERE IFNULL(file_size, 0) > 0 AND IFNULL(res_h, 0) = 0",
-            null,
-            Hint: "扫描只读文件头（盒头），是网络盘上的小读；没扫的越多，筛选「分辨率」越不准"),
+            @"SELECT IFNULL(group_concat(code, '、'), '') FROM (
+                SELECT IFNULL(NULLIF(code, ''), id) AS code FROM video_files
+                WHERE IFNULL(file_size, 0) > 0 AND IFNULL(res_h, 0) = 0 ORDER BY code LIMIT 8)",
+            // 有了每日扫描，这一类不再是"还没轮到"：扫过而且读不出来才会留在这儿。
+            // 候选条件包含"没量到分辨率"，所以每天会自动重试它们，不用人再点按钮
+            Hint: "文件在盘上、也扫过，但容器头里没有画面宽高——多半是没下完或文件本身有问题，播放大概率也不顺。每日扫描会自动重试这几条"),
 
         new("source_unmarked",
             "两维（字幕/水印）都还没标",
