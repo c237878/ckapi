@@ -105,14 +105,16 @@ public class VideoController : ControllerBase
                 StudioId = studio, HasFile = hasFile
             });
 
-            // 按版本类型筛（设置里「看这一类型下有哪些影片」走这里）：df 从"默认那一版"
-            // 换成"该类型那一版"。一部片同一个类型只能有一条（v12），所以仍是一对一，
-            // 卡片上的大小/分辨率/两维状态也跟着变成这一版的——筛的就是它，数字该说它的
-            var fileJoin = VideoCardQuery.FileJoin;
+            // 按版本类型筛（设置里「看这一类型下有哪些影片」走这里）：**只决定哪些片入选**，
+            // df 仍挂在默认那一版——卡片上的大小/分辨率/两维状态、以及字幕/水印/分辨率/有无文件
+            // 这些筛选，全部还是影片口径（v11 定的那一条，也是用户明确要的"影片的数据取默认版本"）。
+            //
+            // 不要"贴心地"把 df 换成该类型那一版：那样一来步非烟+有字幕会把 URE-090 筛掉
+            // （它 -BFY 那行两维还没标），卡片也会突然不显示胶囊——同一张卡片在别的页面上明明有。
+            // 一部片同一个类型只能有一条（v12），EXISTS 就是一次索引查找。
             if (!string.IsNullOrEmpty(typeId))
             {
-                fileJoin = "LEFT JOIN video_files df ON df.video_id = v.id AND df.type_id = @typeId";
-                whereClause += " AND df.type_id = @typeId";
+                whereClause += " AND EXISTS (SELECT 1 FROM video_files tf WHERE tf.video_id = v.id AND tf.type_id = @typeId)";
                 parameters.Add(new SqliteParameter("@typeId", typeId));
             }
 
@@ -121,7 +123,7 @@ public class VideoController : ControllerBase
 
             // 总数（原先这里另开了一条连接，与列表查询各一次握手）
             // 挂默认版本行：文件层筛选（字幕/水印/分辨率/有无文件）看的是它，不挂就没有 df 这个别名
-            var countSql = $"SELECT COUNT(*) FROM videos v {fileJoin} {whereClause}";
+            var countSql = $"SELECT COUNT(*) FROM videos v {VideoCardQuery.FileJoin} {whereClause}";
             int total;
             using (var countCmd = new SqliteCommand(countSql, conn))
             {
@@ -133,7 +135,7 @@ public class VideoController : ControllerBase
             var sql = $@"
                 SELECT {VideoCardQuery.ColumnsWithSeries}
                 FROM videos v
-                {fileJoin}
+                {VideoCardQuery.FileJoin}
                 LEFT JOIN video_series s ON v.seriesid = s.id
                 {whereClause}
                 ORDER BY " + orderBy + @"
