@@ -374,9 +374,8 @@ public class SystemStatusController : ControllerBase
                     sourceScan = _scanJob.IsRunning,
                     scrape = _scrapeJob.IsRunning
                 },
-                // 扫描的"跑成什么样"：面板要能回答今天定时扫过没有、量到几个、盘上少了几个。
-                // 这些不是 SQL 不变量（要么得逐条 stat，要么根本是内存里的任务状态），
-                // 所以放这儿而不是 checks
+                // 后台那轮体检（盘上核对 + 增量扫描）的状态：开关、频率、上次与下次、最近一轮的结果。
+                // 这些不是 SQL 不变量（要么得逐条 stat，要么根本是内存里的任务状态），所以放这儿而不是 checks
                 scan = new
                 {
                     running = _scanJob.IsRunning,
@@ -386,6 +385,19 @@ public class SystemStatusController : ControllerBase
                 checkedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
             }
         });
+    }
+
+    /// <summary>
+    /// 立刻跑一轮体检（盘上核对 + 增量扫描），不等开关也不等到点。
+    /// 只是读文件元信息，不动盘上的任何东西，所以没挂管理口令。
+    /// 后台线程跑，接口立刻回——核对最坏 20 分钟，不能把请求举着。
+    /// </summary>
+    [HttpPost("scan/run")]
+    public IActionResult RunScanNow()
+    {
+        var (started, message) = _scanSchedule.RunNow();
+        _logger.LogInformation("手动触发体检：{Message}（{Started}）", message, started ? "已起" : "没起");
+        return Ok(new { success = started, message, data = _scanSchedule.Status() });
     }
 
     /// <summary>能不能写：建一个临时文件再删。只判断目录，不碰里面的内容。</summary>
