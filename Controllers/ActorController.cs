@@ -1,6 +1,8 @@
 using ckapi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
 using System.Text.Json.Serialization;
 
 namespace ckapi.Controllers;
@@ -933,6 +935,149 @@ public class ActorController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 从她**出演影片的封面**截一张正方形当头像。
+    ///
+    /// 为什么要这一手：两个抓像通道（avwiki / laoshi）覆盖不到的人确实存在，而她主演影片的
+    /// 封面本来就是她的照片——只是竖版海报不能直接当头像：列表页是 60px 圆框、object-fit: cover
+    /// 居中裁，脸会被切掉。这里按调用方选定的位置裁出正方形，落进演员目录。
+    ///
+    /// x/y 是裁切窗口在两个轴上的位置（0~1，与 CSS object-position 同式：
+    /// 偏移 = (原图边长 - 裁框边长) × 比例），所以前端那个方框预览看到的就是落盘的图。
+    /// 默认 y=0.18 沿用列表页 --avatar-focus 的"往上偏"惯例——竖海报的脸通常在上三分之一。
+    ///
+    /// 截出来的图作为一条候选进 actor_images 并设为主图；原来的图还在相册里，不满意可在相册切回去。
+    /// </summary>
+    [HttpPost("{id}/avatar/from-cover")]
+    public IActionResult AvatarFromCover(string id, [FromBody] CoverCropRequest request)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(request.VideoId))
+                return Ok(new { success = false, message = "没说截哪部片的封面" });
+
+            var x = ClampRatio(request.X, 0.5);
+            var y = ClampRatio(request.Y, 0.18);
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            using (var check = new SqliteCommand("SELECT 1 FROM actors WHERE id = @id", conn))
+            {
+                check.Parameters.Add(new SqliteParameter("@id", id));
+                if (check.ExecuteScalar() is null)
+                    return Ok(new { success = false, message = "演员不存在" });
+            }
+
+            // 封面必须是**她出演过**的那部：界面上只能从她的片里选，这里再挡一道直接打接口的
+            string? coverPath;
+            string code;
+            using (var find = new SqliteCommand(@"
+                SELECT v.cover_path, v.code FROM videos v
+                JOIN video_actors va ON va.video_id = v.id
+                WHERE v.id = @vid AND va.actor_id = @aid", conn))
+            {
+                find.Parameters.Add(new SqliteParameter("@vid", request.VideoId));
+                find.Parameters.Add(new SqliteParameter("@aid", id));
+                using var reader = find.ExecuteReader();
+                if (!reader.Read())
+                    return Ok(new { success = false, message = "她名下没有这部片" });
+                coverPath = reader["cover_path"] == DBNull.Value ? null : reader["cover_path"].ToString();
+                code = reader["code"] == DBNull.Value || string.IsNullOrWhiteSpace(reader["code"].ToString())
+                    ? request.VideoId
+                    : reader["code"].ToString()!;
+            }
+
+            if (string.IsNullOrWhiteSpace(coverPath) || !System.IO.File.Exists(coverPath))
+                return Ok(new { success = false, message = "这部片没有封面文件" });
+
+            var posterDir = Utils.ImageIndex.PosterDir(conn);
+            if (string.IsNullOrWhiteSpace(posterDir))
+                return Ok(new { success = false, message = "没有演员图片目录（设置里的艳图目录）" });
+
+            var dir = Path.Combine(posterDir, id);
+            Directory.CreateDirectory(dir);
+
+            // 文件名带位置（1% 步进）：同一部片同一位置重截就覆盖，微调滑块不会攒出一堆近似重复的图
+            var fileName = $"封面截取-{SanitizeFileName(code)}-{(int)Math.Round(x * 100)}x{(int)Math.Round(y * 100)}.jpg";
+            var target = Path.Combine(dir, fileName);
+            var temp = target + ".tmp";
+            int side;
+            try
+            {
+                using (var img = Image.Load(coverPath))
+                {
+                    var square = Math.Min(img.Width, img.Height);
+                    var ox = (int)Math.Round((img.Width - square) * x);
+                    var oy = (int)Math.Round((img.Height - square) * y);
+                    img.Mutate(m => m.Crop(new Rectangle(ox, oy, square, square)));
+                    side = square;
+                    img.SaveAsJpeg(temp, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 92 });
+                }
+                System.IO.File.Move(temp, target, overwrite: true);
+            }
+            catch (Exception ex) when (ex is SixLabors.ImageSharp.ImageFormatException or IOException)
+            {
+                TryDelete(temp);
+                _logger.LogWarning(ex, "封面截图失败 actor={Id} cover={Cover}", id, coverPath);
+                return Ok(new { success = false, message = "封面读不出来（格式不支持或文件损坏）" });
+            }
+
+            Utils.ImageIndex.SyncActor(conn, id, dir);
+
+            // 设为主图：与 PUT image/primary 同一套事务（先全清再置位），同步没认到这张就回滚
+            using (var tx = conn.BeginTransaction())
+            {
+                using (var clear = new SqliteCommand("UPDATE actor_images SET is_primary = 0 WHERE actor_id = @id", conn, tx))
+                {
+                    clear.Parameters.Add(new SqliteParameter("@id", id));
+                    clear.ExecuteNonQuery();
+                }
+                using var set = new SqliteCommand(
+                    "UPDATE actor_images SET is_primary = 1 WHERE actor_id = @id AND file_name = @file", conn, tx);
+                set.Parameters.Add(new SqliteParameter("@id", id));
+                set.Parameters.Add(new SqliteParameter("@file", fileName));
+                if (set.ExecuteNonQuery() == 0)
+                {
+                    tx.Rollback();
+                    return Ok(new { success = false, message = "截图已存进相册，但没能设成头像" });
+                }
+                tx.Commit();
+            }
+
+            return Ok(new
+            {
+                success = true,
+                fileName,
+                side,
+                message = $"已从「{code}」的封面截出 {side}×{side} 并设为头像"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "从封面截取演员头像失败 actor={Id}", id);
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>裁切位置：缺省或越界一律收到 0~1；缺省用列表页头像那个"往上偏"的 0.18</summary>
+    private static double ClampRatio(double? raw, double fallback)
+        => raw is null || !double.IsFinite(raw.Value) ? fallback : Math.Clamp(raw.Value, 0, 1);
+
+    /// <summary>番号要进文件名：去掉路径分隔符与非法字符（正常番号本来就是 A-Z0-9-_）</summary>
+    private static string SanitizeFileName(string raw)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(raw.Where(c => !invalid.Contains(c)).ToArray()).Trim();
+        return cleaned.Length == 0 ? "无番号" : cleaned;
+    }
+
+    private static void TryDelete(string path)
+    {
+        // File 在这个类里被 ControllerBase.File 占了名，写全（临时文件删不掉不影响正确性）
+        try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* 忽略 */ }
+    }
+
     private static string StatMessage((int Added, int Updated, int Removed, int Total, string? Primary) stat)
         => $"新增 {stat.Added}、更新 {stat.Updated}、移除 {stat.Removed}，共 {stat.Total} 张";
 
@@ -1173,6 +1318,19 @@ public class PrimaryImageRequest
 {
     [JsonPropertyName("fileName")]
     public string? FileName { get; set; }
+}
+
+/// <summary>从封面截头像：哪部片的封面 + 裁切窗口在两个轴上的位置（0~1，与 CSS object-position 同式）</summary>
+public class CoverCropRequest
+{
+    [JsonPropertyName("videoId")]
+    public string? VideoId { get; set; }
+
+    [JsonPropertyName("x")]
+    public double? X { get; set; }
+
+    [JsonPropertyName("y")]
+    public double? Y { get; set; }
 }
 
 /// <summary>批量抓取的范围：avatar 只补头像、profile 只补生日与简介、all 一次查档把缺的都补上</summary>
