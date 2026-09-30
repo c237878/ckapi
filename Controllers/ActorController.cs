@@ -958,6 +958,9 @@ public class ActorController : ControllerBase
 
             var x = ClampRatio(request.X, 0.5);
             var y = ClampRatio(request.Y, 0.18);
+            // 裁框边长占"原图短边"的比例。封面动辄 800×1200，只能整块裁正方形时，
+            // 脸在图里就占几个像素——缩放（框缩小）才是截到合适尺寸的那一半能力
+            var zoom = request.Zoom is double z && double.IsFinite(z) ? Math.Clamp(z, 0.15, 1) : 1;
 
             using var conn = GetConnection();
             conn.Open();
@@ -998,8 +1001,9 @@ public class ActorController : ControllerBase
             var dir = Path.Combine(posterDir, id);
             Directory.CreateDirectory(dir);
 
-            // 文件名带位置（1% 步进）：同一部片同一位置重截就覆盖，微调滑块不会攒出一堆近似重复的图
-            var fileName = $"封面截取-{SanitizeFileName(code)}-{(int)Math.Round(x * 100)}x{(int)Math.Round(y * 100)}.jpg";
+            // 文件名带位置与缩放（都按 1% 步进）：同一部片同一个框重截就覆盖，
+            // 微调滑块不会攒出一堆近似重复的图
+            var fileName = $"封面截取-{SanitizeFileName(code)}-{(int)Math.Round(x * 100)}x{(int)Math.Round(y * 100)}z{(int)Math.Round(zoom * 100)}.jpg";
             var target = Path.Combine(dir, fileName);
             var temp = target + ".tmp";
             int side;
@@ -1007,11 +1011,12 @@ public class ActorController : ControllerBase
             {
                 using (var img = Image.Load(coverPath))
                 {
-                    var square = Math.Min(img.Width, img.Height);
-                    var ox = (int)Math.Round((img.Width - square) * x);
-                    var oy = (int)Math.Round((img.Height - square) * y);
-                    img.Mutate(m => m.Crop(new Rectangle(ox, oy, square, square)));
-                    side = square;
+                    // 基准是原图短边：正方形窗口最大就只能到短边，zoom 在此基础上再缩小
+                    var full = Math.Min(img.Width, img.Height);
+                    side = Math.Max(48, (int)Math.Round(full * zoom));
+                    var ox = (int)Math.Round((img.Width - side) * x);
+                    var oy = (int)Math.Round((img.Height - side) * y);
+                    img.Mutate(m => m.Crop(new Rectangle(ox, oy, side, side)));
                     img.SaveAsJpeg(temp, new SixLabors.ImageSharp.Formats.Jpeg.JpegEncoder { Quality = 92 });
                 }
                 System.IO.File.Move(temp, target, overwrite: true);
@@ -1076,6 +1081,118 @@ public class ActorController : ControllerBase
     {
         // File 在这个类里被 ControllerBase.File 占了名，写全（临时文件删不掉不影响正确性）
         try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* 忽略 */ }
+    }
+
+    /// <summary>
+    /// 删掉这位演员的一张图片：库里的行，默认连磁盘上的文件一起删。
+    ///
+    /// 为什么要能删文件：抓像通道会把抓错的、糊的、甚至是别人家的照片落进目录。
+    /// 只删库里那一行没有用——下次点「同步照片」扫盘又把它加回来，看起来像"删不掉"。
+    /// deleteFile=false 才是"只从库里摘掉、文件留在盘上"（人想临时藏起来时用）。
+    ///
+    /// 删的正好是当前主图时，顺手把剩下的任意一张设成主图，不留"有照片却没头像"的空档。
+    /// </summary>
+    [HttpDelete("{id}/image")]
+    public IActionResult DeleteActorImage(
+        string id, [FromQuery] string? fileName = null, [FromQuery] bool deleteFile = true)
+    {
+        try
+        {
+            var name = Utils.SafePath.AsFileName(fileName);
+            if (name is null)
+                return Ok(new { success = false, message = "文件名不合法" });
+
+            using var conn = GetConnection();
+            conn.Open();
+
+            using (var check = new SqliteCommand("SELECT 1 FROM actors WHERE id = @id", conn))
+            {
+                check.Parameters.Add(new SqliteParameter("@id", id));
+                if (check.ExecuteScalar() is null)
+                    return Ok(new { success = false, message = "演员不存在" });
+            }
+
+            if (!ImageKnown(conn, id, name))
+                return Ok(new { success = false, message = "这张图不在库里" });
+
+            bool wasPrimary;
+            using (var q = new SqliteCommand(
+                       "SELECT is_primary FROM actor_images WHERE actor_id = @id AND file_name = @file", conn))
+            {
+                q.Parameters.Add(new SqliteParameter("@id", id));
+                q.Parameters.Add(new SqliteParameter("@file", name));
+                wasPrimary = Convert.ToInt32(q.ExecuteScalar() ?? 0) == 1;
+            }
+
+            var posterDir = Utils.ImageIndex.PosterDir(conn);
+            var path = string.IsNullOrWhiteSpace(posterDir) ? null : Path.Combine(posterDir, id, name);
+            // 只允许删这位演员自己目录里的那一个文件：路径必须在 posterDir/<演员ID>/ 之内
+            if (path is not null && !Utils.SafePath.IsInside(path, Path.Combine(posterDir!, id)))
+                path = null;
+
+            var fileRemoved = false;
+            var fileMissing = false;
+            if (deleteFile && path is not null)
+            {
+                try
+                {
+                    if (System.IO.File.Exists(path))
+                    {
+                        System.IO.File.Delete(path);
+                        fileRemoved = true;
+                    }
+                    else fileMissing = true;
+                }
+                catch (Exception ex)
+                {
+                    // 文件删不动（挂载卷只读、被占用）就别动库：否则行删了文件还在，
+                    // 下次同步它又回来了，看起来像"删除失败但没报错"
+                    _logger.LogWarning(ex, "删除演员图片文件失败 actor={Id} file={File}", id, path);
+                    return Ok(new { success = false, message = "文件删不掉（磁盘只读或被占用），库里那张也没动" });
+                }
+            }
+
+            using (var del = new SqliteCommand(
+                       "DELETE FROM actor_images WHERE actor_id = @id AND file_name = @file", conn))
+            {
+                del.Parameters.Add(new SqliteParameter("@id", id));
+                del.Parameters.Add(new SqliteParameter("@file", name));
+                del.ExecuteNonQuery();
+            }
+
+            var rePicked = false;
+            if (wasPrimary)
+            {
+                string? next = null;
+                using (var q = new SqliteCommand(
+                           "SELECT file_name FROM actor_images WHERE actor_id = @id ORDER BY is_primary DESC, file_name LIMIT 1", conn))
+                {
+                    q.Parameters.Add(new SqliteParameter("@id", id));
+                    next = q.ExecuteScalar()?.ToString();
+                }
+                if (next is not null)
+                {
+                    using var set = new SqliteCommand(
+                        "UPDATE actor_images SET is_primary = 1 WHERE actor_id = @id AND file_name = @file", conn);
+                    set.Parameters.Add(new SqliteParameter("@id", id));
+                    set.Parameters.Add(new SqliteParameter("@file", next));
+                    set.ExecuteNonQuery();
+                    rePicked = true;
+                }
+            }
+
+            var bits = new List<string> { deleteFile ? (fileRemoved ? "文件和记录都删了" : "记录已删") : "已从库里摘掉，文件留在磁盘上" };
+            if (fileMissing) bits.Add("磁盘上本来就没有这个文件");
+            if (rePicked) bits.Add("头像改用剩下的另一张");
+            else if (wasPrimary) bits.Add("这位演员现在没有头像图了");
+
+            return Ok(new { success = true, message = string.Join("；", bits) });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "删除演员图片失败 actor={Id}", id);
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
     }
 
     private static string StatMessage((int Added, int Updated, int Removed, int Total, string? Primary) stat)
@@ -1320,7 +1437,7 @@ public class PrimaryImageRequest
     public string? FileName { get; set; }
 }
 
-/// <summary>从封面截头像：哪部片的封面 + 裁切窗口在两个轴上的位置（0~1，与 CSS object-position 同式）</summary>
+/// <summary>从封面截头像：哪部片的封面 + 裁切窗口位置 x/y（0~1，与 CSS object-position 同式）+ 缩放 zoom（0.15~1，占原图短边的比例）</summary>
 public class CoverCropRequest
 {
     [JsonPropertyName("videoId")]
@@ -1331,6 +1448,9 @@ public class CoverCropRequest
 
     [JsonPropertyName("y")]
     public double? Y { get; set; }
+
+    [JsonPropertyName("zoom")]
+    public double? Zoom { get; set; }
 }
 
 /// <summary>批量抓取的范围：avatar 只补头像、profile 只补生日与简介、all 一次查档把缺的都补上</summary>
