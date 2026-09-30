@@ -49,6 +49,8 @@ builder.Services.AddSingleton<ckapi.Services.SourceScanJob>();
 builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 // MCP：给本机大模型的工具接口，密钥与打标口径都存在 system_settings
 builder.Services.AddSingleton<ckapi.Services.McpService>();
+// 每日常规备份 + 轮转：进程长期不重启也得每天有份快照（详见 BackupService 注释）
+builder.Services.AddHostedService<ckapi.Services.BackupService>();
 
 // 配置CORS
 builder.Services.AddCors(options =>

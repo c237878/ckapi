@@ -256,6 +256,25 @@ public class SystemStatusController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 备份概况：目录配了没有、最近一份是几点、多大、留了多少。
+    /// 与自检分开是因为它要扫目录（只读几个文件的元信息，不碰媒体卷），
+    /// 而自检是纯 SQL——两者失败原因完全不同，混在一起不好报错。
+    /// </summary>
+    [HttpGet("backups")]
+    public IActionResult Backups()
+    {
+        try
+        {
+            return Ok(new { success = true, data = BackupService.Status(_db.GetDbPath(), _db.GetBackupPath()) });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "读取备份概况失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
     private static object? Scalar(SqliteConnection conn, string sql)
     {
         using var cmd = new SqliteCommand(sql, conn);
