@@ -160,8 +160,20 @@ public class VideoStreamController : ControllerBase
             if (subPath != null)
             {
                 var ext = Path.GetExtension(subPath).ToLower();
-                var ct = ext == ".vtt" ? "text/vtt" : "text/plain";
-                return Ok(new { success = true, hasSubtitle = true, url = $"/api/video/{code}/subtitle", contentType = ct, ext });
+                // 接口对前端只承诺一件事：这条轨能不能点亮。
+                // .srt 我们在 /subtitle 那儿顺手转成 WebVTT，所以对前端来说它和 .vtt 一样可用；
+                // .ass/.ssa/.sub 浏览器解析不了，displayable=false，页面就别再挂 <track> 了
+                var displayable = Utils.Subtitles.IsDisplayable(ext);
+                return Ok(new
+                {
+                    success = true,
+                    hasSubtitle = true,
+                    url = $"/api/video/{code}/subtitle",
+                    contentType = displayable ? "text/vtt" : "text/plain",
+                    displayable,
+                    ext,
+                    converted = ext == ".srt"
+                });
             }
             return Ok(new { success = true, hasSubtitle = false });
         }
@@ -193,9 +205,31 @@ public class VideoStreamController : ControllerBase
                 return NotFound(new { success = false, message = "字幕不存在" });
 
             var ext = Path.GetExtension(subPath).ToLower();
-            var contentType = ext == ".vtt" ? "text/vtt" : "text/plain";
-            var fileStream = new FileStream(subPath, FileMode.Open, FileAccess.Read);
-            return File(fileStream, contentType);
+            if (!Utils.Subtitles.IsDisplayable(ext))
+            {
+                // ASS/SSA/SUB 不做自动转换（样式语法差得远，硬转出来的东西更难猜），
+                // 原样发出去至少人还能拿链接去本地播放器里看
+                var rawStream = new FileStream(subPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                return File(rawStream, "text/plain");
+            }
+
+            // 转成 WebVTT 再发：浏览器对 <track> 的格式判定很硬（首行必须 WEBVTT、
+            // 时间戳必须句点），把 .srt 直接甩过去只会得到一个 200 响应加一行都不显示的字幕轨
+            string vtt;
+            try
+            {
+                vtt = Utils.Subtitles.ToWebVtt(subPath)
+                      ?? throw new InvalidOperationException("不支持的字幕格式");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "字幕转换失败: {Path}", subPath);
+                return StatusCode(415, new { success = false, message = "这份字幕读不出来或转不成 WebVTT" });
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(vtt);
+            Response.Headers.CacheControl = "public, max-age=3600";
+            return File(bytes, "text/vtt; charset=utf-8");
         }
         catch (Exception ex)
         {
