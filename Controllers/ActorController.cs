@@ -647,12 +647,17 @@ public class ActorController : ControllerBase
     });
 
     /// <summary>
-    /// 获取演员的影片列表
+    /// 获取演员的影片列表。
+    /// sort=date（默认）按发行日期升序：演员页是顺着时间线看一个人作品的地方，番号序看不出先后。
+    /// 库里 release_date 只有 'YYYY' / 'YYYY-MM' / 'YYYY-MM-DD' 三种写法（写入时校验过），字典序即时间序；
+    /// 没日期的排在最后——没日期不等于 1970 年，让它跟有日期的一样抢前排会把时间线打乱。
+    /// sort=code 保留原来那套按番号升序。两个分支都是写死的串，不拼参数。
     /// </summary>
     [HttpGet("{id}/videos")]
     public IActionResult GetActorVideos(string id, [FromQuery] int page = 1, [FromQuery] int pageSize = 20,
         [FromQuery] string? subtitle = null, [FromQuery] string? watermark = null,
-        [FromQuery] string? resolution = null, [FromQuery] bool? hasFile = null)
+        [FromQuery] string? resolution = null, [FromQuery] bool? hasFile = null,
+        [FromQuery] string? sort = null)
     {
         try
         {
@@ -661,6 +666,10 @@ public class ActorController : ControllerBase
             var offset = (page - 1) * pageSize;
             using var conn = GetConnection();
             conn.Open();
+
+            var order = string.Equals(sort, "code", StringComparison.OrdinalIgnoreCase)
+                ? "v.code ASC, v.id ASC"
+                : "CASE WHEN IFNULL(v.release_date, '') = '' THEN 1 ELSE 0 END, v.release_date ASC, v.code ASC, v.id ASC";
 
             // 片源两维/分辨率/下载状态筛选下沉到 SQL：原先前端在已分页的结果里再过滤一次，
             // 只能筛到当前页，页数不同结果就不同。
@@ -684,7 +693,7 @@ public class ActorController : ControllerBase
                     {VideoCardQuery.FileJoin}
                     LEFT JOIN video_series s ON v.seriesid = s.id
                     {where}
-                    ORDER BY v.code ASC, v.id ASC
+                    ORDER BY {order}
                     LIMIT @pageSize OFFSET @offset";
                 using var cmd = new SqliteCommand(sql, conn);
                 foreach (var p in parameters) cmd.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));

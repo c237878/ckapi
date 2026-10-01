@@ -32,7 +32,8 @@ public static class VideoCardQuery
     /// <summary>不含系列名</summary>
     public const string Columns = """
         v.id, v.code, v.name, v.category, v.country, v.cover_path,
-        v.seriesid, v.ctime, df.id AS file_id, df.file_path, df.file_size,
+        v.seriesid, v.ctime, v.original_name, v.release_date,
+        df.id AS file_id, df.file_path, df.file_size,
         df.subtitle_state, df.watermark_state, df.res_w, df.res_h,
         (SELECT COUNT(*) FROM video_files f WHERE f.video_id = v.id) AS version_count,
         v.studioid, (SELECT st.name FROM studios st WHERE st.id = v.studioid) AS studio_name,
