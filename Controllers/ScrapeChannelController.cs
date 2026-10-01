@@ -4,10 +4,11 @@ using Microsoft.AspNetCore.Mvc;
 namespace ckapi.Controllers;
 
 /// <summary>
-/// 抓取通道的配置接口：列表 / 保存 / 删除 / 清冷却 / 试抓 / 单条应用。
+/// 抓取通道的配置接口：列表 / 保存 / 删除 / 清冷却 / 试抓 / 单条应用 / 批量补。
 ///
 /// 试抓是这个界面的重点：他改完地址模板与规则，当场就能看到抽出了什么，
 /// 不用改一版部署一次。试抓一个字都不写库。
+/// 批量补是试抓验证过之后的那一步，跑在后台线程上，接口只负责起、看、停。
 /// </summary>
 [ApiController]
 [Route("api/scrape/channel")]
@@ -15,11 +16,14 @@ public class ScrapeChannelController : ControllerBase
 {
     private readonly ILogger<ScrapeChannelController> _logger;
     private readonly ScrapeChannelService _channels;
+    private readonly ChannelBatch _batch;
 
-    public ScrapeChannelController(ILogger<ScrapeChannelController> logger, ScrapeChannelService channels)
+    public ScrapeChannelController(ILogger<ScrapeChannelController> logger,
+        ScrapeChannelService channels, ChannelBatch batch)
     {
         _logger = logger;
         _channels = channels;
+        _batch = batch;
     }
 
     /// <summary>通道列表。状态字段（能不能问、为什么不能）由服务端算好，前端不重复判</summary>
@@ -43,6 +47,7 @@ public class ScrapeChannelController : ControllerBase
                     c.Referer,
                     c.UserAgent,
                     c.Rules,
+                    c.IdentityRegex,
                     c.MinIntervalMs,
                     c.DailyQuota,
                     c.FailLimit,
@@ -55,7 +60,10 @@ public class ScrapeChannelController : ControllerBase
                     c.LastError,
                     c.LastOkAt,
                     usable = gate.Allowed,
-                    why = gate.Allowed ? "可以问" : gate.Why
+                    why = gate.Allowed ? "可以问" : gate.Why,
+                    // "还能补多少条"：批量按钮上要显示影响条数，点了才知道要跑多久
+                    missingCount = _channels.MissingCount(c),
+                    quotaLeft = _channels.RemainingQuota(c)
                 };
             }).ToList();
             return Ok(new { success = true, data, targets = ScrapeChannelService.Targets });
@@ -174,7 +182,7 @@ public class ScrapeChannelController : ControllerBase
 
     /// <summary>对某一条记录走一遍通道并落库（只填空值那条规矩照旧）</summary>
     [HttpPost("{id}/apply")]
-    public IActionResult Apply(string id, [FromQuery] string entityId)
+    public async Task<IActionResult> Apply(string id, [FromQuery] string entityId, CancellationToken ct)
     {
         var c = _channels.Get(id);
         if (c is null) return NotFound(new { success = false, message = "通道不存在" });
@@ -185,7 +193,7 @@ public class ScrapeChannelController : ControllerBase
 
         try
         {
-            var (written, skipped) = _channels.Apply(id, entityId);
+            var (written, skipped) = await _channels.ApplyAsync(id, entityId, ct);
             return Ok(new
             {
                 success = true,
@@ -200,4 +208,37 @@ public class ScrapeChannelController : ControllerBase
         }
     }
 
+    // ---------------------------------------------------------------- 批量补数据
+
+    /// <summary>
+    /// 起一轮批量：把这条通道能补的字段缺着的记录，按它自己的间隔/配额/熔断一条条问过去。
+    /// 接口立刻返回，进度靠 <see cref="BatchStatus"/> 轮询——一次问几百条要几分钟，
+    /// 挂在一个 HTTP 请求上必然被中途断掉。
+    /// </summary>
+    [HttpPost("{id}/batch")]
+    public IActionResult StartBatch(string id, [FromQuery] int limit = 50)
+    {
+        try
+        {
+            var (started, message) = _batch.Start(id, limit);
+            return Ok(new { success = started, message, data = _batch.Current });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Start batch failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    /// <summary>当前或最后一轮批量的进度。没有则回 null，前端按"没在跑"处理</summary>
+    [HttpGet("batch/status")]
+    public IActionResult BatchStatus() => Ok(new { success = true, data = _batch.Current });
+
+    /// <summary>停止批量：正在处理的那一条会做完，不会半路掐断请求</summary>
+    [HttpPost("batch/stop")]
+    public IActionResult StopBatch()
+    {
+        _batch.Stop();
+        return Ok(new { success = true, message = "已请求停止", data = _batch.Current });
+    }
 }

@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 14;
+    private const int TargetVersion = 15;
 
     /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
     public static int SchemaTargetVersion => TargetVersion;
@@ -687,6 +687,16 @@ public class DataService : IDataService
         AddColumnIfMissing(conn, "video_files", "fingerprint", "TEXT");
     }
 
+    /// <summary>
+    /// 通道加"身份校验"正则。加这一列是因为实测到 javcup 对查无此名的回答不是 404，
+    /// 而是 200 + 首页 —— 首页正文里正好夹着别人的生日，正则第一个命中就会把那人写进我们库里。
+    /// 空值表示不校验，所以已有的两条内置通道行为不变。
+    /// </summary>
+    private void AddChannelIdentity(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "scrape_channels", "identity_regex", "TEXT");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -713,6 +723,7 @@ public class DataService : IDataService
             .Append((12, "点赞记录带上点赞那一刻的播放进度 play_time（见 AddLikePlayTime 注释）", AddLikePlayTime))
             .Append((13, "播放进度搬到服务端 file_state 表（见 AddFileState 注释）", AddFileState))
             .Append((14, "版本行加内容指纹 fingerprint（见 AddFingerprint 注释）", AddFingerprint))
+            .Append((15, "抓取通道加身份校验正则 identity_regex（见 AddChannelIdentity 注释）", AddChannelIdentity))
             .ToArray();
     }
 
@@ -1022,6 +1033,7 @@ public class DataService : IDataService
                 referer            TEXT,
                 user_agent         TEXT,
                 rules              TEXT    NOT NULL DEFAULT '[]',
+                identity_regex     TEXT,
                 min_interval_ms    INTEGER NOT NULL DEFAULT 1500,
                 daily_quota        INTEGER NOT NULL DEFAULT 300,
                 fail_limit         INTEGER NOT NULL DEFAULT 3,
@@ -1352,52 +1364,151 @@ public class DataService : IDataService
     }
 
     /// <summary>
-    /// 播种内置通道：av-wiki 与老师图鉴的女优档案。
+    /// 播种抓取通道：两条内置女优档案源 + javcup 的影片与女优。
     ///
-    /// 它们的抽取逻辑都在代码里（"唯一命中才算数"那套判定不适合降级成配置项），
+    /// av-wiki 与老师图鉴的抽取逻辑在代码里（"唯一命中才算数"那套判定不适合降级成配置项），
     /// 所以 fetch_kind 记 builtin、rules 留空——但**限速、配额、熔断、开关都从这条行走**，
     /// 于是设置页里能看到它、能关掉它、能调它一天问多少次。
+    /// javcup 两条相反：抽什么全写在 rules 里，界面上就能改、也能照着加新源。
     /// 按域名判重而不是按"表是否为空"：新加一个源时老库要能补上这一条，
     /// 而他改过的参数不能被启动流程复活。
     /// </summary>
     private static void SeedScrapeChannels(SqliteConnection conn)
     {
-        SeedChannel(conn, "av-wiki", "av-wiki 女优档案",
-            "https://av-wiki.net/wp-json/wp/v2/tags?search={q}", "https://av-wiki.net/",
-            1500, 300, 120,
-            "内置抽取：唯一命中且名字对得上才写；站方上了 Imunify360 反爬，被拒时会自动进入冷却");
+        SeedChannel(conn, "av-wiki", new ScrapeChannelService.Channel
+        {
+            Name = "av-wiki 女优档案", Entity = "actor", QuerySource = "name",
+            FetchUrl = "https://av-wiki.net/wp-json/wp/v2/tags?search={q}",
+            FetchKind = "builtin",
+            Referer = "https://av-wiki.net/",
+            MinIntervalMs = 1500, DailyQuota = 300, CooldownMinutes = 120,
+            Note = "内置抽取：唯一命中且名字对得上才写；站方上了 Imunify360 反爬，被拒时会自动进入冷却"
+        });
 
         // 站方 /terms 明写不得批量抓取，所以这条的礼貌参数比 av-wiki 保守一个数量级
-        SeedChannel(conn, "laoshi.ink", "老师图鉴 女优档案",
-            "https://laoshi.ink/actresses/", "https://laoshi.ink/",
-            8000, 40, 240,
-            "内置抽取：只补生日、别名（日文名/罗马音）与头像，姓名要唯一命中档案编号才写；" +
-            "站方用户协议禁止批量抓取，每日配额故意给得小，站上缺的字段一律写「待补充」已过滤");
+        SeedChannel(conn, "laoshi.ink", new ScrapeChannelService.Channel
+        {
+            Name = "老师图鉴 女优档案", Entity = "actor", QuerySource = "name",
+            FetchUrl = "https://laoshi.ink/actresses/",
+            FetchKind = "builtin",
+            Referer = "https://laoshi.ink/",
+            MinIntervalMs = 8000, DailyQuota = 40, CooldownMinutes = 240,
+            Note = "内置抽取：只补生日、别名（日文名/罗马音）与头像，姓名要唯一命中档案编号才写；" +
+                   "站方用户协议禁止批量抓取，每日配额故意给得小，站上缺的字段一律写「待补充」已过滤"
+        });
+
+        // ---- javcup：以下地址与字段都是 2026-10-01 实测页面得来的，纯规则通道，不引爬虫类 ----
+        // 实测到的两件事决定了配置怎么写：
+        //   · 番号页命中就是那一部（<h1>/标题以番号开头），查无此片时它不回 404，
+        //     而是 200 跳到 /movies 列表页 —— 所以必须配身份校验，不能只靠"正则没命中"兜底；
+        //   · 女优页要日文名才对得上（蒼井そら → /model/sora-aoi），我们库里存的是简体中文译名，
+        //     对不上时同样 200 落到首页，而首页正文里正好夹着别人的生年月日。
+        // 礼貌参数照老师图鉴那一档：站方没明说能批量敲，配额故意给小，要提由人在界面上调。
+        SeedChannel(conn, "javcup.com/movie", new ScrapeChannelService.Channel
+        {
+            Name = "javcup 影片資料", Entity = "video", QuerySource = "code",
+            FetchUrl = "https://javcup.com/movie/{q}", FetchKind = "html",
+            Referer = "https://javcup.com/",
+            Rules = JavcupVideoRules, IdentityRegex = JavcupIdentity,
+            MinIntervalMs = 8000, DailyQuota = 60, CooldownMinutes = 240,
+            Note = "网页正则抽取：只补发行日期与片商（片商先按正名/别名归一，对不上才新建）。" +
+                   "番号直接当路径，命中不了就是站上没收这部片；身份校验认标题里的番号"
+        });
+
+        // 女优这条**默认关着**，不是忘了开：库里是简体中文译名，站上认日文名，
+        // 打开后绝大多数请求都会白敲（身份校验会挡住写错人，但挡不住浪费配额）。
+        // 要用先把日文名补成别名再启用；头像不在这里——那是内置源才做的事（要落盘、要进 actor_images）。
+        SeedChannel(conn, "javcup.com/actors", new ScrapeChannelService.Channel
+        {
+            Name = "javcup 女优档案", Entity = "actor", QuerySource = "name",
+            FetchUrl = "https://javcup.com/actors/{q}", FetchKind = "html",
+            Referer = "https://javcup.com/",
+            Rules = JavcupActorRules, IdentityRegex = JavcupIdentity,
+            MinIntervalMs = 10_000, DailyQuota = 40, CooldownMinutes = 240,
+            Enabled = false,
+            Note = "默认关着：站上用日文名，库里的简体中文名对不上，硬开只会白敲请求（身份校验会挡住写错人）。" +
+                   "补出生日期（日式→ISO）与简介；先补日文别名再启用"
+        });
     }
 
+    /// <summary>javcup 影片页：商品發售日（已是 ISO）与發行商。片商那条会先按正名/别名归一，对不上才新建</summary>
+    private static string JavcupVideoRules => RulesJson(new[]
+    {
+        new ScrapeChannelService.Rule
+        {
+            Target = "videos.release_date",
+            Path = @"商品發售日:\s*</span><span itemProp=""datePublished"">([^<]+)"
+        },
+        new ScrapeChannelService.Rule
+        {
+            Target = "videos.studio_name",
+            Path = @"<a class=""studio""[^>]*>([^<]{1,40})</a>"
+        }
+    });
+
+    /// <summary>
+    /// javcup 女优页：生年月日（日式 → ISO）与那一整行档案资料当简介。
+    /// 生日一定要锚在那个 info 块上：页面别处还有"出生年月日：1999年"这种别人的数据。
+    /// </summary>
+    private static string JavcupActorRules => RulesJson(new[]
+    {
+        new ScrapeChannelService.Rule
+        {
+            Target = "actors.birthdate",
+            Path = @"<li><span class=""text-multi-ellipsis"">[^<]*?生年月日[:：]\s*(\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)",
+            Transform = "jdate"
+        },
+        new ScrapeChannelService.Rule
+        {
+            Target = "actors.bio",
+            Path = @"<li><span class=""text-multi-ellipsis"">([^<]{10,400})",
+            Transform = "collapse"
+        }
+    });
+
+    /// <summary>
+    /// javcup 的"这页讲的是谁/哪部片"：取标题里 " - JavCup" 之前那一段。
+    /// 影片页得到 "CRS-058 墮落的人妻…"，女优页得到 "蒼井そら(Sora Aoi) 熱門作品"；
+    /// 落回首页时是 "JAVCUP - AV磁力連結分享 - 日本成人影片資料庫"，不含查询词，整条作废。
+    /// </summary>
+    private const string JavcupIdentity = @"<title[^>]*>\s*(.{1,80}?)\s*[-–]\s*JavCup";
+
+    private static string RulesJson(ScrapeChannelService.Rule[] rules)
+        => System.Text.Json.JsonSerializer.Serialize(rules, ScrapeChannelService.RuleJson);
+
+    /// <summary>
+    /// 插入一条通道，按 hostKey（地址里的域名片段）判重。
+    /// 已存在就一个字都不动：限速/配额/开关这些他可能在界面上改过，启动流程不能复活默认值。
+    /// </summary>
     private static void SeedChannel(
-        SqliteConnection conn, string host, string name, string url, string referer,
-        int intervalMs, int quota, int cooldownMinutes, string note)
+        SqliteConnection conn, string hostKey, ScrapeChannelService.Channel c)
     {
         if (Scalar(conn, "SELECT id FROM scrape_channels WHERE fetch_url LIKE @h",
-                P("@h", $"%{host}%")) != null) return;
+                P("@h", $"%{hostKey}%")) != null) return;
 
         const string sql = @"
             INSERT INTO scrape_channels
                 (id, name, entity, enabled, query_source, fetch_url, fetch_kind, referer, user_agent,
-                 rules, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
+                 rules, identity_regex, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
             VALUES
-                (@id, @name, 'actor', 1, 'name', @url, 'builtin', @referer, NULL, '[]',
-                 @interval, @quota, 3, @cooldown, @note, @t, @t)";
+                (@id, @name, @entity, @enabled, @qs, @url, @kind, @ref, NULL, @rules, @identity,
+                 @interval, @quota, @fail, @cooldown, @note, @t, @t)";
         using var cmd = new SqliteCommand(sql, conn);
         cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N").ToUpper());
-        cmd.Parameters.AddWithValue("@name", name);
-        cmd.Parameters.AddWithValue("@url", url);
-        cmd.Parameters.AddWithValue("@referer", referer);
-        cmd.Parameters.AddWithValue("@interval", intervalMs);
-        cmd.Parameters.AddWithValue("@quota", quota);
-        cmd.Parameters.AddWithValue("@cooldown", cooldownMinutes);
-        cmd.Parameters.AddWithValue("@note", note);
+        cmd.Parameters.AddWithValue("@name", c.Name);
+        cmd.Parameters.AddWithValue("@entity", c.Entity);
+        cmd.Parameters.AddWithValue("@enabled", c.Enabled ? 1 : 0);
+        cmd.Parameters.AddWithValue("@qs", c.QuerySource);
+        cmd.Parameters.AddWithValue("@url", c.FetchUrl);
+        cmd.Parameters.AddWithValue("@kind", c.FetchKind);
+        cmd.Parameters.AddWithValue("@ref", (object?)c.Referer ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@rules", c.Rules);
+        cmd.Parameters.AddWithValue("@identity", (object?)c.IdentityRegex ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@interval", c.MinIntervalMs);
+        cmd.Parameters.AddWithValue("@quota", c.DailyQuota);
+        cmd.Parameters.AddWithValue("@fail", c.FailLimit);
+        cmd.Parameters.AddWithValue("@cooldown", c.CooldownMinutes);
+        cmd.Parameters.AddWithValue("@note", (object?)c.Note ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         cmd.ExecuteNonQuery();
     }

@@ -3,7 +3,7 @@ using System.Text;
 namespace ckapi.Utils;
 
 /// <summary>
-/// 字幕格式转换：把盘上那份文件变成浏览器 <track> 认的东西。
+/// 字幕格式转换：把盘上那份文件变成浏览器 &lt;track&gt; 认的东西。
 ///
 /// 为什么必须转一道：原生 <code>&lt;track&gt;</code> 只吃 WebVTT，而且判定很硬——
 /// 第一行要以 <code>WEBVTT</code> 开头，时间戳的小数点必须是句点。

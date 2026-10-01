@@ -54,6 +54,11 @@ public sealed class ScrapeChannelService
         public string? UserAgent { get; set; }
         /// <summary>抽取规则，JSON 数组，形状见 <see cref="Rule"/></summary>
         public string Rules { get; set; } = "[]";
+        /// <summary>
+        /// 身份校验：从页面里抽出"这页讲的是谁/哪部片"，要求它包含查询词，否则整条作废。
+        /// 空表示不校验。详见 <see cref="VerifyIdentity"/>。
+        /// </summary>
+        public string? IdentityRegex { get; set; }
         public int MinIntervalMs { get; set; } = 1500;
         public int DailyQuota { get; set; } = 300;
         public int FailLimit { get; set; } = 3;
@@ -164,6 +169,7 @@ public sealed class ScrapeChannelService
         Referer = Null(r, "referer"),
         UserAgent = Null(r, "user_agent"),
         Rules = r.GetString(r.GetOrdinal("rules")),
+        IdentityRegex = Null(r, "identity_regex"),
         MinIntervalMs = r.GetInt32(r.GetOrdinal("min_interval_ms")),
         DailyQuota = r.GetInt32(r.GetOrdinal("daily_quota")),
         FailLimit = r.GetInt32(r.GetOrdinal("fail_limit")),
@@ -219,20 +225,24 @@ public sealed class ScrapeChannelService
         }
         if (c.FetchKind == "json" && rules.Count > 0 && rules.All(x => x.Path.Length == 0))
             problems.Add("json 通道至少要给一个字段写路径");
+        // 身份校验的正则也要在这里过一遍：填错了不该等到批量跑起来才发现一条都没写进去
+        if (!string.IsNullOrWhiteSpace(c.IdentityRegex) && !IsValidRegex(c.IdentityRegex))
+            problems.Add("身份校验的正则不合法");
 
         if (problems.Count > 0) return (false, string.Join("；", problems));
 
         const string sql = @"
             INSERT INTO scrape_channels
                 (id, name, entity, enabled, query_source, fetch_url, fetch_kind, referer, user_agent,
-                 rules, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
-            VALUES (@id, @name, @entity, @enabled, @qs, @url, @kind, @ref, @ua, @rules,
+                 rules, identity_regex, min_interval_ms, daily_quota, fail_limit, cooldown_minutes, note, ctime, utime)
+            VALUES (@id, @name, @entity, @enabled, @qs, @url, @kind, @ref, @ua, @rules, @identity,
                     @interval, @quota, @fail, @cool, @note, @now, @now)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, entity = excluded.entity, enabled = excluded.enabled,
                 query_source = excluded.query_source, fetch_url = excluded.fetch_url,
                 fetch_kind = excluded.fetch_kind, referer = excluded.referer, user_agent = excluded.user_agent,
-                rules = excluded.rules, min_interval_ms = excluded.min_interval_ms,
+                rules = excluded.rules, identity_regex = excluded.identity_regex,
+                min_interval_ms = excluded.min_interval_ms,
                 daily_quota = excluded.daily_quota, fail_limit = excluded.fail_limit,
                 cooldown_minutes = excluded.cooldown_minutes, note = excluded.note,
                 utime = excluded.utime";
@@ -251,6 +261,7 @@ public sealed class ScrapeChannelService
         cmd.Parameters.AddWithValue("@ref", (object?)c.Referer?.Trim() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@ua", (object?)c.UserAgent?.Trim() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@rules", JsonSerializer.Serialize(rules, RuleJson));
+        cmd.Parameters.AddWithValue("@identity", (object?)c.IdentityRegex?.Trim() ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@interval", c.MinIntervalMs);
         cmd.Parameters.AddWithValue("@quota", c.DailyQuota);
         cmd.Parameters.AddWithValue("@fail", c.FailLimit);
@@ -423,6 +434,11 @@ public sealed class ScrapeChannelService
             var found = Extract(c, body);
             if (c.FetchKind == "builtin")
                 return (true, $"站点应答正常（{body.Length} 字节）。内置通道的抽取在代码里，这里不解析字段", found);
+
+            // 身份校验放在抽取之前，且"没过"要报成没数据而不是报成失败（见 VerifyIdentity 注释）
+            var mismatch = VerifyIdentity(c, body, queryValue);
+            if (mismatch is not null) return (true, mismatch, new Dictionary<string, string>());
+
             return (true, $"抽到 {found.Count} 个字段", found);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
@@ -443,6 +459,37 @@ public sealed class ScrapeChannelService
 
     private static string Slug(string s) =>
         new string(s.Trim().ToLowerInvariant().Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_').ToArray());
+
+    /// <summary>
+    /// 这页讲的是不是我们要问的那个人 / 那部片。返回 null 表示通过。
+    ///
+    /// 为什么必须有：站方对"查无此人"的回答不是 404，而是 200 + 首页或列表页。
+    /// 实测 javcup：/actors/二宫和香 会落到首页，而首页正文里正好夹着别人的生年月日与档案行；
+    /// 引擎取的是正则的第一个命中，于是那位陌生人的生日就被写进了这位演员的库里。
+    /// 这比抓不到危险得多——抓不到看得见，认错人长期没人会去核对。
+    ///
+    /// 不通过要报成"站上没有"（成功但不给字段），不能报成失败：熔断是留给对方真翻脸的，
+    /// 别让"这个名字对不上"累计三次把整条通道关进两小时的冷却里。
+    /// 没配 identity_regex 就不校验，所以内置通道与老通道行为不变。
+    /// </summary>
+    private static string? VerifyIdentity(Channel c, string body, string? queryValue)
+    {
+        if (string.IsNullOrWhiteSpace(c.IdentityRegex)) return null;
+        if (string.IsNullOrWhiteSpace(queryValue)) return "没给查询词，无法做身份校验，未取任何字段";
+
+        Match m;
+        try { m = Regex.Match(body, c.IdentityRegex, RegexOptions.IgnoreCase); }
+        catch (ArgumentException) { return "身份校验的正则不合法，未取任何字段"; }
+        if (!m.Success) return "身份校验没在页面上抽到值（这页大概不是档案页），未取任何字段";
+
+        var subject = (m.Groups.Count > 1 && m.Groups[1].Success ? m.Groups[1].Value : m.Value).Trim();
+        if (Normalize(subject).Contains(Normalize(queryValue))) return null;
+        return $"页面上是「{Truncate(subject, 40)}」，不是「{Truncate(queryValue, 40)}」，未取任何字段";
+    }
+
+    /// <summary>比对用的归一：压掉空白、统一大小写（番号有的存小写，页面上是大写）</summary>
+    private static string Normalize(string s) =>
+        new string(s.Where(ch => !char.IsWhiteSpace(ch)).ToArray()).ToUpperInvariant();
 
     /// <summary>挑战页/拒答页的指纹。判定逻辑与内置档案源共用一份，见 <see cref="WebProbe"/></summary>
     public static string? DetectChallenge(string body) => WebProbe.Challenge(body);
@@ -572,27 +619,106 @@ public sealed class ScrapeChannelService
     // ---------------------------------------------------------------- 落地
 
     /// <summary>
-    /// 把抽到的字段写进实体。两条硬规矩：
-    ///   · 目标必须在白名单里（Save 已校验，这里再挡一次，防止有人直接调引擎）；
-    ///   · ifEmptyOnly 的规则只填空值——手写过一遍的简介不能被机器覆盖。
+    /// 对某一条记录走一遍通道并落库。异步且内部先等够最小间隔：
+    /// 单条应用和批量补数据走的是同一条礼貌路线，不然"应用"就成了绕过刹车的后门。
     /// </summary>
-    public (int Written, List<string> Skipped) Apply(string channelId, string entityId)
+    public async Task<(int Written, List<string> Skipped)> ApplyAsync(
+        string channelId, string entityId, CancellationToken ct = default)
     {
         var c = Get(channelId);
         if (c is null) throw new InvalidOperationException("通道不存在");
         using var conn = _db.GetConnection();
         conn.Open();
-        return ApplyTo(conn, c, entityId);
+        await WaitTurnAsync(c, ct);
+        return await ApplyTo(conn, c, entityId, ct);
     }
 
-    private (int Written, List<string> Skipped) ApplyTo(SqliteConnection conn, Channel c, string entityId)
+    /// <summary>
+    /// 哪些记录还缺这条通道要填的字段，用来给批量任务排候选。
+    ///
+    /// 列名只从 <see cref="Targets"/> 白名单里来（规则存的是字符串，谁能直接改库就能塞别的列名，
+    /// 所以这里坚持查表而不是拼用户输入）；一个目标都没有就返回空，宁可不跑也不乱捞。
+    /// 顺序是刻意排的：影片按最新的先问（新片在站上的命中率高得多），
+    /// 演员按挂着的片数多的先来（这批人才真的值得花请求）。
+    /// </summary>
+    public List<string> MissingFor(Channel c, int limit)
+    {
+        var plan = MissingPlan(c);
+        if (plan is null) return new List<string>();
+        var (table, keyCol, where) = plan.Value;
+        var order = c.Entity == "actor"
+            ? "(SELECT COUNT(*) FROM video_actors va WHERE va.actor_id = a.id) DESC, a.name"
+            : "a.ctime DESC, a.id";
+
+        var ids = new List<string>();
+        using var conn = _db.GetConnection();
+        conn.Open();
+        using var cmd = new SqliteCommand(
+            $"SELECT a.[{keyCol}] FROM [{table}] a WHERE {where} ORDER BY {order} LIMIT @n", conn);
+        cmd.Parameters.AddWithValue("@n", Math.Clamp(limit, 1, ChannelBatch.HardLimit));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) ids.Add(reader.GetString(0));
+        return ids;
+    }
+
+    /// <summary>这条通道还能补多少条记录。批量按钮上要显示影响条数，不然点了才知道跑多久</summary>
+    public int MissingCount(Channel c)
+    {
+        var plan = MissingPlan(c);
+        if (plan is null) return 0;
+        var (table, _, where) = plan.Value;
+
+        using var conn = _db.GetConnection();
+        conn.Open();
+        using var cmd = new SqliteCommand($"SELECT COUNT(*) FROM [{table}] a WHERE {where}", conn);
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
+    /// 组装"还缺这条通道字段"的查询。列名只从 <see cref="Targets"/> 白名单里来
+    /// （规则存的是字符串，谁能直接改库就能塞别的列名，所以这里坚持查表而不是拼用户输入）；
+    /// 一个可用目标都没有就返回 null，宁可不跑也不乱捞。
+    /// </summary>
+    private static (string Table, string KeyCol, string Where)? MissingPlan(Channel c)
+    {
+        var (table, keyCol) = c.Entity == "actor" ? ("actors", "id") : ("videos", "id");
+        var empty = new List<string>();
+        foreach (var rule in ParseRules(c.Rules))
+        {
+            if (!IsTargetAllowed(rule.Target, out var t)) continue;
+            if (t.Entity != c.Entity) continue;
+            // 片商不是列：抽来的名字会解析/新建 studios 再挂，"还缺"就是这部片没片商 id
+            var column = rule.Target == "videos.studio_name" ? "studioid" : t.Column;
+            if (string.IsNullOrEmpty(column)) continue;
+            empty.Add($"IFNULL([{column}], '') = ''");
+        }
+        if (empty.Count == 0) return null;
+
+        // 演员侧只问日本女优：这两个站都只收她们，拿别人的名字去敲等于白花一次请求
+        var gate = c.Entity == "actor" ? $" AND {ActorGate.EligibleSql}" : "";
+        return (table, keyCol, $"({string.Join(" OR ", empty.Distinct())}){gate}");
+    }
+
+    /// <summary>这条通道现在最多还能问几条：配额减今天已用，再看有没有在冷却里</summary>
+    public int RemainingQuota(Channel c) =>
+        c.UsedDate == DateTime.Now.ToString("yyyy-MM-dd")
+            ? Math.Max(0, c.DailyQuota - c.UsedToday)
+            : c.DailyQuota;
+
+    /// <summary>
+    /// 把抽到的字段写进实体。两条硬规矩：
+    ///   · 目标必须在白名单里（Save 已校验，这里再挡一次，防止有人直接调引擎）；
+    ///   · ifEmptyOnly 的规则只填空值——手写过一遍的简介不能被机器覆盖。
+    /// </summary>
+    private async Task<(int Written, List<string> Skipped)> ApplyTo(
+        SqliteConnection conn, Channel c, string entityId, CancellationToken ct = default)
     {
         var (table, keyCol) = c.Entity == "actor" ? ("actors", "id") : ("videos", "id");
         var queryValue = QueryValue(conn, c, table, keyCol, entityId);
         if (string.IsNullOrEmpty(queryValue))
             return (0, new List<string> { "这条记录没有可用作查询词的字段值" });
 
-        var (ok, message, found) = FetchAsync(c, queryValue).GetAwaiter().GetResult();
+        var (ok, message, found) = await FetchAsync(c, queryValue, ct);
         Report(c.Id, ok, ok ? null : message);
         if (!ok || found.Count == 0) return (0, new List<string> { ok ? "什么都没抽到" : message });
 
