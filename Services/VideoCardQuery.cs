@@ -34,7 +34,7 @@ public static class VideoCardQuery
         v.id, v.code, v.name, v.category, v.country, v.cover_path,
         v.seriesid, v.ctime, v.original_name, v.release_date,
         df.id AS file_id, df.file_path, df.file_size,
-        df.subtitle_state, df.watermark_state, df.res_w, df.res_h,
+        df.subtitle_state, df.watermark_state, df.res_w, df.res_h, df.codec,
         (SELECT COUNT(*) FROM video_files f WHERE f.video_id = v.id) AS version_count,
         v.studioid, (SELECT st.name FROM studios st WHERE st.id = v.studioid) AS studio_name,
         (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
@@ -68,6 +68,8 @@ public static class VideoCardQuery
             ["watermarkState"] = Str(reader, "watermark_state") ?? Utils.SourceStates.Unknown,
             ["resW"] = Int(reader, "res_w"),
             ["resH"] = Int(reader, "res_h"),
+            // 容器里读到的原始 fourcc；没扫到就是空串，前端按"未扫描"处理
+            ["codec"] = Str(reader, "codec") ?? "",
             // 卡片上的文件字段都属于"默认那一版"（v11）：带出版本行 id 与总版本数，
             // 前端据此决定要不要显示版本切换与"共 N 版"的标识
             ["fileId"] = Str(reader, "file_id"),
@@ -124,6 +126,8 @@ public static class VideoCardQuery
         public string? Subtitle { get; set; }
         public string? Watermark { get; set; }
         public string? Resolution { get; set; }
+        /// <summary>视频编码档位，取值见 <see cref="Utils.SourceStates.Codecs"/></summary>
+        public string? Codec { get; set; }
         public string? StudioId { get; set; }
         public bool? HasFile { get; set; }
     }
@@ -154,6 +158,12 @@ public static class VideoCardQuery
         if (f.Resolution is not null && Utils.SourceStates.Resolutions.TryGetValue(f.Resolution, out var clause))
         {
             where += $" AND ({clause})";
+        }
+
+        // 编码档同样过白名单：条件都是这里拼好的常量，前端传来的字符串只当字典键用
+        if (f.Codec is not null && Utils.SourceStates.Codecs.TryGetValue(f.Codec, out var codecClause))
+        {
+            where += $" AND ({codecClause})";
         }
 
         // 片商是一部片的一个值，直接比列即可

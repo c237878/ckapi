@@ -47,6 +47,7 @@ public class VideoController : ControllerBase
         [FromQuery] string? subtitle = null,
         [FromQuery] string? watermark = null,
         [FromQuery] string? resolution = null,
+        [FromQuery] string? codec = null,
         [FromQuery] string? studio = null,
         [FromQuery] string? typeId = null,
         [FromQuery] bool? prioritizeUnrated = null,
@@ -98,10 +99,10 @@ public class VideoController : ControllerBase
                 parameters.Add(new SqliteParameter("@country", country));
             }
 
-            // 片源两维 / 分辨率档 / 有没有文件：与系列页、演员页共用一套口径
+            // 片源两维 / 分辨率档 / 编码档 / 有没有文件：与系列页、演员页共用一套口径
             VideoCardQuery.AppendCommonFilters(ref whereClause, parameters, new VideoCardQuery.SourceFilter
             {
-                Subtitle = subtitle, Watermark = watermark, Resolution = resolution,
+                Subtitle = subtitle, Watermark = watermark, Resolution = resolution, Codec = codec,
                 StudioId = studio, HasFile = hasFile
             });
 

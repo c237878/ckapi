@@ -53,4 +53,38 @@ public static class SourceStates
             ["1080"] = "MIN(df.res_w, df.res_h) >= 1080 AND MIN(df.res_w, df.res_h) < 2048",
             ["2160"] = "MIN(df.res_w, df.res_h) >= 2048"
         };
+
+    /// <summary>
+    /// 视频编码四档 → 容器里 sample entry 的 fourcc 集合。库里存的就是扫描读到的原始 fourcc，
+    /// 这里只负责"怎么归堆"，不做转写——转写成 H.264 再反查回 avc1 是白白多一层可能出错的映射。
+    ///
+    /// fourcc 大小写敏感（avc1 与 AVC1 在库里是两个字面量），所以常见变体都列上；
+    /// 认不出的那些不当成没筛到，而是落到 other 这一档，界面上叫「其他」——
+    /// 宁可让一堆老封装待在"其他"里让人去查，也别静默地把它们筛掉。
+    /// 未扫描单开一档，理由与分辨率一样：得让人看出还有哪些文件没量过。
+    /// 与分辨率同一口径：筛的是当前作为影片口径的那一版（df 那行），不是任一版本。
+    /// </summary>
+    private static readonly (string Key, string[] Fourcc)[] CodecGroups =
+    {
+        ("h264", new[] { "avc1", "avc3", "AiSV", "alic" }),
+        ("hevc", new[] { "hev1", "hvc1", "hev2", "hvc2" }),
+        ("av1", new[] { "av01" }),
+        ("vp9", new[] { "vp09" }),
+        ("mpeg4", new[] { "mp4v", "XVID", "xvid", "DX50", "dx50", "DIVX", "divx", "3IV1", "3IV2", "SDP4" }),
+    };
+
+    public static readonly IReadOnlyDictionary<string, string> Codecs = BuildCodecs();
+
+    private static Dictionary<string, string> BuildCodecs()
+    {
+        var known = CodecGroups.SelectMany(g => g.Fourcc).ToList();
+        var quoted = string.Join(",", known.Select(f => $"'{f}'"));
+        var map = CodecGroups.ToDictionary(
+            g => g.Key,
+            g => $"df.codec IN ({string.Join(",", g.Fourcc.Select(f => $"'{f}'"))})",
+            StringComparer.Ordinal);
+        map["other"] = $"IFNULL(df.codec, '') <> '' AND df.codec NOT IN ({quoted})";
+        map["unscanned"] = "IFNULL(df.codec, '') = ''";
+        return map;
+    }
 }

@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 15;
+    private const int TargetVersion = 16;
 
     /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
     public static int SchemaTargetVersion => TargetVersion;
@@ -697,6 +697,16 @@ public class DataService : IDataService
         AddColumnIfMissing(conn, "scrape_channels", "identity_regex", "TEXT");
     }
 
+    /// <summary>
+    /// 版本行加视频编码 fourcc。这一列不是新能力：MediaProbe 走 stsd 的时候本来就读到了它，
+    /// 只是一直留在日志里。加列 + 扫描顺手写回，回填就走普通扫描那条路（SourceScanner.Pending
+    /// 把"codec 还空着"也当候选），不在启动迁移里逐个开文件——那是三十分钟级的 IO。
+    /// </summary>
+    private void AddVideoCodec(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "video_files", "codec", "TEXT");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -724,6 +734,7 @@ public class DataService : IDataService
             .Append((13, "播放进度搬到服务端 file_state 表（见 AddFileState 注释）", AddFileState))
             .Append((14, "版本行加内容指纹 fingerprint（见 AddFingerprint 注释）", AddFingerprint))
             .Append((15, "抓取通道加身份校验正则 identity_regex（见 AddChannelIdentity 注释）", AddChannelIdentity))
+            .Append((16, "版本行加视频编码 fourcc codec（见 AddVideoCodec 注释）", AddVideoCodec))
             .ToArray();
     }
 
@@ -888,6 +899,9 @@ public class DataService : IDataService
                 file_size       INTEGER NOT NULL DEFAULT 0,
                 res_w           INTEGER,
                 res_h           INTEGER,
+                /* 视频轨 sample entry 的 fourcc（avc1 / hev1 / av01 …），由扫描读容器头顺带拿到。
+                   空 = 还没扫到；与 res_w/res_h 同一趟，不额外花 IO */
+                codec           TEXT,
                 subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
                 watermark_state TEXT    NOT NULL DEFAULT 'unknown',
                 scan_time       TEXT,

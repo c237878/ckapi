@@ -4,7 +4,8 @@ using Microsoft.Data.Sqlite;
 namespace ckapi.Services;
 
 /// <summary>
-/// 片源扫描：**只量分辨率**。读视频文件的容器头拿显示宽高，落到那一版的 res_w / res_h / scan_time。
+/// 片源扫描：**读容器头**。一次小读顺手拿三样：显示宽高、视频轨编码 fourcc、内容指纹，
+/// 落到那一版的 res_w / res_h / codec / fingerprint（+ scan_time）。
 ///
 /// 扫描对象是文件（video_files 一行），不是影片（v11 起）：一部片有三个版本时，
 /// 每一版都得自己量一次，"同系列片都扫过了"不代表解说版也扫过。
@@ -17,7 +18,7 @@ namespace ckapi.Services;
 /// 探测与写库分成两步（Inspect / Write），因为文件在 SMB 共享上、一个来回几百毫秒，
 /// 而 SQLite 连接不能多个线程共用：并发只放在探测那一步，写库回到单线程一个事务里连着做。
 ///
-/// 扫描只写这三列，别的列一概不碰：字幕与广告水印两维由人在界面上给结论，
+/// 扫描只写这几列（宽高、编码、指纹、扫描时间），别的列一概不碰：字幕与广告水印两维由人在界面上给结论，
 /// 而"没给过结论"就是今日推荐用来挑片的"没看过"（见 Utils.SourceStates.Unrated）——
 /// 所以自动途径绝不能去填那两个状态，否则全站都会变成"有结论"，推荐池当场清空。
 /// </summary>
@@ -29,7 +30,7 @@ public sealed class SourceScanner
     /// <param name="Ok">探到了宽高</param>
     /// <param name="Width">显示宽</param>
     /// <param name="Height">显示高</param>
-    /// <param name="Codec">视频轨 fourcc，只用于日志</param>
+    /// <param name="Codec">视频轨 fourcc（avc1 / hev1 / av01 …），落到 video_files.codec</param>
     /// <param name="Error">探不出来的原因</param>
     /// <param name="Fingerprint">内容指纹；读不出来时为 null，写回时保留原值而不是清空</param>
     /// <param name="Missing">文件在库里登记了、盘上却不存在。和"在但读不出头"分开数：
@@ -45,14 +46,14 @@ public sealed class SourceScanner
     /// </summary>
     public List<Row> Pending(SqliteConnection conn, bool force)
     {
-        // 候选 = 还没量分辨率的，或还没算指纹的。后者让"补指纹"不需要单独一个任务：
-        // 跑一次普通扫描就顺带补齐。
+        // 候选 = 还没量分辨率的、还没算指纹的、还没取编码的。后两类让"补指纹 / 补编码"
+        // 都不需要单独一个任务：跑一次普通扫描就顺带补齐。
         var sql = $@"
             SELECT id, file_path, IFNULL(file_size, 0) AS fs
             FROM video_files
             WHERE IFNULL(file_size, 0) > 0
               AND file_path <> ''
-              {(force ? "" : "AND (res_w IS NULL OR res_h IS NULL OR res_h <= 0 OR fingerprint IS NULL)")}
+              {(force ? "" : "AND (res_w IS NULL OR res_h IS NULL OR res_h <= 0 OR fingerprint IS NULL OR IFNULL(codec, '') = '')")}
             ORDER BY id";
 
         var rows = new List<Row>();
@@ -92,11 +93,12 @@ public sealed class SourceScanner
     /// <summary>把探测结果写进去。tx 由批量任务给，一整批一个事务。</summary>
     public void Write(SqliteConnection conn, SqliteTransaction? tx, Row row, Inspection ins)
     {
-        // 指纹读不到就别把已有的抹掉（挂载盘抖一下不该让数据倒退），所以用 COALESCE
+        // 指纹与编码读不到就别把已有的抹掉（挂载盘抖一下不该让数据倒退），所以都用 COALESCE
         const string sql = @"
             UPDATE video_files
             SET res_w = @w, res_h = @h, scan_time = @t,
-                fingerprint = COALESCE(@fp, fingerprint)
+                fingerprint = COALESCE(@fp, fingerprint),
+                codec = COALESCE(@codec, codec)
             WHERE id = @id";
 
         using var cmd = new SqliteCommand(sql, conn, tx);
@@ -104,6 +106,7 @@ public sealed class SourceScanner
         cmd.Parameters.AddWithValue("@h", ins.Height);
         cmd.Parameters.AddWithValue("@t", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         cmd.Parameters.AddWithValue("@fp", (object?)ins.Fingerprint ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@codec", (object?)ins.Codec ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@id", row.FileId);
         cmd.ExecuteNonQuery();
     }
