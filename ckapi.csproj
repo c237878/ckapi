@@ -10,7 +10,9 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.26" />
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.10" />
+    <!-- 3.1.11 修掉 GIF 解码在畸形注释块上死循环（GHSA-rxmq-m78w-7wmc，NU1902 告警）。
+         留在 3.1.x 这一支：4.x 是大版本，封面/头像这条链路不值得为一条中危告警去冒编码行为变化的险。 -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
