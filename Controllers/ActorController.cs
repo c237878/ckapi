@@ -63,13 +63,16 @@ public class ActorController : ControllerBase
             // 并列行按 id 收尾，保证翻页结果稳定
             orderBy += ", a.id ASC";
 
-            if (!string.IsNullOrEmpty(keyword))
+            var kw = (keyword ?? "").Trim();
+            if (kw.Length > 0)
             {
-                // 曾用名也要命中：actor_aliases 一行一个，检索走 EXISTS 而不是字符串 LIKE
-                whereClause += @" AND (a.name LIKE @keyword
+                // 按整名相等检索，不再用 LIKE：以前所有别名塞在一个字段里，只能靠模糊匹配；
+                // 现在 actor_aliases 一行一个别名，"输入的就是某个人的名或曾用名"这件事可以直接判等。
+                // 大小写不敏感（罗马音别名有人打全小写），两侧都取 Trim 后的值。
+                whereClause += @" AND (a.name = @keyword COLLATE NOCASE
                             OR EXISTS (SELECT 1 FROM actor_aliases aa
-                                       WHERE aa.actor_id = a.id AND aa.alias LIKE @keyword))";
-                parameters.Add(new SqliteParameter("@keyword", $"%{keyword}%"));
+                                       WHERE aa.actor_id = a.id AND aa.alias = @keyword COLLATE NOCASE))";
+                parameters.Add(new SqliteParameter("@keyword", kw));
             }
 
             if (!string.IsNullOrEmpty(country))
@@ -235,7 +238,9 @@ public class ActorController : ControllerBase
     {
         try
         {
-            if (string.IsNullOrEmpty(request.Name))
+            // 姓名按 Trim 后的值存：带着首尾空格存进去，按整名检索就永远找不到这个人
+            var name = (request.Name ?? "").Trim();
+            if (name.Length == 0)
                 return Ok(new { success = false, message = "演员姓名不能为空" });
 
             var id = Guid.NewGuid().ToString("N").ToUpper();
@@ -247,7 +252,7 @@ public class ActorController : ControllerBase
             // 检查重名
             using (var checkCmd = new SqliteCommand("SELECT COUNT(*) FROM actors WHERE name = @name", conn))
             {
-                checkCmd.Parameters.Add(new SqliteParameter("@name", request.Name));
+                checkCmd.Parameters.Add(new SqliteParameter("@name", name));
                 if (Convert.ToInt32(checkCmd.ExecuteScalar()) > 0)
                     return Ok(new { success = false, message = "演员已存在" });
             }
@@ -256,17 +261,17 @@ public class ActorController : ControllerBase
                         VALUES (@id, @name, @country, @bio, @birthdate, @addedAt)";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
-            cmd.Parameters.Add(new SqliteParameter("@name", request.Name));
+            cmd.Parameters.Add(new SqliteParameter("@name", name));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@birthdate", (object?)NormalizeBirthdate(request.Birthdate) ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@addedAt", now));
             cmd.ExecuteNonQuery();
 
-            SaveAliases(conn, id, request.Name, request.Aliases);
+            SaveAliases(conn, id, name, request.Aliases);
             SaveLinks(conn, id, request.Links);
 
-            return Ok(new { success = true, data = new { id, name = request.Name }, message = "添加成功" });
+            return Ok(new { success = true, data = new { id, name }, message = "添加成功" });
         }
         catch (Exception ex)
         {
@@ -283,13 +288,19 @@ public class ActorController : ControllerBase
     {
         try
         {
+            // 与新增同一口径：姓名按 Trim 后的值存，空名一律拒（原来 `request.Name ?? ""`
+            // 会把一个漏传 name 的调用直接清成空名）
+            var name = (request.Name ?? "").Trim();
+            if (name.Length == 0)
+                return Ok(new { success = false, message = "演员姓名不能为空" });
+
             using var conn = GetConnection();
             conn.Open();
 
             var sql = @"UPDATE actors SET name = @name, country = @country, bio = @bio, birthdate = @birthdate WHERE id = @id";
             using var cmd = new SqliteCommand(sql, conn);
             cmd.Parameters.Add(new SqliteParameter("@id", id));
-            cmd.Parameters.Add(new SqliteParameter("@name", request.Name ?? ""));
+            cmd.Parameters.Add(new SqliteParameter("@name", name));
             cmd.Parameters.Add(new SqliteParameter("@country", (object?)request.Country ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@bio", (object?)request.Bio ?? DBNull.Value));
             cmd.Parameters.Add(new SqliteParameter("@birthdate", (object?)NormalizeBirthdate(request.Birthdate) ?? DBNull.Value));
@@ -297,7 +308,7 @@ public class ActorController : ControllerBase
             if (cmd.ExecuteNonQuery() <= 0)
                 return Ok(new { success = false, message = "演员不存在" });
 
-            SaveAliases(conn, id, request.Name, request.Aliases);
+            SaveAliases(conn, id, name, request.Aliases);
             SaveLinks(conn, id, request.Links);
             return Ok(new { success = true, message = "更新成功" });
         }
