@@ -154,7 +154,8 @@ public class DataService : IDataService
                 if (raw.Any(char.IsAsciiLetter))
                     review.Add($"{name} | {raw}");
 
-                foreach (var alias in Utils.Aliases.Normalize(new[] { raw }, name))
+                // 只有这一条路径需要按空格拆开：读的是旧的那一个字段，多值本来就挤在一串里
+                foreach (var alias in Utils.Aliases.Normalize(new[] { raw }, name, splitOnWhitespace: true))
                 {
                     ins.Parameters.Clear();
                     ins.Parameters.Add(new SqliteParameter("@id", id));

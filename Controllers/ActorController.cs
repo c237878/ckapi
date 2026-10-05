@@ -64,16 +64,8 @@ public class ActorController : ControllerBase
             orderBy += ", a.id ASC";
 
             var kw = (keyword ?? "").Trim();
-            if (kw.Length > 0)
-            {
-                // 按整名相等检索，不再用 LIKE：以前所有别名塞在一个字段里，只能靠模糊匹配；
-                // 现在 actor_aliases 一行一个别名，"输入的就是某个人的名或曾用名"这件事可以直接判等。
-                // 大小写不敏感（罗马音别名有人打全小写），两侧都取 Trim 后的值。
-                whereClause += @" AND (a.name = @keyword COLLATE NOCASE
-                            OR EXISTS (SELECT 1 FROM actor_aliases aa
-                                       WHERE aa.actor_id = a.id AND aa.alias = @keyword COLLATE NOCASE))";
-                parameters.Add(new SqliteParameter("@keyword", kw));
-            }
+            // 关键字的匹配放在"其他条件都拼完"之后再决定（见下面 conn.Open() 后面那段）：
+            // 要先知道当前这一屏里有没有精确命中，才能决定用判等还是回退模糊。
 
             if (!string.IsNullOrEmpty(country))
             {
@@ -97,6 +89,36 @@ public class ActorController : ControllerBase
 
             using var conn = GetConnection();
             conn.Open();
+
+            if (kw.Length > 0)
+            {
+                // 关键字：**精确优先，一条精确都没有才回退模糊**（2026-10-05 定的口径）。
+                // 判等是主口径——别名已经一行一个存在 actor_aliases，打全名或整条曾用名就该只出那一个人。
+                // 但纯判等有个真实的坑：罗马音别名 "Airi Suzumura" 少打那个空格就什么都搜不到，
+                // 而一个人可能有 20 条曾用名，记不全很正常。
+                // 所以先探一次"当前这一屏里有没有精确命中"：有就只给精确的，一条都没有才换 LIKE，
+                // 这样精确结果不会被模糊噪声顶下去，也不会让人搜不出东西。
+                // 探测必须在其他条件（地区/头像/出生年）都拼完之后做，
+                // 否则会出现"别的筛选下搜得到、加了地区就空着"这种说不通的结果。
+                const string exact = @" AND (a.name = @keyword COLLATE NOCASE
+                            OR EXISTS (SELECT 1 FROM actor_aliases aa
+                                       WHERE aa.actor_id = a.id AND aa.alias = @keyword COLLATE NOCASE))";
+                // 两个分支共用同一个参数名与取值：模糊那支把通配符写在 SQL 里拼，
+                // 免得回退时多出一个没人用的参数
+                const string fuzzy = @" AND (a.name LIKE '%' || @keyword || '%'
+                            OR EXISTS (SELECT 1 FROM actor_aliases aa
+                                       WHERE aa.actor_id = a.id AND aa.alias LIKE '%' || @keyword || '%'))";
+                parameters.Add(new SqliteParameter("@keyword", kw));
+
+                bool hasExact;
+                using (var probe = new SqliteCommand($"SELECT COUNT(*) FROM actors a {whereClause}{exact}", conn))
+                {
+                    foreach (var p in parameters) probe.Parameters.Add(new SqliteParameter(p.ParameterName, p.Value));
+                    hasExact = Convert.ToInt32(probe.ExecuteScalar()) > 0;
+                }
+
+                whereClause += hasExact ? exact : fuzzy;
+            }
 
             // 总数
             var countSql = $"SELECT COUNT(*) FROM actors a {whereClause}";
