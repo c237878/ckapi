@@ -75,6 +75,27 @@ public static class SourceStates
 
     public static readonly IReadOnlyDictionary<string, string> Codecs = BuildCodecs();
 
+    /// <summary>
+    /// 某一档对应的 fourcc 集合（"other"/"unscanned" 是反选，没有固定集合）。
+    /// 列表筛选之外的场合（比如体积分析接口）要按自己的表别名拼条件时用它，
+    /// 别再抄一份四字符清单——两处各写一遍迟早会漂。
+    /// </summary>
+    public static IReadOnlyList<string>? CodecFourcc(string key)
+        => CodecGroups.FirstOrDefault(g => g.Key == key).Fourcc is { Length: > 0 } list ? list : null;
+
+    /// <summary>按调用方给的表别名拼一档编码的 SQL 条件；档位不认识返回 null。</summary>
+    public static string? CodecClause(string key, string alias)
+    {
+        var quoted = (IEnumerable<string> xs) => string.Join(",", xs.Select(x => $"'{x}'"));
+        var known = CodecGroups.SelectMany(g => g.Fourcc).ToList();
+        return key switch
+        {
+            "other" => $"IFNULL({alias}.codec, '') <> '' AND {alias}.codec NOT IN ({quoted(known)})",
+            "unscanned" => $"IFNULL({alias}.codec, '') = ''",
+            _ => CodecFourcc(key) is { } set ? $"{alias}.codec IN ({quoted(set)})" : null
+        };
+    }
+
     private static Dictionary<string, string> BuildCodecs()
     {
         var known = CodecGroups.SelectMany(g => g.Fourcc).ToList();

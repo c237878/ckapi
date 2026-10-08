@@ -114,6 +114,200 @@ public class VideoFileController : ControllerBase
     }
 
     /// <summary>
+    /// 体积优化分析：把「编码 + 时长 + 大小」三样凑在一起，算出哪些文件还值得重编码。
+    ///
+    /// 为什么要三样：只按体积排会挑错对象——同样 6 GB，一小时的片码率高、还有压缩空间，
+    /// 两小时的片多半已经压到骨头了。所以排序用的是"按目标码率折算能省下多少"，不是体积本身。
+    ///
+    /// 三条口径要说清：
+    ///   · 码率是**整片平均**（文件大小 × 8 ÷ 时长），含音轨开销（一般 0.1~0.3 Mbps），
+    ///     所以目标码率往下压到 2 Mbps 以下时，省的量会开始虚高；
+    ///   · 只看**扫到过时长**的行（时长来自扫描读 mvhd），没扫到的不算候选、但单独报条数——
+    ///     不然空列表会被读成"没有可优化的"；
+    ///   · 默认只看"作为影片口径的那一版"（is_default=1），因为重复的解说版/其他版一起算
+    ///     会把同一个影片的体积数翻几倍；要按每份文件看就把 scope 切成 all。
+    ///
+    /// 这里**只出证据，不碰任何文件**：重编码用什么工具、参数怎么调都是人的事。
+    /// </summary>
+    [HttpGet("optimize")]
+    public IActionResult Optimize([FromQuery] double targetMbps = 2.5, [FromQuery] double minSizeGb = 1,
+        [FromQuery] string scope = "default", [FromQuery] string? codec = null,
+        [FromQuery] bool skipLiked = false, [FromQuery] int page = 1, [FromQuery] int pageSize = 50)
+    {
+        try
+        {
+            // 参数一律夹到合理区间：这些值会进 SQL 的乘算，不夹的话一个负数就能让排序反过来
+            var mbps = Math.Clamp(targetMbps <= 0 ? 2.5 : targetMbps, 0.25, 50);
+            var minBytes = (long)(Math.Clamp(minSizeGb, 0, 200) * 1_000_000_000);
+            var bps = mbps * 1_000_000;
+            page = Utils.Paging.ClampPage(page);
+            pageSize = Utils.Paging.ClampSize(pageSize);
+
+            var where = "WHERE IFNULL(f.file_size, 0) >= @min AND IFNULL(f.duration, 0) > 0";
+            if (scope != "all") where += " AND f.is_default = 1";
+            // 编码档位走白名单拼好的条件（表别名是 f），前端传来的字符串只当字典键用
+            if (!string.IsNullOrWhiteSpace(codec)
+                && Utils.SourceStates.CodecClause(codec.Trim(), "f") is { } clause)
+                where += $" AND ({clause})";
+            if (skipLiked) where += " AND NOT EXISTS (SELECT 1 FROM video_likes l WHERE l.video_id = f.video_id)";
+
+            const string sqlBody = @"
+                SELECT f.id, f.video_id, IFNULL(f.file_size, 0), IFNULL(f.duration, 0), IFNULL(f.codec, ''),
+                       IFNULL(f.res_w, 0), IFNULL(f.res_h, 0), IFNULL(f.file_path, ''), f.code,
+                       IFNULL(v.code, ''), IFNULL(v.name, ''),
+                       (SELECT COUNT(*) FROM video_actors va WHERE va.video_id = f.video_id) AS actor_count,
+                       EXISTS(SELECT 1 FROM video_likes l2 WHERE l2.video_id = f.video_id) AS liked
+                FROM video_files f
+                JOIN videos v ON v.id = f.video_id
+                ";
+            var sql = sqlBody + where;
+
+            var rows = new List<OptRow>();
+            using (var conn = _db.GetConnection())
+            {
+                conn.Open();
+                using var cmd = new SqliteCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@min", minBytes);
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    rows.Add(new OptRow(
+                        reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt32(3),
+                        reader.GetString(4), reader.GetInt32(5), reader.GetInt32(6), reader.GetString(7),
+                        reader.GetString(8), reader.GetString(9), reader.GetString(10),
+                        reader.GetInt32(11), reader.GetInt64(12) == 1));
+                }
+            }
+
+            // 覆盖率：有文件但还没扫出时长的行不会出现在候选里，界面必须把这条报出来，
+            // 否则"0 个候选"会被读成"库里没有可压的片"
+            int unscored;
+            long totalAll;
+            using (var conn2 = _db.GetConnection())
+            {
+                conn2.Open();
+                using var cover = new SqliteCommand(
+                    @"SELECT COUNT(*), SUM(IFNULL(file_size, 0)) FROM video_files
+                      WHERE IFNULL(file_size, 0) > 0 AND file_path <> ''
+                        AND IFNULL(duration, 0) <= 0 AND (@all = 1 OR is_default = 1)", conn2);
+                cover.Parameters.AddWithValue("@all", scope == "all" ? 1 : 0);
+                using var r2 = cover.ExecuteReader();
+                r2.Read();
+                unscored = r2.GetInt32(0);
+                totalAll = r2.GetInt64(1);
+            }
+
+            var scored = rows.Select(r =>
+            {
+                double rate = r.Size * 8.0 / r.Duration;                       // bit/s
+                double save = Math.Max(0, r.Size - r.Duration * bps / 8.0);    // 按目标码率折算能省多少字节
+                return new { r, rate, save };
+            }).ToList();
+
+            var candidates = scored.Where(x => x.save > 0).OrderByDescending(x => x.save).ToList();
+            var summary = new
+            {
+                files = rows.Count,
+                totalSize = rows.Sum(x => x.Size),
+                saveable = candidates.Sum(x => (long)x.save),
+                candidateCount = candidates.Count,
+                // 按编码档分组：这一档有多少部、多大、平均码率多少
+                byCodec = scored.GroupBy(x => Bucket(x.r.Codec)).Select(g => new
+                {
+                    bucket = g.Key,
+                    count = g.Count(),
+                    size = g.Sum(x => x.r.Size),
+                    avgMbps = g.Average(x => x.rate) / 1_000_000,
+                    saveable = (long)g.Sum(x => x.save)
+                }).OrderByDescending(x => x.size).ToList(),
+                byBand = scored.Select(x => Band(x.rate / 1_000_000)).Distinct().OrderBy(x => x).Select(b => new
+                {
+                    band = b,
+                    count = scored.Count(x => Band(x.rate / 1_000_000) == b),
+                    size = scored.Where(x => Band(x.rate / 1_000_000) == b).Sum(x => x.r.Size)
+                }).ToList(),
+                unscored,
+                unscoredSize = totalAll
+            };
+
+            var items = candidates.Skip((page - 1) * pageSize).Take(pageSize).Select(x => new
+            {
+                fileId = x.r.FileId,
+                videoId = x.r.VideoId,
+                videoCode = x.r.VideoCode,
+                videoName = x.r.VideoName,
+                fileCode = x.r.FileCode,
+                path = x.r.Path,
+                size = x.r.Size,
+                duration = x.r.Duration,
+                mbps = x.rate / 1_000_000,
+                codec = x.r.Codec,
+                resW = x.r.ResW,
+                resH = x.r.ResH,
+                saveable = (long)x.save,
+                actorCount = x.r.ActorCount,
+                liked = x.r.Liked
+            }).ToList();
+
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    summary,
+                    items,
+                    total = candidates.Count,
+                    page,
+                    pageSize,
+                    targetMbps = mbps,
+                    minSizeGb,
+                    scope = scope == "all" ? "all" : "default",
+                    codec = codec ?? "",
+                    skipLiked
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "体积优化分析失败");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
+
+    // 一行候选。FileCode 是行级番号（这一版自己的文件名标识），与影片番号可以不同；
+    // Path 给"复制清单"用，界面不显示全路径。
+    private sealed record OptRow(string FileId, string VideoId, long Size, int Duration, string Codec,
+        int ResW, int ResH, string Path, string FileCode, string VideoCode, string VideoName,
+        int ActorCount, bool Liked);
+
+    /// <summary>fourcc → 档位标签。认不出的原样带出，别悄悄并进"其他"里让人看不出还有别的东西</summary>
+    private static string Bucket(string fourcc)
+    {
+        var raw = (fourcc ?? "").Trim().ToLowerInvariant();
+        return raw switch
+        {
+            "avc1" or "avc3" => "H.264",
+            "hev1" or "hvc1" or "hev2" or "hvc2" => "H.265 / HEVC",
+            "av01" => "AV1",
+            "vp09" => "VP9",
+            "mp4v" or "xvid" or "dx50" or "divx" => "MPEG-4 系",
+            "" => "未扫描",
+            _ => raw
+        };
+    }
+
+    /// <summary>码率分段标签，与界面那张分布表一一对应（数字前缀是给排序用的，不显示出来）</summary>
+    private static string Band(double mbps) => mbps switch
+    {
+        < 1 => "a<1",
+        < 1.5 => "b1-1.5",
+        < 2.5 => "c1.5-2.5",
+        < 4 => "d2.5-4",
+        < 8 => "e4-8",
+        _ => "f>8"
+    };
+
+    /// <summary>
     /// 检查并重命名文件名，使之与库里记的番号一致。
     /// 只动"文件确实在盘上、且文件名与番号不符"的行；目标名已被占用的一律跳过并说明原因。
     ///
