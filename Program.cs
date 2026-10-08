@@ -48,6 +48,8 @@ builder.Services.AddSingleton<ckapi.Services.ScrapeJob>();
 // 片源扫描（分辨率 + 字幕证据）：同上
 builder.Services.AddSingleton<ckapi.Services.SourceScanner>();
 builder.Services.AddSingleton<ckapi.Services.SourceScanJob>();
+// 搬移文件到别的目录（配合"拷去新设备重编码"）：同样是进程内单例，同一时刻只跑一批
+builder.Services.AddSingleton<ckapi.Services.FileRelocateJob>();
 // 抓取通道：配置与礼貌策略（限速/配额/熔断）都在 scrape_channels 表里，界面可改
 builder.Services.AddSingleton<ckapi.Services.ScrapeChannelService>();
 // 规则通道的批量补数据：进度是进程内状态，所以必须是单例（面板轮询的要和跑任务的是同一个实例）
