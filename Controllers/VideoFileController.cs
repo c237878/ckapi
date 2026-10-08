@@ -187,13 +187,15 @@ public class VideoFileController : ControllerBase
             {
                 conn2.Open();
                 using var cover = new SqliteCommand(
-                    @"SELECT COUNT(*), SUM(IFNULL(file_size, 0)) FROM video_files
+                    @"SELECT COUNT(*), IFNULL(SUM(IFNULL(file_size, 0)), 0) FROM video_files
                       WHERE IFNULL(file_size, 0) > 0 AND file_path <> ''
                         AND IFNULL(duration, 0) <= 0 AND (@all = 1 OR is_default = 1)", conn2);
                 cover.Parameters.AddWithValue("@all", scope == "all" ? 1 : 0);
                 using var r2 = cover.ExecuteReader();
                 r2.Read();
                 unscored = r2.GetInt32(0);
+                // SUM 在空集上是 NULL 而不是 0（SQLite 的聚合语义），不兜住的话
+                // "全库都扫到时长了"这种好情况反而会把整个分析接口打炸
                 totalAll = r2.GetInt64(1);
             }
 
