@@ -34,7 +34,7 @@ public static class VideoCardQuery
         v.id, v.code, v.name, v.category, v.country, v.cover_path,
         v.seriesid, v.ctime, v.original_name, v.release_date,
         df.id AS file_id, df.file_path, df.file_size,
-        df.subtitle_state, df.watermark_state, df.res_w, df.res_h, df.codec,
+        df.subtitle_state, df.watermark_state, df.res_w, df.res_h, df.codec, df.duration,
         (SELECT COUNT(*) FROM video_files f WHERE f.video_id = v.id) AS version_count,
         v.studioid, (SELECT st.name FROM studios st WHERE st.id = v.studioid) AS studio_name,
         (SELECT COUNT(*) FROM video_likes WHERE video_id = v.id AND target_type='video') AS like_count,
@@ -70,6 +70,7 @@ public static class VideoCardQuery
             ["resH"] = Int(reader, "res_h"),
             // 容器里读到的原始 fourcc；没扫到就是空串，前端按"未扫描"处理
             ["codec"] = Str(reader, "codec") ?? "",
+            ["duration"] = Int(reader, "duration"),
             // 卡片上的文件字段都属于"默认那一版"（v11）：带出版本行 id 与总版本数，
             // 前端据此决定要不要显示版本切换与"共 N 版"的标识
             ["fileId"] = Str(reader, "file_id"),

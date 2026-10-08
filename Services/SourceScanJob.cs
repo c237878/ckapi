@@ -114,9 +114,9 @@ public sealed class SourceScanJob
         return new
         {
             running = IsRunning,
-            // 这一趟读的是容器头，顺带回填三样：宽高、编码、指纹。
+            // 这一趟读的是容器头，顺带回填四样：宽高、编码、时长、指纹。
             // 以前这里写死"分辨率"，加了编码列之后再说"只扫分辨率"就与实际不符了。
-            what = "分辨率与编码",
+            what = "分辨率 / 编码 / 时长",
             whatKey = "source",
             trigger = _trigger,
             force = _force,

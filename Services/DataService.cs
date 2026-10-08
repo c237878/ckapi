@@ -24,7 +24,7 @@ public interface IDataService
 public class DataService : IDataService
 {
     /// <summary>Migrations 数组的最高版本号；新增迁移步骤时 +1。</summary>
-    private const int TargetVersion = 16;
+    private const int TargetVersion = 17;
 
     /// <summary>代码期望的 schema 版本，给「运行状态」面板判断"迁移到底跑完没有"用。</summary>
     public static int SchemaTargetVersion => TargetVersion;
@@ -708,6 +708,16 @@ public class DataService : IDataService
         AddColumnIfMissing(conn, "video_files", "codec", "TEXT");
     }
 
+    /// <summary>
+    /// 版本行加整片时长（秒）。加它是因为"体积大"和"值得重编码"不是一回事：
+    /// 同样 6 GB，两小时和一小时的片码率差一倍，前者还有压缩空间、后者多半已经压到骨头了。
+    /// 时长本来就在 mvhd 里，扫描走 moov 时顺手多读 32 字节，不额外增加一趟 IO。
+    /// </summary>
+    private void AddVideoDuration(SqliteConnection conn)
+    {
+        AddColumnIfMissing(conn, "video_files", "duration", "INTEGER");
+    }
+
     /// <summary>把一串 id 写成 SQL 的 IN 列表。只用于内部生成的 GUID，不接受用户输入。</summary>
     private static string InList(IEnumerable<string> ids)
         => string.Join(",", ids.Select(i => $"'{i.Replace("'", "''")}'"));
@@ -736,6 +746,7 @@ public class DataService : IDataService
             .Append((14, "版本行加内容指纹 fingerprint（见 AddFingerprint 注释）", AddFingerprint))
             .Append((15, "抓取通道加身份校验正则 identity_regex（见 AddChannelIdentity 注释）", AddChannelIdentity))
             .Append((16, "版本行加视频编码 fourcc codec（见 AddVideoCodec 注释）", AddVideoCodec))
+            .Append((17, "版本行加时长 duration（见 AddVideoDuration 注释）", AddVideoDuration))
             .ToArray();
     }
 
@@ -903,6 +914,9 @@ public class DataService : IDataService
                 /* 视频轨 sample entry 的 fourcc（avc1 / hev1 / av01 …），由扫描读容器头顺带拿到。
                    空 = 还没扫到；与 res_w/res_h 同一趟，不额外花 IO */
                 codec           TEXT,
+                /* 整片时长（秒），取自 mvhd 的 duration/timescale。
+                   空 = 还没扫到。它和 file_size 一起才是码率——只按体积挑哪些片值得重编码会挑错 */
+                duration        INTEGER,
                 subtitle_state  TEXT    NOT NULL DEFAULT 'unknown',
                 watermark_state TEXT    NOT NULL DEFAULT 'unknown',
                 scan_time       TEXT,

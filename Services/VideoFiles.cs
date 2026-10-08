@@ -14,7 +14,7 @@ public static class VideoFiles
     /// <summary>一个版本行的列清单；表别名固定为 f，查询用它拼 SELECT。</summary>
     public const string Columns = """
         f.id, f.video_id, f.code, f.type_id, f.label, f.file_path, IFNULL(f.file_size, 0) AS file_size,
-        f.res_w, f.res_h, f.subtitle_state, f.watermark_state, f.scan_time, f.is_default, f.ctime,
+        f.res_w, f.res_h, f.codec, f.duration, f.subtitle_state, f.watermark_state, f.scan_time, f.is_default, f.ctime,
         (SELECT vt.name FROM version_types vt WHERE vt.id = f.type_id) AS type_name,
         (SELECT COUNT(*) FROM video_likes l WHERE l.file_id = f.id AND l.target_type = 'video') AS like_count
         """;
@@ -261,6 +261,10 @@ public static class VideoFiles
             ["fileSize"] = reader["file_size"] == DBNull.Value ? 0 : Convert.ToInt64(reader["file_size"]),
             ["resW"] = Int(reader, "res_w"),
             ["resH"] = Int(reader, "res_h"),
+            // 编码与时长是"哪些版本还值得重编码"的两半：光看体积挑不出该压谁，
+            // 同样 6 GB，一小时的片和两小时的片码率差一倍
+            ["codec"] = Str(reader, "codec") ?? "",
+            ["duration"] = Int(reader, "duration"),
             ["subtitleState"] = Str(reader, "subtitle_state") ?? Utils.SourceStates.Unknown,
             ["watermarkState"] = Str(reader, "watermark_state") ?? Utils.SourceStates.Unknown,
             ["scanTime"] = Str(reader, "scan_time"),

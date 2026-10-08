@@ -30,9 +30,10 @@ public static class MediaProbe
     /// <param name="Width">显示宽（tkhd），拿不到时为 0</param>
     /// <param name="Height">显示高（tkhd），拿不到时为 0</param>
     /// <param name="Codec">视频轨 sample entry 的 fourcc，如 avc1 / hev1 / av01</param>
+    /// <param name="Duration">整片时长（秒，取自 mvhd），拿不到时为 0</param>
     /// <param name="FileSize">顺带读到的实际大小，省一次 stat</param>
     public readonly record struct Info(
-        int Width, int Height, string? Codec, long FileSize);
+        int Width, int Height, string? Codec, int Duration, long FileSize);
 
     /// <summary>子盒层级：moov&gt;trak&gt;mdia&gt;minf&gt;stbl&gt;stsd 用到第 5 层，留一点余量</summary>
     private const int MaxDepth = 8;
@@ -52,7 +53,7 @@ public static class MediaProbe
             // 与其报一个含糊的"量不出宽高"，不如当"这个文件读不出信息"处理
             if (!reader.SawMoov) return null;
 
-            return new Info(reader.Width, reader.Height, reader.Codec, fs.Length);
+            return new Info(reader.Width, reader.Height, reader.Codec, reader.Duration, fs.Length);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -65,6 +66,7 @@ public static class MediaProbe
     {
         public int Width, Height;
         public string? Codec;
+        public int Duration;
         public bool SawMoov;
         private bool videoTaken;
         private int boxes;
@@ -91,8 +93,39 @@ public static class MediaProbe
             (type, b, e, d) =>
             {
                 if (type == "trak" && !videoTaken) ReadTrak(b, e, d + 1);
+                if (type == "mvhd") ReadMvhd(b);
                 return true;
             });
+
+        /// <summary>
+        /// mvhd：整片时长 = duration / timescale。
+        /// v0（32 位时间）里 timescale 在盒体偏移 12、duration 在 16；
+        /// v1（64 位时间）两个时间戳各占 8 字节，timescale 推到 20、duration 在 24。
+        /// 读不出、或长到不像一部片（超过 24 小时）就当没有：宁可留空等下次扫，
+        /// 也不要一个看着合理的坏数字混进"按时长挑重编码对象"的那份清单里。
+        /// </summary>
+        private void ReadMvhd(long body)
+        {
+            var d = Read(body, 32);
+            if (d.Length < 20) return;
+
+            int scale;
+            double seconds;
+            if (d[0] == 1)
+            {
+                if (d.Length < 32) return;
+                scale = (int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(20));
+                seconds = BinaryPrimitives.ReadUInt64BigEndian(d.AsSpan(24)) / (double)scale;
+            }
+            else
+            {
+                scale = (int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(12));
+                seconds = BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(16)) / (double)scale;
+            }
+
+            if (scale <= 0 || seconds <= 0 || seconds > 86400) return;
+            Duration = (int)Math.Round(seconds);
+        }
 
         private void ReadTrak(long body, long end, int depth)
         {
