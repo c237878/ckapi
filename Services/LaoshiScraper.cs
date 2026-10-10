@@ -135,21 +135,35 @@ public sealed class LaoshiScraper : IActorSource
                           ?? throw new InvalidOperationException("档案页没解析出内容，站点结构可能变了");
 
             var done = new List<string>();
+            // 与 av-wiki 那条同一套容错：图下不下来不拖累生日与别名，
+            // 只有这一条什么也没补上时，才拿头像失败当结论
+            string? avatarProblem = null;
+            var avatarSiteFault = false;
 
             if (needAvatar)
             {
-                var dl = await LaoshiWiki.DownloadAsync(profile.Portrait ?? LaoshiWiki.PortraitUrl(hit.Display), ct);
-                if (dl is null) return (false, "头像下载失败（站上图床没有这个人的文件）");
-
-                // 文件名固定用「默认」：ImageIndex 补选主图时第一个就认它，不用额外置位
-                var dir = Path.Combine(posterDir, id);
-                Directory.CreateDirectory(dir);
-                var target = Path.Combine(dir, $"默认{dl.Value.Ext}");
-                var temp = target + ".tmp";
-                await File.WriteAllBytesAsync(temp, dl.Value.Bytes, ct);
-                File.Move(temp, target, overwrite: true);
-                ImageIndex.SyncActor(conn, id, dir);
-                done.Add("头像");
+                try
+                {
+                    var dl = await LaoshiWiki.DownloadAsync(profile.Portrait ?? LaoshiWiki.PortraitUrl(hit.Display), ct);
+                    if (dl is null) avatarProblem = "站图不是认得的图片类型，或超过 8 MB";
+                    else
+                    {
+                        // 文件名固定用「默认」：ImageIndex 补选主图时第一个就认它，不用额外置位
+                        var dir = Path.Combine(posterDir, id);
+                        Directory.CreateDirectory(dir);
+                        var target = Path.Combine(dir, $"默认{dl.Value.Ext}");
+                        var temp = target + ".tmp";
+                        await File.WriteAllBytesAsync(temp, dl.Value.Bytes, ct);
+                        File.Move(temp, target, overwrite: true);
+                        ImageIndex.SyncActor(conn, id, dir);
+                        done.Add("头像");
+                    }
+                }
+                catch (Exception ex) when (ActorGate.IsNetworkFault(ex, ct))
+                {
+                    avatarProblem = ex.Message;
+                    avatarSiteFault = true;
+                }
             }
 
             if (needProfile)
@@ -169,14 +183,25 @@ public sealed class LaoshiScraper : IActorSource
                 if (added > 0) done.Add($"别名 {added} 条");
             }
 
-            if (done.Count == 0) return (false, $"档案 #{hit.Num}「{profile.Name}」里没有可补的字段");
+            if (done.Count == 0)
+            {
+                if (avatarProblem is null)
+                    return (false, $"档案 #{hit.Num}「{profile.Name}」里没有可补的字段");
+                // 前缀保持"头像下载"：批量那边靠它分清"站点侧失败（计入熔断）"和"图床没这张图（不算）"
+                return (false, avatarSiteFault
+                    ? $"头像下载失败（{avatarProblem}）"
+                    : $"档案 #{hit.Num}「{profile.Name}」的头像下载失败");
+            }
+
+            var tail = avatarProblem is null ? "" : $"，头像这次没下到（{avatarProblem}）";
 
             // 数据本身不落库（连对方档案地址都不存），但日志要能回看这个人是从哪份档案补的
             _logger.LogInformation(
-                "已抓取 {What}：演员 {ActorId}「{OurName}」← 老师图鉴 档案 #{Num}「{ProfileName}」",
-                string.Join('/', done), id, name, hit.Num, profile.Name);
+                "已抓取 {What}：演员 {ActorId}「{OurName}」← 老师图鉴 档案 #{Num}「{ProfileName}」{Tail}",
+                string.Join('/', done), id, name, hit.Num, profile.Name,
+                avatarProblem is null ? "" : $"—— 头像没下到：{avatarProblem}");
 
-            return (true, $"已抓到 {string.Join('、', done)}（来自档案 #{hit.Num}「{profile.Name}」）");
+            return (true, $"已抓到 {string.Join('、', done)}（来自档案 #{hit.Num}「{profile.Name}」）{tail}");
         }
         catch (Exception ex) when (ActorGate.IsNetworkFault(ex, ct))
         {

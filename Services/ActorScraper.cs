@@ -150,27 +150,36 @@ public sealed class ActorScraper : IActorSource
 
             var profile = hit.Profile!.Value;
             var done = new List<string>();
+            // 头像下不下来不该拖累别的字段：档案都拿到手了，生日/简介该填还是填。
+            // 失败原因先记着，只有"这一条什么也没补上"时才拿它当结论报出去
+            string? avatarProblem = null;
+            var avatarSiteFault = false;
 
             if (needAvatar)
             {
                 try
                 {
                     var dl = await AvWiki.DownloadAsync(profile.Portrait!, ct);
-                    if (dl is null) return (false, $"档案「{profile.Name}」的头像下载失败");
-
-                    // 文件名固定用「默认」：ImageIndex 补选主图时第一个就认它，不用额外置位
-                    var dir = Path.Combine(posterDir, id);
-                    Directory.CreateDirectory(dir);
-                    var target = Path.Combine(dir, $"默认{dl.Value.Ext}");
-                    var temp = target + ".tmp";
-                    await File.WriteAllBytesAsync(temp, dl.Value.Bytes, ct);
-                    File.Move(temp, target, overwrite: true);
-                    ImageIndex.SyncActor(conn, id, dir);
-                    done.Add("头像");
+                    if (dl is null) avatarProblem = "站图不是认得的图片类型，或超过 8 MB";
+                    else
+                    {
+                        // 文件名固定用「默认」：ImageIndex 补选主图时第一个就认它，不用额外置位
+                        var dir = Path.Combine(posterDir, id);
+                        Directory.CreateDirectory(dir);
+                        var target = Path.Combine(dir, $"默认{dl.Value.Ext}");
+                        var temp = target + ".tmp";
+                        await File.WriteAllBytesAsync(temp, dl.Value.Bytes, ct);
+                        File.Move(temp, target, overwrite: true);
+                        ImageIndex.SyncActor(conn, id, dir);
+                        done.Add("头像");
+                    }
                 }
                 catch (Exception ex) when (ActorGate.IsNetworkFault(ex, ct))
                 {
-                    return (false, $"头像下载失败（{ex.Message}）");
+                    // 站图常常不在 av-wiki 自己域名上（多在片商图床），把域名一起报出来才分得清
+                    // 是"这个站不通"还是"整个通道被封"
+                    avatarProblem = $"{ex.Message}｜站图 {HostOf(profile.Portrait)}";
+                    avatarSiteFault = true;
                 }
             }
 
@@ -192,19 +201,33 @@ public sealed class ActorScraper : IActorSource
             }
 
             if (done.Count == 0)
-                return (false, $"档案「{profile.Name}」里没有可补的字段");
+            {
+                if (avatarProblem is null)
+                    return (false, $"档案「{profile.Name}」里没有可补的字段");
+                // 前缀保持"头像下载"：批量那边靠它分清"站点侧失败（计入熔断）"和"图床没这张图（不算）"
+                return (false, avatarSiteFault
+                    ? $"头像下载失败（{avatarProblem}）"
+                    : $"档案「{profile.Name}」的头像下载失败");
+            }
+
+            var tail = avatarProblem is null ? "" : $"，头像这次没下到（{avatarProblem}）";
 
             // 留一行审计：批量跑的时候这是唯一能回看"这些数据是从哪个档案抓来的"的地方
             _logger.LogInformation(
-                "已抓取 {What}：演员 {ActorId}「{OurName}」← 档案「{ProfileName}」(https://av-wiki.net/av-actress/{Slug})",
-                string.Join('/', done), id, name, profile.Name, profile.Slug);
+                "已抓取 {What}：演员 {ActorId}「{OurName}」← 档案「{ProfileName}」(https://av-wiki.net/av-actress/{Slug}){Tail}",
+                string.Join('/', done), id, name, profile.Name, profile.Slug,
+                avatarProblem is null ? "" : $" —— 头像没下到：{avatarProblem}");
 
-            return (true, $"已抓到 {string.Join('、', done)}（来自「{profile.Name}」）");
+            return (true, $"已抓到 {string.Join('、', done)}（来自「{profile.Name}」）{tail}");
         }
 
         return (false, "没找到能确认的档案");
     }
 
+
+    /// <summary>只取域名用在报错文案里：解析不出来的（相对路径之类）原样回显，不抛</summary>
+    private static string HostOf(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : (url ?? "(没有站图地址)");
 
     /// <summary>含假名的曾用名排前面：站上的 tag 名基本就是假名/日文汉字写法</summary>
     private static List<string> OrderQueries(List<string> names)
