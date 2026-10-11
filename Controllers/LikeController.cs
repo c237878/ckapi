@@ -178,7 +178,7 @@ public class LikeController : ControllerBase
     /// </summary>
     [Utils.AdminToken]
     [HttpPost("batch-delete")]
-    public IActionResult BatchDelete([FromBody] LikeBatchDeleteRequest req)
+    public IActionResult BatchDelete([FromBody] LikeIdsRequest req)
     {
         try
         {
@@ -202,9 +202,47 @@ public class LikeController : ControllerBase
             return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
         }
     }
+
+    /// <summary>
+    /// 批量清掉「点赞那一刻的播放位置」，记录本身保留。
+    ///
+    /// 有的赞是在片头、广告或者换镜头的空白处顺手点的，那个位置当"精彩瞬间"没意义，
+    /// 但赞是要留的 —— 以前只能整条删掉，等于为了一个假标记把记录扔了。
+    /// 只动 play_time：file_id（这一版）与 liked_at（哪天点的）都不改，观影日历的统计因此不受影响。
+    /// </summary>
+    [Utils.AdminToken]
+    [HttpPost("clear-position")]
+    public IActionResult ClearPosition([FromBody] LikeIdsRequest req)
+    {
+        try
+        {
+            var ids = (req?.Ids ?? new List<int>()).Distinct().ToList();
+            if (ids.Count == 0) return BadRequest(new { success = false, message = "未提供ID" });
+
+            using var conn = GetConnection();
+            conn.Open();
+            // 一条 UPDATE 走完，不用逐条点：影响行数即"真清掉了几个"，
+            // 选中里本来就没有位置的那些不算被改，界面上据此把两个数分开报
+            var placeholders = ids.Select((_, i) => "@i" + i).ToList();
+            using var cmd = new SqliteCommand(
+                $@"UPDATE video_likes SET play_time = NULL
+                    WHERE play_time IS NOT NULL AND id IN ({string.Join(", ", placeholders)})", conn);
+            for (var i = 0; i < ids.Count; i++)
+                cmd.Parameters.Add(new SqliteParameter("@i" + i, ids[i]));
+            var cleared = cmd.ExecuteNonQuery();
+
+            return Ok(new { success = true, cleared, requested = ids.Count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ClearLikePosition failed");
+            return StatusCode(500, new { success = false, message = Utils.Api.InternalErrorMessage });
+        }
+    }
 }
 
-public class LikeBatchDeleteRequest
+/// <summary>批量按 id 操作的请求体（删除记录与清点赞位置共用这一份）</summary>
+public class LikeIdsRequest
 {
     public List<int> Ids { get; set; } = new();
 }
